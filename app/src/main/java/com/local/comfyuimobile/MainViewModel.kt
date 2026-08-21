@@ -108,12 +108,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var visibleNodeChangedAt = 0L
     @Volatile private var lastUpdateCheck: Long = 0L
     private var bridgeLoadedPath: String? = null
+    private var serverInputSeeded = false
 
     init {
         viewModelScope.launch {
             preferences.settings.collect { stored ->
                 val submittedJobsChanged = _state.value.submittedJobIds != stored.submittedJobs
                 lastUpdateCheck = stored.lastUpdateCheck
+                // 只在首次加载时用上次连接的地址填充输入框；之后只要还没连上
+                // （activeServer == null），就绝不覆盖用户正在输入/刚设置的新地址，
+                // 否则连接过程中的任何 DataStore 写入（如检查更新的时间戳）都会把
+                // 输入框重置回旧的连接地址。
+                val current = _state.value
+                val resolvedServerInput = when {
+                    current.activeServer != null -> current.activeServer.baseUrl
+                    !serverInputSeeded -> {
+                        serverInputSeeded = true
+                        stored.activeServerUrl.ifBlank { current.serverInput }
+                    }
+                    else -> current.serverInput
+                }
                 _state.update {
                     it.copy(
                         savedServers = stored.profiles,
@@ -125,8 +139,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         cacheClearedAt = stored.cacheClearedAt,
                         favoriteResultKeys = stored.favoriteResultKeys,
                         recentWorkflowPaths = stored.recentWorkflows,
-                        serverInput = it.activeServer?.baseUrl
-                            ?: stored.activeServerUrl.ifBlank { it.serverInput },
+                        serverInput = resolvedServerInput,
                     )
                 }
                 if (submittedJobsChanged && _state.value.activeServer != null) {
