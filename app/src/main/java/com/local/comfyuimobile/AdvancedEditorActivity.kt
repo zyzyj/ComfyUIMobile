@@ -197,6 +197,9 @@ class AdvancedEditorActivity : ComponentActivity() {
         lifecycleScope.launch {
             runCatching { bridge.snapshotCurrentWorkflow(expectedPath = workflowPath) }
                 .onSuccess { (workflowJson, manifest) ->
+                    if (manifest.fields.isEmpty() && manifest.nodes.isEmpty()) {
+                        AppLogger.info("高级编辑以空参数清单退出：工作流当前没有已连线的输出节点")
+                    }
                     AdvancedEditorSession.complete(workflowJson, manifest)
                     setResult(Activity.RESULT_OK)
                     finish()

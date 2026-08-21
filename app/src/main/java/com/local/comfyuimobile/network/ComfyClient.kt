@@ -166,6 +166,7 @@ class ComfyClient {
                         workflowPath = workflowPath(extraData),
                         workflowJson = workflowJson(extraData),
                         message = statusString,
+                        durationMillis = executionDuration(status),
                     ),
                 )
             }
@@ -347,6 +348,25 @@ class ComfyClient {
 
     private fun workflowName(extraData: JSONObject?): String =
         extraData?.optJSONObject("comfy_mobile")?.optString("workflow_name").orEmpty()
+
+    private fun executionDuration(status: JSONObject?): Long? {
+        if (status == null) return null
+        val messages = status.optJSONArray("messages") ?: return null
+        var start: Long? = null
+        var end: Long? = null
+        repeat(messages.length()) { index ->
+            val message = messages.optJSONArray(index) ?: return@repeat
+            val data = message.optJSONObject(1) ?: return@repeat
+            val timestamp = data.optLong("timestamp", -1L).takeIf { it > 0 } ?: return@repeat
+            when (message.optString(0)) {
+                "execution_start" -> if (start == null) start = timestamp
+                "execution_success", "execution_error", "execution_interrupted" -> if (end == null) end = timestamp
+            }
+        }
+        val startTs = start ?: return null
+        val endTs = end ?: return null
+        return (endTs - startTs).coerceAtLeast(0L)
+    }
 
     private fun workflowPath(extraData: JSONObject?): String =
         extraData?.optJSONObject("comfy_mobile")?.optString("workflow_path").orEmpty()

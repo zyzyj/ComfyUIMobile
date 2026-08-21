@@ -105,6 +105,7 @@ data class JobSummary(
     val currentNode: String? = null,
     val submittedByApp: Boolean = false,
     val message: String = "",
+    val durationMillis: Long? = null,
 )
 
 enum class AppDestination { PARAMETERS, RESULTS }
@@ -175,6 +176,7 @@ data class AppUiState(
     val workflows: List<WorkflowEntry> = emptyList(),
     val recentWorkflowPaths: List<String> = emptyList(),
     val selectedWorkflow: WorkflowDocument? = null,
+    val previewWorkflow: WorkflowDocument? = null,
     val fields: List<ParameterField> = emptyList(),
     val jobs: List<JobSummary> = emptyList(),
     val results: List<ResultMedia> = emptyList(),

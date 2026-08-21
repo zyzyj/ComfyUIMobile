@@ -107,6 +107,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var pendingNotificationWorkflowPath: String? = null
     private var visibleNodeChangedAt = 0L
     @Volatile private var lastUpdateCheck: Long = 0L
+    private var bridgeLoadedPath: String? = null
 
     init {
         viewModelScope.launch {
@@ -204,6 +205,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runCatching {
                 bridgeOperationMutex.withLock {
+                    ensureSelectedWorkflowLoaded()
                     val currentWorkflow = activeBridge.syncWorkflow(_state.value.fields)
                     if (document.hasUnsavedChanges) {
                         val updated = document.copy(rawJson = currentWorkflow, fields = _state.value.fields)
@@ -387,12 +389,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectWorkflow(entry: WorkflowEntry, recordAsOpened: Boolean = false) {
         if (entry.isDirectory) return
-        AppLogger.info("加载工作流：${entry.path}")
+        AppLogger.info("预读取工作流：${entry.path}")
         parameterRefreshJob?.cancel()
         viewModelScope.launch {
             runOperation("工作流加载失败") {
                 flushCurrentDraft()
-                _state.update { it.copy(loading = true, error = null, selectedWorkflow = null, fields = emptyList()) }
+                _state.update {
+                    it.copy(
+                        loading = true,
+                        error = null,
+                        previewWorkflow = null,
+                        selectedWorkflow = if (recordAsOpened) null else it.selectedWorkflow,
+                        fields = if (recordAsOpened) emptyList() else it.fields,
+                    )
+                }
                 val serverUrl = _state.value.activeServer?.baseUrl ?: error("尚未连接 ComfyUI 服务器")
                 val draft = if (_state.value.localDraftsEnabled) {
                     workflowDrafts.load(serverUrl, entry.path)
@@ -418,6 +428,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         workflowPath = entry.path,
                     )
                 }
+                bridgeLoadedPath = entry.path
                 val restoredFields = if (draft != null && !draftDiscarded) {
                     WorkflowDraftFields.restore(manifest.fields, draft.fields)
                 } else {
@@ -440,25 +451,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     },
                 )
                 _state.update {
-                    val activeNode = ExecutionNodeResolver.resolve(it.currentExecutingNodeId, manifest.nodes)
+                    val promote = recordAsOpened
+                    val activeNode = ExecutionNodeResolver.resolve(
+                        if (promote) it.currentExecutingNodeId else null,
+                        manifest.nodes,
+                    )
                     it.copy(
-                        selectedWorkflow = document,
-                        fields = restoredFields,
+                        previewWorkflow = document,
+                        selectedWorkflow = if (promote) document else it.selectedWorkflow,
+                        fields = if (promote) restoredFields else it.fields,
                         loading = false,
                         nodeProblems = emptyMap(),
-                        workflowDraftConflictRequired = conflict,
-                        workflowDraftConflictReason = if (conflict) {
+                        workflowDraftConflictRequired = conflict && promote,
+                        workflowDraftConflictReason = if (conflict && promote) {
                             "手机里有未保存草稿，但服务器上的工作流已经变化。请选择继续手机草稿、读取服务器版本，或者另存为新工作流。"
                         } else {
                             ""
                         },
-                        currentExecutingNodeId = activeNode,
-                        generationMessage = if (it.activeJobId != null && activeNode != null) {
+                        currentExecutingNodeId = if (promote) activeNode else it.currentExecutingNodeId,
+                        generationMessage = if (promote && it.activeJobId != null && activeNode != null) {
                             executionMessage(activeNode, manifest.nodes, it.generationProgress)
                         } else {
                             it.generationMessage
                         },
                         notice = when {
+                            !promote -> "已预读取 ${entry.name}，点击“打开参数”或双击进入参数页"
                             draftDiscarded -> "检测到本地草稿与当前工作流内容不匹配（可能是旧版本数据混入），已忽略并读取服务器版本"
                             draft != null -> "已恢复 ${entry.name} 的本地未保存草稿"
                             else -> "已加载 ${entry.name}"
@@ -477,6 +494,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val path = _state.value.selectedWorkflow?.entry?.path ?: return
         updateRecentWorkflowState(path)
         viewModelScope.launch { preferences.setRecentWorkflow(path) }
+    }
+
+    /** 把当前预读取的工作流正式打开为参数页工作流。 */
+    fun openPreviewedWorkflow() {
+        val preview = _state.value.previewWorkflow ?: return
+        val manifestNodes = preview.nodes
+        _state.update { ui ->
+            val activeNode = ExecutionNodeResolver.resolve(ui.currentExecutingNodeId, manifestNodes)
+            ui.copy(
+                selectedWorkflow = preview,
+                fields = preview.fields,
+                nodeProblems = emptyMap(),
+                currentExecutingNodeId = activeNode,
+                generationMessage = if (ui.activeJobId != null && activeNode != null) {
+                    executionMessage(activeNode, manifestNodes, ui.generationProgress)
+                } else {
+                    ui.generationMessage
+                },
+            )
+        }
+        recordSelectedWorkflowOpened()
     }
 
     fun updateField(key: String, value: String) {
@@ -564,21 +602,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(loading = false, error = "高级编辑没有返回工作流内容") }
             return
         }
+        val manifestIsEmpty = result.manifest.fields.isEmpty() && result.manifest.nodes.isEmpty()
         val edited = document.copy(
             rawJson = result.workflowJson,
-            fields = result.manifest.fields,
-            nodes = result.manifest.nodes,
+            fields = if (manifestIsEmpty) document.fields else result.manifest.fields,
+            nodes = if (manifestIsEmpty) document.nodes else result.manifest.nodes,
             hasUnsavedChanges = true,
-            dirtyFieldKeys = result.manifest.fields.mapTo(mutableSetOf()) { it.key },
+            dirtyFieldKeys = if (manifestIsEmpty) document.dirtyFieldKeys else {
+                result.manifest.fields.mapTo(mutableSetOf()) { it.key }
+            },
         )
         _state.update {
             it.copy(
                 selectedWorkflow = edited,
-                fields = result.manifest.fields,
+                fields = edited.fields,
                 nodeProblems = emptyMap(),
-                loading = true,
-                notice = "已读取网页当前工作流，正在同步生成环境",
+                loading = !manifestIsEmpty,
+                notice = if (manifestIsEmpty) {
+                    "高级编辑已返回内容，但当前工作流没有已连线的输出节点，参数页暂时保持原样；请连接输出节点后重新进入高级编辑"
+                } else {
+                    "已读取网页当前工作流，正在同步生成环境"
+                },
             )
+        }
+        if (manifestIsEmpty) {
+            // 用户临时断开了输出连线（正常中间状态）。保留编辑后的 JSON 为结构草稿，
+            // 不重新加载桥接（那会再次因无输出节点失败），避免卡死。
+            viewModelScope.launch {
+                persistDraftSnapshot(structuralDraftSnapshot(edited, result.workflowJson, document.fields))
+            }
+            return
         }
         viewModelScope.launch {
             runOperation("高级编辑同步失败") {
@@ -594,6 +647,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         workflowPath = document.entry.path,
                     )
                 }
+                bridgeLoadedPath = document.entry.path
                 _state.update { ui ->
                     if (ui.selectedWorkflow?.entry?.path != document.entry.path) {
                         ui.copy(loading = false)
@@ -619,6 +673,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val updatedRaw = activeBridge.invokeWidgetButton(nodeId, actionToken)
                     updatedRaw to activeBridge.loadWorkflow(updatedRaw, workflowPath = document.entry.path)
                 }
+                bridgeLoadedPath = document.entry.path
                 _state.update {
                     it.copy(
                         selectedWorkflow = document.copy(
@@ -660,6 +715,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         generationJob = viewModelScope.launch {
             runOperation("提交生成失败") {
                 val generated = bridgeOperationMutex.withLock {
+                    ensureSelectedWorkflowLoaded()
                     (bridge ?: error("前端桥接不可用")).buildPrompt(_state.value.fields)
                 }
                 val response = try {
@@ -737,6 +793,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     return@runOperation
                 }
                 val workflowJson = bridgeOperationMutex.withLock {
+                    ensureSelectedWorkflowLoaded()
                     (bridge ?: error("前端桥接不可用")).syncWorkflow(_state.value.fields)
                 }
                 val saved = client.writeWorkflow(document.entry.path, workflowJson, overwrite = current != null)
@@ -782,6 +839,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 require(client.listWorkflows().none { it.path == destination }) { "同名工作流已存在，请换一个名称" }
 
                 val workflowJson = bridgeOperationMutex.withLock {
+                    ensureSelectedWorkflowLoaded()
                     (bridge ?: error("前端桥接不可用")).syncWorkflow(_state.value.fields)
                 }
                 val savedJson = JSONObject(workflowJson)
@@ -795,6 +853,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         workflowPath = saved.path,
                     )
                 }
+                bridgeLoadedPath = saved.path
                 val updated = document.copy(
                     entry = saved,
                     rawJson = savedJson,
@@ -852,6 +911,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         workflowPath = current.path,
                     )
                 }
+                bridgeLoadedPath = current.path
                 workflowDrafts.delete(document.serverUrl, document.entry.path)
                 _state.update {
                     it.copy(
@@ -877,13 +937,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun duplicateWorkflow(name: String) {
-        val document = _state.value.selectedWorkflow ?: return
+        val document = _state.value.previewWorkflow ?: return
         viewModelScope.launch {
             runOperation("复制工作流失败") {
                 val folder = document.entry.path.substringBeforeLast('/', "workflows")
                 val fileName = WorkflowPath.fileName(name)
                 val currentJson = bridgeOperationMutex.withLock {
-                    (bridge ?: error("前端桥接不可用")).syncWorkflow(_state.value.fields)
+                    (bridge ?: error("前端桥接不可用")).syncWorkflow(document.fields)
                 }
                 val json = JSONObject(currentJson)
                     .put("id", UUID.randomUUID().toString())
@@ -896,19 +956,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun renameWorkflow(name: String) {
-        val document = _state.value.selectedWorkflow ?: return
+        val document = _state.value.previewWorkflow ?: return
         viewModelScope.launch {
             runOperation("工作流改名失败") {
                 flushCurrentDraft()
                 val folder = document.entry.path.substringBeforeLast('/', "workflows")
                 val fileName = WorkflowPath.fileName(name)
                 val currentJson = bridgeOperationMutex.withLock {
-                    (bridge ?: error("前端桥接不可用")).syncWorkflow(_state.value.fields)
+                    (bridge ?: error("前端桥接不可用")).syncWorkflow(document.fields)
                 }
                 val moved = client.moveWorkflow(document.entry.path, "$folder/$fileName")
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(currentJson, workflowPath = moved.path)
                 }
+                bridgeLoadedPath = moved.path
                 val updated = document.copy(
                     entry = moved,
                     rawJson = currentJson,
@@ -920,8 +981,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (updated.hasUnsavedChanges) persistDraftSnapshot(draftSnapshot(updated, manifest.fields))
                 _state.update {
                     it.copy(
-                        selectedWorkflow = updated,
-                        fields = manifest.fields,
+                        previewWorkflow = updated,
+                        selectedWorkflow = it.selectedWorkflow?.takeIf { sel -> sel.entry.path == document.entry.path }?.let { sel ->
+                            sel.copy(
+                                entry = moved,
+                                rawJson = currentJson,
+                                fields = manifest.fields,
+                                nodes = manifest.nodes,
+                                baseModified = moved.modified,
+                            )
+                        } ?: it.selectedWorkflow,
+                        fields = if (it.selectedWorkflow?.entry?.path == document.entry.path) manifest.fields else it.fields,
                         notice = "已改名为 $fileName",
                     )
                 }
@@ -932,18 +1002,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun moveWorkflow(folder: String) {
-        val document = _state.value.selectedWorkflow ?: return
+        val document = _state.value.previewWorkflow ?: return
         viewModelScope.launch {
             runOperation("移动工作流失败") {
                 flushCurrentDraft()
                 val destination = "${WorkflowPath.folder(folder)}/${document.entry.name}"
                 val currentJson = bridgeOperationMutex.withLock {
-                    (bridge ?: error("前端桥接不可用")).syncWorkflow(_state.value.fields)
+                    (bridge ?: error("前端桥接不可用")).syncWorkflow(document.fields)
                 }
                 val moved = client.moveWorkflow(document.entry.path, destination)
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(currentJson, workflowPath = moved.path)
                 }
+                bridgeLoadedPath = moved.path
                 val updated = document.copy(
                     entry = moved,
                     rawJson = currentJson,
@@ -955,8 +1026,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (updated.hasUnsavedChanges) persistDraftSnapshot(draftSnapshot(updated, manifest.fields))
                 _state.update {
                     it.copy(
-                        selectedWorkflow = updated,
-                        fields = manifest.fields,
+                        previewWorkflow = updated,
+                        selectedWorkflow = it.selectedWorkflow?.takeIf { sel -> sel.entry.path == document.entry.path }?.let { sel ->
+                            sel.copy(
+                                entry = moved,
+                                rawJson = currentJson,
+                                fields = manifest.fields,
+                                nodes = manifest.nodes,
+                                baseModified = moved.modified,
+                            )
+                        } ?: it.selectedWorkflow,
+                        fields = if (it.selectedWorkflow?.entry?.path == document.entry.path) manifest.fields else it.fields,
                         notice = "已移动到 ${WorkflowPath.folder(folder)}",
                     )
                 }
@@ -967,14 +1047,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteWorkflow() {
-        val document = _state.value.selectedWorkflow ?: return
+        val document = _state.value.previewWorkflow ?: return
         viewModelScope.launch {
             runOperation("删除工作流失败") {
                 flushCurrentDraft()
                 client.deleteWorkflow(document.entry.path)
                 workflowDrafts.delete(document.serverUrl, document.entry.path)
                 preferences.removeRecentWorkflow(document.entry.path)
-                _state.update { it.copy(selectedWorkflow = null, fields = emptyList(), notice = "已删除 ${document.entry.name}") }
+                _state.update {
+                    it.copy(
+                        previewWorkflow = null,
+                        selectedWorkflow = it.selectedWorkflow?.takeUnless { sel -> sel.entry.path == document.entry.path },
+                        fields = if (it.selectedWorkflow?.entry?.path == document.entry.path) emptyList() else it.fields,
+                        notice = "已删除 ${document.entry.name}",
+                    )
+                }
                 refreshWorkflowsInternal()
             }
         }
@@ -1022,16 +1109,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         workflowPath = entry.path,
                     )
                 }
+                bridgeLoadedPath = entry.path
+                val document = WorkflowDocument(
+                    entry = entry,
+                    rawJson = json.toString(),
+                    fields = manifest.fields,
+                    nodes = manifest.nodes,
+                    serverUrl = _state.value.activeServer?.baseUrl.orEmpty(),
+                    baseModified = entry.modified,
+                )
                 _state.update {
                     it.copy(
-                        selectedWorkflow = WorkflowDocument(
-                            entry = entry,
-                            rawJson = json.toString(),
-                            fields = manifest.fields,
-                            nodes = manifest.nodes,
-                            serverUrl = _state.value.activeServer?.baseUrl.orEmpty(),
-                            baseModified = entry.modified,
-                        ),
+                        previewWorkflow = document,
+                        selectedWorkflow = document,
                         fields = manifest.fields,
                         loading = false,
                         nodeProblems = emptyMap(),
@@ -1042,7 +1132,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun currentWorkflowExport(): Pair<String, String>? = _state.value.selectedWorkflow?.let { it.entry.name to it.rawJson }
+    fun currentWorkflowExport(): Pair<String, String>? = _state.value.previewWorkflow?.let { it.entry.name to it.rawJson }
 
     fun refreshTasks() = viewModelScope.launch { refreshTasksInternal() }
     fun refreshResults() = viewModelScope.launch { refreshResultsInternal() }
@@ -1195,23 +1285,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         workflowPath = null,
                     )
                 }
+                bridgeLoadedPath = null
                 val name = job.workflowName.ifBlank { "任务快照-${job.id.take(8)}" }
                 val entry = WorkflowEntry(
                     name = name,
                     path = "workflows/$name.json",
                     isDirectory = false,
                 )
+                val document = WorkflowDocument(
+                    entry = entry,
+                    rawJson = workflowJson,
+                    fields = manifest.fields,
+                    nodes = manifest.nodes,
+                    serverUrl = serverUrl,
+                    baseModified = 0.0,
+                    hasUnsavedChanges = false,
+                )
                 _state.update {
                     it.copy(
-                        selectedWorkflow = WorkflowDocument(
-                            entry = entry,
-                            rawJson = workflowJson,
-                            fields = manifest.fields,
-                            nodes = manifest.nodes,
-                            serverUrl = serverUrl,
-                            baseModified = 0.0,
-                            hasUnsavedChanges = false,
-                        ),
+                        previewWorkflow = document,
+                        selectedWorkflow = document,
                         fields = manifest.fields,
                         loading = false,
                         nodeProblems = emptyMap(),
@@ -1802,7 +1895,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val resolvedNode = ExecutionNodeResolver.resolve(
                     ActiveJobRecovery.currentNodeId(recoveredRuntimeNode, active.currentNode),
                     ui.selectedWorkflow?.nodes.orEmpty(),
-                ) ?: if (sameActiveJob) ui.currentExecutingNodeId else null
+                ) ?: if (sameActiveJob && active.state in setOf(JobState.RUNNING, JobState.PENDING)) {
+                    ui.currentExecutingNodeId
+                } else {
+                    null
+                }
                 val progress = active.progress ?: if (sameActiveJob) ui.generationProgress else null
                 val updatedJobs = jobs.map { job ->
                     if (job.id == active.id && resolvedNode != null) {
@@ -1973,6 +2070,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 在生成 / 保存前，确保隐藏 WebView 当前加载的是 [selectedWorkflow]。
+     * 单点工作流只会把工作流载入 WebView 做预读取（并更新 previewWorkflow），
+     * 但不会把它设为参数页工作流；如果之后用户直接生成或保存，WebView 里还留着
+     * 预读取的工作流，必须先把参数页工作流重新载入，否则会生成/保存错误的内容。
+     * 调用方必须已经持有 bridgeOperationMutex。
+     */
+    private suspend fun ensureSelectedWorkflowLoaded() {
+        val document = _state.value.selectedWorkflow ?: return
+        if (bridgeLoadedPath == document.entry.path) return
+        val activeBridge = bridge ?: error("前端桥接不可用")
+        val manifest = activeBridge.loadWorkflow(
+            rawJson = document.rawJson,
+            workflowPath = document.entry.path,
+        )
+        bridgeLoadedPath = document.entry.path
+        _state.update { ui ->
+            if (ui.selectedWorkflow?.entry?.path != document.entry.path) {
+                ui
+            } else {
+                // 只刷新节点结构（保证参数页绿框/连线信息正确），保留用户尚未保存的
+                // 字段编辑；随后的 buildPrompt / syncWorkflow 会把当前 fields 再应用到
+                // WebView 上。
+                ui.copy(
+                    selectedWorkflow = document.copy(nodes = manifest.nodes),
+                    fields = ui.fields,
+                )
+            }
+        }
+    }
+
     private fun refreshParametersAfterWorkflowSwitch() {
         parameterRefreshJob?.cancel()
         parameterRefreshJob = viewModelScope.launch {
@@ -1986,6 +2114,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val updatedRaw = activeBridge.syncWorkflow(snapshot)
                     updatedRaw to activeBridge.loadWorkflow(updatedRaw, workflowPath = document.entry.path)
                 }
+                bridgeLoadedPath = document.entry.path
                 _state.update { ui ->
                     if (ui.selectedWorkflow?.entry?.path != document.entry.path) {
                         ui.copy(loading = false)
@@ -2247,6 +2376,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             manifest.fields
         }
+        bridgeLoadedPath = document.entry.path
         val updated = document.copy(
             entry = current ?: document.entry,
             rawJson = raw,

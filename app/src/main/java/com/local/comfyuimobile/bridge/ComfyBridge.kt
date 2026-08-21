@@ -327,7 +327,21 @@ class ComfyBridge(private val activity: Activity) {
                 inspectCurrentGraph = true,
             ),
         )
-        return rawJson to parseWorkflowManifest(rawJson, response)
+        return rawJson to parseWorkflowManifestLenient(rawJson, response)
+    }
+
+    /**
+     * 与 [parseWorkflowManifest] 相同，但当工作流因为“没有已连线的输出节点”而无法
+     * 生成参数清单时，不抛出异常，而是返回空清单。这样高级编辑在用户临时断开输出
+     * 连线（正常的中间编辑状态）后仍能正常退出，不会卡在编辑器里丢失改动。
+     */
+    private fun parseWorkflowManifestLenient(rawJson: String, response: String): WorkflowManifest {
+        val root = JSONObject(response)
+        if (!root.optBoolean("ok") && root.optString("code") == "no_output_node") {
+            AppLogger.info("高级编辑读取到无输出节点的中间状态，返回空参数清单以允许退出")
+            return WorkflowManifest(emptyList(), emptyList())
+        }
+        return parseWorkflowManifest(rawJson, response)
     }
 
     private fun ensureActiveWorkflowScript(encodedWorkflowPath: String) = """
@@ -1244,7 +1258,7 @@ class ComfyBridge(private val activity: Activity) {
               return data.output_node === true || data.outputNode === true || /(?:Save|Preview|Output)/i.test(String(node.comfyClass || node.type || ''));
             };
             const outputNodes = activeNodes.filter(node => isOutputNode(node) && (node.inputs || []).some(input => input.link != null));
-            if (!outputNodes.length) return JSON.stringify({ok:false, error:'当前工作流没有已连线的输出节点'});
+            if (!outputNodes.length) return JSON.stringify({ok:false, code:'no_output_node', error:'当前工作流没有已连线的输出节点'});
             const executionIds = new Set();
             const includeAncestors = (node) => {
               const id = String(node.id);

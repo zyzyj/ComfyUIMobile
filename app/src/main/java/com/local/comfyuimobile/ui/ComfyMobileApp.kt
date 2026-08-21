@@ -540,34 +540,34 @@ private fun WorkflowScreen(state: AppUiState, viewModel: MainViewModel, onOpenPa
             }
         }
         Text(
-            "单击工作流只预读取参数，不会跳转；读取完成后点击上方“打开参数”",
+            "单击工作流只预读取参数，不会跳转；双击或点击上方“打开参数”才进入参数页",
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        if (state.selectedWorkflow != null) {
+        if (state.previewWorkflow != null) {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Button(onClick = {
-                    viewModel.recordSelectedWorkflowOpened()
+                    viewModel.openPreviewedWorkflow()
                     onOpenParameters()
                 }) { Text("打开参数") }
                 OutlinedButton(onClick = {
-                    dialogText = state.selectedWorkflow.entry.name.substringBeforeLast('.')
+                    dialogText = state.previewWorkflow.entry.name.substringBeforeLast('.')
                     duplicateDialog = true
                 }) { Text("新建副本") }
                 OutlinedButton(onClick = {
-                    dialogText = state.selectedWorkflow.entry.name.substringBeforeLast('.')
+                    dialogText = state.previewWorkflow.entry.name.substringBeforeLast('.')
                     renameDialog = true
                 }) { Text("改名") }
                 OutlinedButton(onClick = {
-                    dialogText = state.selectedWorkflow.entry.path.substringBeforeLast('/', "workflows")
+                    dialogText = state.previewWorkflow.entry.path.substringBeforeLast('/', "workflows")
                     moveDialog = true
                 }) { Text("移动") }
                 OutlinedButton(onClick = {
-                    state.selectedWorkflow.let { export -> exportRaw = export.rawJson; exportLauncher.launch(export.entry.name) }
+                    state.previewWorkflow.let { export -> exportRaw = export.rawJson; exportLauncher.launch(export.entry.name) }
                 }) { Text("导出") }
                 OutlinedButton(onClick = { deleteDialog = true }) { Text("删除") }
             }
@@ -577,13 +577,19 @@ private fun WorkflowScreen(state: AppUiState, viewModel: MainViewModel, onOpenPa
             items(filtered, key = { it.path }) { entry ->
                 WorkflowRow(
                     entry = entry,
-                    selected = state.selectedWorkflow?.entry?.path == entry.path,
+                    selected = state.previewWorkflow?.entry?.path == entry.path,
                     onClick = {
                         if (entry.isDirectory) {
                             currentFolder = entry.path
                             search = ""
                         } else {
                             viewModel.selectWorkflow(entry)
+                        }
+                    },
+                    onDoubleClick = {
+                        if (!entry.isDirectory) {
+                            viewModel.selectWorkflow(entry, recordAsOpened = true)
+                            onOpenParameters()
                         }
                     },
                 )
@@ -593,17 +599,19 @@ private fun WorkflowScreen(state: AppUiState, viewModel: MainViewModel, onOpenPa
     if (duplicateDialog) NameDialog("复制为新工作流", dialogText, { duplicateDialog = false }) { viewModel.duplicateWorkflow(it); duplicateDialog = false }
     if (renameDialog) NameDialog("工作流改名", dialogText, { renameDialog = false }) { viewModel.renameWorkflow(it); renameDialog = false }
     if (moveDialog) NameDialog("移动到文件夹", dialogText, { moveDialog = false }) { viewModel.moveWorkflow(it); moveDialog = false }
-    if (deleteDialog) ConfirmDialog("删除工作流", "将从 ComfyUI 服务器永久删除 ${state.selectedWorkflow?.entry?.name}。", { deleteDialog = false }) { viewModel.deleteWorkflow(); deleteDialog = false }
+    if (deleteDialog) ConfirmDialog("删除工作流", "将从 ComfyUI 服务器永久删除 ${state.previewWorkflow?.entry?.name}。", { deleteDialog = false }) { viewModel.deleteWorkflow(); deleteDialog = false }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun WorkflowRow(
     entry: WorkflowEntry,
     selected: Boolean,
     onClick: () -> Unit,
+    onDoubleClick: () -> Unit = {},
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        modifier = Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onDoubleClick = onDoubleClick),
         colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant),
     ) {
         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2041,6 +2049,9 @@ private fun JobCard(job: JobSummary, viewModel: MainViewModel, tracked: Boolean)
             job.workflowName.takeIf { it.isNotBlank() }?.let {
                 Text(it, style = MaterialTheme.typography.labelSmall, maxLines = 1)
             }
+            job.durationMillis?.takeIf { it > 0 }?.let {
+                Text("耗时：${formatDuration(it)}", style = MaterialTheme.typography.labelSmall)
+            }
             if (job.submittedByApp) Text("本 App 提交", style = MaterialTheme.typography.labelSmall)
             job.currentNode?.let { Text("节点：$it", style = MaterialTheme.typography.bodySmall) }
             job.progress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) }
@@ -2357,6 +2368,18 @@ private fun formatSize(value: Long): String = when {
 
 private fun formatTime(value: Long): String =
     SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(value))
+
+private fun formatDuration(value: Long): String {
+    val totalSeconds = value / 1000
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+    return when {
+        hours > 0 -> "${hours}小时${minutes}分${seconds}秒"
+        minutes > 0 -> "${minutes}分${seconds}秒"
+        else -> "${seconds}秒"
+    }
+}
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
