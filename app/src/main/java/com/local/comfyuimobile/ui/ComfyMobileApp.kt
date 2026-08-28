@@ -211,7 +211,7 @@ private enum class MainPage(val label: String, val icon: ImageVector) {
     PARAMETERS("参数", Icons.Default.Tune),
     RESULTS("结果", Icons.Default.Image),
     TASKS("任务", Icons.AutoMirrored.Filled.List),
-    QUICK("快捷", Icons.Default.Bolt),
+    QUICK("快捷", Icons.Default.PlayArrow),
 }
 
 private enum class ResultLayout { ALL, ALBUMS }
@@ -462,7 +462,7 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                 navigationIcon = { Icon(Icons.Default.Wifi, null, Modifier.padding(start = 12.dp), tint = MaterialTheme.colorScheme.secondary) },
                 actions = {
                     IconButton(onClick = viewModel::disconnect) {
-                        Icon(Icons.Default.SwapHoriz, "切换服务器")
+                        Icon(Icons.Default.CloudOff, "切换服务器")
                     }
                     IconButton(onClick = viewModel::refreshOrReconnect) {
                         Icon(
@@ -2149,7 +2149,7 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
             }
         }
         if (quickFields.isEmpty()) {
-            EmptyState(Icons.Default.Bolt, "先选择工作流，再填写提示词")
+            EmptyState(Icons.Default.PlayArrow, "先选择工作流，再填写提示词")
             return@Column
         }
 
@@ -2287,7 +2287,7 @@ private fun QuickParamRow(field: ParameterField, viewModel: MainViewModel) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(field.label, modifier = Modifier.weight(1f))
                     if (isSeed) {
-                        TextButton(onClick = { viewModel.quickUpdateField(field.key, Random.nextLong().absoluteValue.toString()) }) {
+                        TextButton(onClick = { viewModel.quickUpdateField(field.key, Math.abs(Random.nextLong()).toString()) }) {
                             Icon(Icons.Default.Refresh, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("随机")
                         }
                     }
@@ -2438,7 +2438,7 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                     stats.devices.forEach { Text("${it.name}\n显存 ${formatSize(it.vramFree)} / ${formatSize(it.vramTotal)} 可用") }
                 }
                 OutlinedButton(onClick = viewModel::disconnect, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.SwapHoriz, null); Spacer(Modifier.width(6.dp)); Text("切换服务器")
+                    Icon(Icons.Default.CloudOff, null); Spacer(Modifier.width(6.dp)); Text("切换服务器")
                 }
                 HorizontalDivider()
                 Text("图片保存位置", style = MaterialTheme.typography.titleSmall)
