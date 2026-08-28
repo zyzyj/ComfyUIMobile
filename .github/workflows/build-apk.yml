@@ -74,6 +74,8 @@ jobs:
           retention-days: 30
 
       - name: 上传构建产物
+        # artifact 上传失败不应阻塞 Release 发布（Release 直接上传 APK，不依赖此步骤）
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ComfyUIMobile-APK
