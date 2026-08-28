@@ -20,7 +20,7 @@ data class StoredSettings(
     val activeServerUrl: String = "",
     val promptHistory: List<String> = emptyList(),
     val submittedJobs: Set<String> = emptySet(),
-    val autoSaveResults: Boolean = false,
+    val autoSaveResults: Boolean = true,
     val localDraftsEnabled: Boolean = false,
     val lastUpdateCheck: Long = 0L,
     val recentWorkflows: List<String> = emptyList(),
@@ -55,7 +55,7 @@ class AppPreferences(private val context: Context) {
             activeServerUrl = preferences[Keys.activeServerUrl].orEmpty(),
             promptHistory = decodeStrings(preferences[Keys.promptHistory].orEmpty()).take(PromptHistory.MAX_SIZE),
             submittedJobs = decodeStrings(preferences[Keys.submittedJobs].orEmpty()).toSet(),
-            autoSaveResults = preferences[Keys.autoSaveResults] ?: false,
+            autoSaveResults = preferences[Keys.autoSaveResults] ?: true,
             localDraftsEnabled = preferences[Keys.localDraftsEnabled] ?: false,
             lastUpdateCheck = preferences[Keys.lastUpdateCheck] ?: 0L,
             recentWorkflows = decodeStrings(preferences[Keys.recentWorkflows].orEmpty())

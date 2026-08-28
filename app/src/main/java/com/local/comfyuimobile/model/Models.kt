@@ -33,6 +33,9 @@ data class WorkflowEntry(
 enum class ParameterKind { TEXT, MULTILINE, INTEGER, DECIMAL, BOOLEAN, COMBO, IMAGE, VIDEO, UNSUPPORTED }
 enum class ParameterSection { PRIMARY, MORE }
 
+/** 种子策略：默认随机，可切换固定/上一个。 */
+enum class SeedMode { RANDOM, FIXED, PREVIOUS }
+
 data class ParameterField(
     val key: String,
     val nodeId: String,
@@ -132,6 +135,9 @@ data class ResultMedia(
     val taskNumber: Long = 0L,
     val workflowPath: String = "",
     val workflowName: String = "",
+    val elapsedMs: Long? = null,
+    val seed: String? = null,
+    val positivePrompt: String? = null,
     val source: ResultSource = ResultSource.CLOUD,
     val localPath: String? = null,
 ) {
@@ -201,6 +207,7 @@ data class AppUiState(
     val scanning: Boolean = false,
     val generating: Boolean = false,
     val batchCount: Int = 1,
+    val seedMode: SeedMode = SeedMode.RANDOM,
     val saveFolderUri: String? = null,
     val quickWorkflowPath: String? = null,
     val quickWorkflowName: String? = null,

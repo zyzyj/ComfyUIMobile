@@ -1308,6 +1308,17 @@ class ComfyBridge(private val activity: Activity) {
               return hasInputLink && !hasOutputLink;
             };
             const outputNodes = activeNodes.filter(node => isOutputNode(node) && (node.inputs || []).some(input => input.link != null));
+            // API 格式转换等工作流可能丢失连线信息：没有任何"已连线"输出节点时，
+            // 先放宽到所有命中输出类型的节点，再不行就用末端节点兜底，保证参数页可打开。
+            if (!outputNodes.length) outputNodes.push(...activeNodes.filter(node => isOutputNode(node)));
+            if (!outputNodes.length) {
+              outputNodes.push(...activeNodes.filter(node => {
+                const hasInputLink = (node.inputs || []).some(input => input.link != null);
+                const hasOutputLink = (node.outputs || []).some(output =>
+                  Array.isArray(output.links) ? output.links.length > 0 : (output.link != null));
+                return hasInputLink && !hasOutputLink;
+              }));
+            }
             if (!outputNodes.length) return JSON.stringify({ok:false, code:'no_output_node', error:'当前工作流没有已连线的输出节点'});
             const executionIds = new Set();
             const includeAncestors = (node) => {

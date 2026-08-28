@@ -193,6 +193,7 @@ import com.local.comfyuimobile.model.ParameterKind
 import com.local.comfyuimobile.model.ParameterSection
 import com.local.comfyuimobile.model.ResultMedia
 import com.local.comfyuimobile.model.ResultSource
+import com.local.comfyuimobile.model.SeedMode
 import com.local.comfyuimobile.model.ServerProfile
 import com.local.comfyuimobile.model.WorkflowEntry
 import com.local.comfyuimobile.model.WorkflowConnectionMarker
@@ -535,6 +536,7 @@ private fun WorkflowScreen(state: AppUiState, viewModel: MainViewModel, onOpenPa
     var renameDialog by remember { mutableStateOf(false) }
     var moveDialog by remember { mutableStateOf(false) }
     var deleteDialog by remember { mutableStateOf(false) }
+    var deletePathTarget by remember { mutableStateOf<WorkflowEntry?>(null) }
     var dialogText by remember { mutableStateOf("") }
     var exportRaw by remember { mutableStateOf<String?>(null) }
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -635,6 +637,9 @@ private fun WorkflowScreen(state: AppUiState, viewModel: MainViewModel, onOpenPa
                             onOpenParameters()
                         }
                     },
+                    onDelete = if (entry.isDirectory) null else {
+                        { deletePathTarget = entry }
+                    },
                 )
             }
         }
@@ -643,6 +648,16 @@ private fun WorkflowScreen(state: AppUiState, viewModel: MainViewModel, onOpenPa
     if (renameDialog) NameDialog("工作流改名", dialogText, { renameDialog = false }) { viewModel.renameWorkflow(it); renameDialog = false }
     if (moveDialog) NameDialog("移动到文件夹", dialogText, { moveDialog = false }) { viewModel.moveWorkflow(it); moveDialog = false }
     if (deleteDialog) ConfirmDialog("删除工作流", "将从 ComfyUI 服务器永久删除 ${state.previewWorkflow?.entry?.name}。", { deleteDialog = false }) { viewModel.deleteWorkflow(); deleteDialog = false }
+    deletePathTarget?.let { target ->
+        ConfirmDialog(
+            "删除工作流",
+            "将从 ComfyUI 服务器永久删除 ${target.name}。无法打开/识别的工作流也可以这样清理。",
+            { deletePathTarget = null },
+        ) {
+            viewModel.deleteWorkflowByPath(target.path, target.name)
+            deletePathTarget = null
+        }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -652,9 +667,15 @@ private fun WorkflowRow(
     selected: Boolean,
     onClick: () -> Unit,
     onDoubleClick: () -> Unit = {},
+    onDelete: (() -> Unit)? = null,
 ) {
+    var menuExpanded by remember { mutableStateOf(false) }
     Card(
-        modifier = Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onDoubleClick = onDoubleClick),
+        modifier = Modifier.fillMaxWidth().combinedClickable(
+            onClick = onClick,
+            onDoubleClick = onDoubleClick,
+            onLongClick = { if (onDelete != null) menuExpanded = true },
+        ),
         colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant),
     ) {
         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -665,6 +686,15 @@ private fun WorkflowRow(
                 Text(entry.path, style = MaterialTheme.typography.bodySmall, maxLines = 1)
             }
             if (!entry.isDirectory) Text(formatSize(entry.size), style = MaterialTheme.typography.labelSmall)
+        }
+        if (onDelete != null) {
+            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                DropdownMenuItem(
+                    text = { Text("删除") },
+                    leadingIcon = { Icon(Icons.Default.Delete, null) },
+                    onClick = { menuExpanded = false; onDelete() },
+                )
+            }
         }
     }
 }
@@ -918,6 +948,18 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
                 onClick = { if (state.batchCount < 16) viewModel.setBatchCount(state.batchCount + 1) },
                 enabled = !state.generating,
             ) { Icon(Icons.Default.Add, "增加出图数量") }
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("种子", style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.weight(1f))
+            SeedModeChip("随机", SeedMode.RANDOM, state.seedMode, viewModel)
+            Spacer(Modifier.width(6.dp))
+            SeedModeChip("固定", SeedMode.FIXED, state.seedMode, viewModel)
+            Spacer(Modifier.width(6.dp))
+            SeedModeChip("上一个", SeedMode.PREVIOUS, state.seedMode, viewModel)
         }
         Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(
@@ -1788,13 +1830,16 @@ private fun ImageGalleryViewer(
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
     ) {
         // 全屏约束：Dialog 默认高度是 wrap_content，内容超出窗口会把底部操作栏
-        // 挤出屏幕。这里强制窗口铺满整个屏幕。
+        // 挤出屏幕；窗口背景设为纯黑，沉浸查看时不会透出底层的服务器地址栏。
         val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
         LaunchedEffect(dialogWindow) {
-            dialogWindow?.setLayout(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            )
+            dialogWindow?.apply {
+                setLayout(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                )
+                setBackgroundDrawable(android.graphics.ColorDrawable(android.graphics.Color.BLACK))
+            }
         }
         Surface(Modifier.fillMaxSize(), color = Color.Black) {
             GallerySystemBars(chromeVisible)
@@ -1855,6 +1900,7 @@ private fun ImageGalleryViewer(
                         Modifier.fillMaxWidth().align(Alignment.BottomCenter)
                             .background(Color.Black.copy(alpha = 0.68f)).navigationBarsPadding()
                             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
+                            .horizontalScroll(rememberScrollState())
                             .padding(horizontal = 4.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -1927,16 +1973,36 @@ private fun ImageGalleryViewer(
             onDismissRequest = { showInfo = false },
             title = { Text("文件信息") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
                     Text(current.filename)
+                    current.elapsedMs?.let { Text("生图耗时：${formatDuration(it)}", style = MaterialTheme.typography.bodySmall) }
                     Text("任务：${current.jobId}", style = MaterialTheme.typography.bodySmall)
+                    current.workflowName.takeIf { it.isNotBlank() }?.let {
+                        Text("工作流：$it", style = MaterialTheme.typography.bodySmall)
+                    }
+                    current.seed?.takeIf { it.isNotBlank() }?.let {
+                        Text("随机种子：$it", style = MaterialTheme.typography.bodySmall)
+                    }
                     Text("输出部件：${current.nodeId}", style = MaterialTheme.typography.bodySmall)
+                    current.positivePrompt?.takeIf { it.isNotBlank() }?.let {
+                        Text("正向提示词：$it", style = MaterialTheme.typography.bodySmall)
+                    }
                     Text("来源：${if (current.source == ResultSource.LOCAL) "本地缓存" else "ComfyUI 服务器"}", style = MaterialTheme.typography.bodySmall)
                 }
             },
             confirmButton = { TextButton(onClick = { showInfo = false }) { Text("关闭") } },
         )
     }
+}
+
+private fun formatDuration(ms: Long): String {
+    if (ms < 1000) return "${ms} 毫秒"
+    val seconds = ms / 1000
+    if (seconds < 60) return "$seconds 秒"
+    return "${seconds / 60} 分 ${seconds % 60} 秒"
 }
 
 @Composable
@@ -2249,6 +2315,24 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
 }
 
 @Composable
+private fun SeedModeChip(label: String, mode: SeedMode, current: SeedMode, viewModel: MainViewModel) {
+    val selected = mode == current
+    val padding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+    if (selected) {
+        FilledTonalButton(
+            onClick = {},
+            enabled = false,
+            contentPadding = padding,
+        ) { Text(label, style = MaterialTheme.typography.labelMedium) }
+    } else {
+        OutlinedButton(
+            onClick = { viewModel.setSeedMode(mode) },
+            contentPadding = padding,
+        ) { Text(label, style = MaterialTheme.typography.labelMedium) }
+    }
+}
+
+@Composable
 private fun QuickParamRow(field: ParameterField, viewModel: MainViewModel) {
     val isSeed = field.name.contains("seed", ignoreCase = true)
     when (field.kind) {
@@ -2465,6 +2549,16 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                             Icon(Icons.Default.Delete, null); Spacer(Modifier.width(4.dp)); Text("恢复默认")
                         }
                     }
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("生成完成自动保存到相册")
+                        Text(
+                            "任务完成后把最新结果自动写入系统相册（默认开启）",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(state.autoSaveResults, viewModel::setAutoSaveResults)
                 }
                 HorizontalDivider()
                 Text("本地作品保存白名单", style = MaterialTheme.typography.titleSmall)

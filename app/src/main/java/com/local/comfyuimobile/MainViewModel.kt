@@ -40,6 +40,7 @@ import com.local.comfyuimobile.model.ParameterField
 import com.local.comfyuimobile.model.ParameterKind
 import com.local.comfyuimobile.model.ParameterSection
 import com.local.comfyuimobile.model.ResultMedia
+import com.local.comfyuimobile.model.SeedMode
 import com.local.comfyuimobile.model.WorkflowDocument
 import com.local.comfyuimobile.model.WorkflowEntry
 import com.local.comfyuimobile.model.WorkflowNode
@@ -58,6 +59,7 @@ import com.local.comfyuimobile.update.UpdateManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
+import kotlin.random.Random
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -721,6 +723,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(batchCount = clamped) }
     }
 
+    fun setSeedMode(mode: SeedMode) {
+        _state.update { it.copy(seedMode = mode) }
+    }
+
+    /** 每个工作流记住上一次实际使用的种子，供"上一个种子"模式复用。 */
+    private val lastSeedByWorkflow = mutableMapOf<String, String>()
+
+    /**
+     * 提交前按种子策略调整 seed 字段：
+     *  - RANDOM：替换为随机种子（默认，每次出图都不同）
+     *  - FIXED：保持工作流/用户填写的值
+     *  - PREVIOUS：恢复该工作流上一次实际使用的种子
+     */
+    private fun applySeedMode(fields: List<ParameterField>, workflowPath: String): List<ParameterField> {
+        val mode = _state.value.seedMode
+        if (mode == SeedMode.FIXED) return fields
+        var lastSeed: String? = null
+        val updated = fields.map { field ->
+            val isSeed = field.kind == ParameterKind.INTEGER && field.name.contains("seed", ignoreCase = true)
+            if (!isSeed) {
+                field
+            } else {
+                when (mode) {
+                    SeedMode.RANDOM -> {
+                        val value = Math.abs(Random.nextLong()).toString()
+                        lastSeed = value
+                        field.copy(valueJson = value, displayValue = value)
+                    }
+                    SeedMode.PREVIOUS -> lastSeedByWorkflow[workflowPath]?.let { previous ->
+                        field.copy(valueJson = previous, displayValue = previous)
+                    } ?: field
+                    else -> field
+                }
+            }
+        }
+        if (mode == SeedMode.RANDOM && lastSeed != null) {
+            lastSeedByWorkflow[workflowPath] = lastSeed!!
+        }
+        return updated
+    }
+
     /** 自定义图片保存目录：传 null 恢复默认（系统相册）。 */
     fun setSaveFolder(uri: Uri?) {
         _state.update { it.copy(saveFolderUri = uri?.toString()) }
@@ -745,6 +788,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         quickWorkflowName = entry.name,
                         quickFields = manifest.fields,
                         quickEnabledParams = enabledKeys.filter { key -> manifest.fields.any { it.key == key } },
+                        loading = false,
                         notice = "已加载快捷工作流：${entry.name}",
                     )
                 }
@@ -796,6 +840,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         generationJob = viewModelScope.launch {
             runOperation("提交生成失败") {
+                val fields = applySeedMode(_state.value.quickFields, workflowPath)
                 val generated = bridgeOperationMutex.withLock {
                     ensureBridgeReadyForQuick()
                     (bridge ?: error("前端桥接不可用")).buildPrompt(fields, _state.value.batchCount)
@@ -864,9 +909,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         generationJob = viewModelScope.launch {
             runOperation("提交生成失败") {
+                val fields = applySeedMode(_state.value.fields, workflow.entry.path)
                 val generated = bridgeOperationMutex.withLock {
                     ensureSelectedWorkflowLoaded()
-                    (bridge ?: error("前端桥接不可用")).buildPrompt(_state.value.fields, _state.value.batchCount)
+                    (bridge ?: error("前端桥接不可用")).buildPrompt(fields, _state.value.batchCount)
                 }
                 val response = try {
                     client.queuePrompt(
@@ -1217,6 +1263,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 按路径删除工作流：不依赖是否已成功打开/识别。
+     * 用于清理"导入后打不开"（如 API 格式转换失败）的残留工作流。
+     */
+    fun deleteWorkflowByPath(path: String, name: String) {
+        val serverUrl = _state.value.activeServer?.baseUrl ?: return
+        viewModelScope.launch {
+            runOperation("删除工作流失败") {
+                flushCurrentDraft()
+                client.deleteWorkflow(path)
+                runCatching { workflowDrafts.delete(serverUrl, path) }
+                preferences.removeRecentWorkflow(path)
+                _state.update {
+                    it.copy(
+                        previewWorkflow = it.previewWorkflow?.takeUnless { wf -> wf.entry.path == path },
+                        selectedWorkflow = it.selectedWorkflow?.takeUnless { sel -> sel.entry.path == path },
+                        fields = if (it.selectedWorkflow?.entry?.path == path) emptyList() else it.fields,
+                        notice = "已删除 $name",
+                    )
+                }
+                refreshWorkflowsInternal()
+            }
+        }
+    }
+
     fun importWorkflow(uri: Uri, filename: String, mimeType: String?) {
         viewModelScope.launch {
             runOperation("导入工作流失败") {
@@ -1295,18 +1366,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onLocalResultsSaved(count: Int, failed: Boolean, localSaveRequested: Boolean) = viewModelScope.launch {
         val local = localResultCache.load()
+        // 自动保存到系统相册：只处理"最近一次任务"新增的结果（按 createdAt 识别），
+        // 已保存过的历史任务不会被重复写入。
+        var autoSaved = 0
+        if (_state.value.autoSaveResults && local.isNotEmpty()) {
+            val latestCreatedAt = local.maxOf { it.createdAt }
+            local.filter { it.source == ResultSource.LOCAL && it.createdAt == latestCreatedAt }
+                .forEach { media ->
+                    runCatching { saveToMediaStore(media) }
+                        .onSuccess { autoSaved += 1 }
+                }
+        }
+        val autoSavedNote = if (autoSaved > 0) "，已自动保存 $autoSaved 张到系统相册" else ""
         _state.update {
             it.copy(
                 localResults = local,
                 generationMessage = when {
                     localSaveRequested && failed -> "生成完成，但本地作品保存失败"
-                    localSaveRequested -> "本地保存完成，共 $count 项"
-                    else -> "生成完成"
+                    localSaveRequested -> "本地保存完成，共 $count 项$autoSavedNote"
+                    else -> "生成完成$autoSavedNote"
                 },
                 notice = when {
                     localSaveRequested && failed -> "本地作品保存失败，可保持连接后重试"
-                    localSaveRequested -> "本地保存完成，共 $count 项"
-                    else -> "生成完成"
+                    localSaveRequested -> "本地保存完成，共 $count 项$autoSavedNote"
+                    else -> "生成完成$autoSavedNote"
                 },
             )
         }
