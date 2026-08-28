@@ -8,10 +8,16 @@ object LanAddress {
     private const val DEFAULT_HTTPS_PORT = 443
 
     fun normalize(input: String): String {
-        val trimmed = input.trim()
-        require(trimmed.isNotEmpty()) { "请输入 ComfyUI 地址" }
-        val withScheme = if (trimmed.contains("://")) trimmed else "http://$trimmed"
-        val uri = URI(withScheme)
+        // 用户常从云平台控制台复制地址，粘贴内容会带上换行和说明文字（例如 CloudStudio
+        // 会在域名后另起一行 "cloudstudio.net"），直接解析会在 authority 段撞上换行符，
+        // 抛 "Illegal character in authority"。这里只取第一行再 trim；刻意不动行内空格，
+        // 保持"含空格属于畸形地址"的既有校验语义。
+        val firstLine = input.lineSequence().firstOrNull().orEmpty().trim()
+        require(firstLine.isNotEmpty()) { "请输入 ComfyUI 地址" }
+        val withScheme = if (firstLine.contains("://")) firstLine else "http://$firstLine"
+        val uri = runCatching { URI(withScheme) }.getOrElse {
+            throw IllegalArgumentException("地址格式不正确，请只粘贴连接地址，不要带多余文字或换行")
+        }
         val scheme = uri.scheme?.lowercase() ?: throw IllegalArgumentException("地址格式不正确")
         require(scheme == "http" || scheme == "https") { "只支持 HTTP 或 HTTPS 地址" }
         val host = uri.host ?: throw IllegalArgumentException("地址格式不正确")

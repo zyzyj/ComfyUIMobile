@@ -88,6 +88,21 @@ class LanAddressTest {
         assertEquals("[2001:db8::1]", LanAddress.displayHost("https://user:pass@[2001:db8::1]:443"))
     }
 
+    @Test fun cleansMultilinePastedAddress() {
+        // 从云平台控制台复制的地址常带换行与说明文字，必须自动清洗而不是报错。
+        assertEquals(
+            "https://52e4812a33304229ab6ddc1d50865c1e--8188.ap-shanghai2.cloudstudio.club:443",
+            LanAddress.normalize(
+                "https://52e4812a33304229ab6ddc1d50865c1e--8188.ap-shanghai2.cloudstudio.club\ncloudstudio.net",
+            ),
+        )
+        // \r\n 与首尾空白同样要容忍。
+        assertEquals("http://192.168.10.109:8188", LanAddress.normalize("  192.168.10.109  \r\n "))
+        assertEquals("http://comfy.example.com:8188", LanAddress.normalize("comfy.example.com\r\n随便写点什么"))
+        // 纯空白输入仍然拒绝。
+        assertTrue(runCatching { LanAddress.normalize("  \n  ") }.isFailure)
+    }
+
     @Test fun createsCompleteSlash24Subnet() {
         val addresses = LanAddress.subnet24("192.168.7.20")
         assertEquals(254, addresses.size)
