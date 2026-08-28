@@ -78,6 +78,21 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+      - name: 上报编译错误到 Issue（诊断）
+        if: ${{ failure() }}
+        run: |
+          {
+            echo "构建失败于分支 ${{ github.ref_name }} · $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo "run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo '```'
+            tail -c 8000 /tmp/gradle-debug.log 2>/dev/null || true
+            tail -c 2000 /tmp/gradle-release.log 2>/dev/null || true
+            echo '```'
+          } > /tmp/issue_body.txt
+          gh issue create --title "CI 构建失败诊断" --body-file /tmp/issue_body.txt || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: 上传构建产物
         # artifact 上传失败不应阻塞 Release 发布（Release 直接上传 APK，不依赖此步骤）
         continue-on-error: true
