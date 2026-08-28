@@ -38,7 +38,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: 构建 Debug APK
-        run: ./gradlew :app:assembleDebug --stacktrace
+        run: ./gradlew :app:assembleDebug --stacktrace 2>&1 | tee /tmp/gradle-debug.log
 
       - name: 生成临时签名密钥
         # 项目要求签名配置必须位于仓库外，否则 release 任务直接失败
@@ -60,7 +60,18 @@ jobs:
           EOF
 
       - name: 构建 Release APK
-        run: ./gradlew :app:assembleRelease --stacktrace
+        run: ./gradlew :app:assembleRelease --stacktrace 2>&1 | tee /tmp/gradle-release.log
+
+      - name: 上传 Gradle 日志（失败诊断用）
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-logs
+          path: |
+            /tmp/gradle-debug.log
+            /tmp/gradle-release.log
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
