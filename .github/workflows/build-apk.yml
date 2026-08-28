@@ -85,10 +85,10 @@ jobs:
             {
               echo "构建失败于分支 ${{ github.ref_name }} · $(date -u '+%Y-%m-%d %H:%M UTC')"
               echo "run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-              echo '```'
-              tail -c 12000 /tmp/gradle-debug.log 2>/dev/null || true
-              tail -c 3000 /tmp/gradle-release.log 2>/dev/null || true
-              echo '```'
+              echo '== Kotlin/编译错误行 =='
+              grep -aE "^e: |FAILED|What went wrong|Caused by:|Execution failed|OutOfMemory|Killed|error:" /tmp/gradle-debug.log 2>/dev/null | head -80
+              echo '== 前 60 行 =='
+              head -60 /tmp/gradle-debug.log 2>/dev/null
             } > /tmp/error_body.txt
             gh api -X PUT "/repos/${{ github.repository }}/contents/build-errors-${{ github.run_id }}.log" \
               -f "message=ci: 记录构建错误 [skip ci]" \
