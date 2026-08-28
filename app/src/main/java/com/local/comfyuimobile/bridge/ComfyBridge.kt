@@ -8,6 +8,7 @@ import android.net.Uri
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.HttpAuthHandler
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -23,6 +24,7 @@ import com.local.comfyuimobile.model.ParameterSection
 import com.local.comfyuimobile.model.WorkflowConnectionMarker
 import com.local.comfyuimobile.model.WorkflowManifest
 import com.local.comfyuimobile.model.WorkflowNode
+import com.local.comfyuimobile.network.LanAddress
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.delay
@@ -59,6 +61,8 @@ class ComfyBridge(private val activity: Activity) {
         private set
     var onWebViewRecreated: ((WebView) -> Unit)? = null
     @Volatile private var allowedOrigin: String = ""
+    // 反向代理登录凭据：WebView 不会沿用地址里的 user:pass@，需要在鉴权回调里补上。
+    @Volatile private var httpCredentials: Pair<String, String>? = null
     @Volatile private var pageLoadError: String? = null
     @Volatile private var lastBridgePhase: String = "尚未执行前端脚本"
     @Volatile private var rendererEpoch: Int = 0
@@ -127,7 +131,9 @@ class ComfyBridge(private val activity: Activity) {
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val target = request.url.toString()
-                if (target.startsWith(allowedOrigin)) return false
+                // 必须是同源（scheme+host+port）才留在特权 WebView 里，
+                // 前缀匹配会让 http://host:8188.attacker.tld 这类地址蒙混过关。
+                if (LanAddress.isSameOrigin(allowedOrigin, target)) return false
                 runCatching { activity.startActivity(Intent(Intent.ACTION_VIEW, request.url)) }
                 return true
             }
@@ -142,6 +148,18 @@ class ComfyBridge(private val activity: Activity) {
                 if (request.isForMainFrame) {
                     pageLoadError = "网页返回错误 ${errorResponse.statusCode}：${errorResponse.reasonPhrase}"
                 }
+            }
+
+            override fun onReceivedHttpAuthRequest(view: WebView, handler: HttpAuthHandler, host: String, realm: String) {
+                val credentials = httpCredentials
+                // displayHost 已经去掉端口并保留 IPv6 方括号，这里不能再按 ':' 截断，
+                // 否则 [::1] 会被切成 "[" 而永远匹配不上。系统回传的 host 可能带端口，需要去掉。
+                val expectedHost = LanAddress.displayHost(allowedOrigin)
+                if (credentials != null && host.substringBefore(':').equals(expectedHost, ignoreCase = true)) {
+                    handler.proceed(credentials.first, credentials.second)
+                    return
+                }
+                super.onReceivedHttpAuthRequest(view, handler, host, realm)
             }
 
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
@@ -174,7 +192,10 @@ class ComfyBridge(private val activity: Activity) {
     }
 
     suspend fun loadServer(baseUrl: String, timeoutMillis: Long = 45_000L) {
-        val origin = baseUrl.trimEnd('/')
+        // 地址里可能带 user:pass@（云端反向代理登录）。WebView 对 URL 内嵌凭据支持不稳定，
+        // 所以这里加载剥掉凭据的地址，凭据改由 onReceivedHttpAuthRequest 补上。
+        val origin = LanAddress.withoutCredentials(baseUrl.trimEnd('/'))
+        httpCredentials = LanAddress.credentials(baseUrl)
         withContext(Dispatchers.Main.immediate) {
             allowedOrigin = origin
             pageLoadError = null
@@ -1652,7 +1673,9 @@ class ComfyBridge(private val activity: Activity) {
             attached: Boolean,
         ): Boolean =
             allowedOrigin.isNotBlank() && currentUrl != "about:blank" &&
-                currentUrl.startsWith(allowedOrigin) && progress >= 100 &&
+                // 同源校验，不能退化为 startsWith 前缀匹配，否则伪装的页面会被判定为就绪，
+                // 后续的 loadGraphData / graphToPrompt 就会执行在它上面。
+                LanAddress.isSameOrigin(allowedOrigin, currentUrl) && progress >= 100 &&
                 pageEpoch == finishedPageEpoch && attached
 
         private val READY_SCRIPT = """

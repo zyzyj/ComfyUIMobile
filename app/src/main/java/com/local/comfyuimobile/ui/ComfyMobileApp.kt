@@ -22,6 +22,7 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -163,6 +164,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.local.comfyuimobile.MainViewModel
+import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.AdvancedEditorActivity
 import com.local.comfyuimobile.bridge.ComfyBridge
 import com.local.comfyuimobile.bridge.FieldValidator
@@ -289,13 +291,19 @@ private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar
         ) {
             Icon(Icons.Default.Wifi, null, Modifier.size(56.dp), tint = MaterialTheme.colorScheme.primary)
             Text("ComfyUI 手机端", style = MaterialTheme.typography.headlineMedium)
-            Text("连接你信任的 ComfyUI 服务器。支持局域网、VPN 和手动填写的其他 HTTP 地址。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "连接你信任的 ComfyUI 服务器。支持局域网、VPN、公网 HTTPS 地址，" +
+                    "以及带登录的反向代理（https://用户名:密码@域名）。",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             OutlinedTextField(
-                value = state.serverInput,
+                // 状态里存的是完整地址（可能含 user:pass@），这里只展示脱敏后的部分，
+                // 避免明文密码显示在输入框里。
+                value = LanAddress.withoutCredentials(state.serverInput),
                 onValueChange = viewModel::setServerInput,
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("ComfyUI 地址") },
-                placeholder = { Text("http://192.168.10.109:8188") },
+                placeholder = { Text("http://192.168.1.10:8188 或 https://comfy.example.com") },
                 singleLine = true,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -318,12 +326,23 @@ private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar
             if (state.savedServers.isNotEmpty()) {
                 Text("已保存", style = MaterialTheme.typography.titleMedium)
                 state.savedServers.forEach { profile ->
-                    ServerCard(profile, onClick = { viewModel.setServerInput(profile.baseUrl); viewModel.connect(profile.baseUrl) }, onDelete = { viewModel.removeServer(profile.baseUrl) })
+                    ServerCard(
+                        profile,
+                        onClick = {
+                            // 完整地址（含凭据）进状态，重连才不会丢登录信息；
+                            // 明文密码由输入框和卡片在显示时统一脱敏。
+                            viewModel.setServerInput(profile.baseUrl)
+                            viewModel.connect(profile.baseUrl)
+                        },
+                        onDelete = { viewModel.removeServer(profile.baseUrl) },
+                    )
                 }
             }
             if (state.discoveredServers.isNotEmpty()) {
                 Text("扫描结果", style = MaterialTheme.typography.titleMedium)
-                state.discoveredServers.forEach { profile -> ServerCard(profile, onClick = { viewModel.setServerInput(profile.baseUrl); viewModel.connect(profile.baseUrl) }) }
+                state.discoveredServers.forEach { profile ->
+                    ServerCard(profile, onClick = { viewModel.setServerInput(profile.baseUrl); viewModel.connect(profile.baseUrl) })
+                }
             }
             Text("电脑端需要使用 --listen 0.0.0.0 启动，并允许 Windows 防火墙放行 8188 端口。", style = MaterialTheme.typography.bodySmall)
         }
@@ -384,7 +403,8 @@ private fun ServerCard(profile: ServerProfile, onClick: () -> Unit, onDelete: ((
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(profile.name, style = MaterialTheme.typography.titleSmall)
-                Text(profile.baseUrl, style = MaterialTheme.typography.bodySmall)
+                // 卡片上不展示明文密码，只显示去掉凭据后的地址。
+                Text(LanAddress.withoutCredentials(profile.baseUrl), style = MaterialTheme.typography.bodySmall)
             }
             Text(profile.comfyVersion, style = MaterialTheme.typography.labelSmall)
             if (onDelete != null) IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "删除服务器") }
@@ -474,7 +494,15 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                 MainPage.TASKS -> TaskScreen(state, viewModel)
             }
             if (state.loading || state.generating) {
-                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.22f)), contentAlignment = Alignment.Center) {
+                // 必须消费掉点击事件，否则遮罩期间的触摸会穿透到底层列表，
+                // 触发选中/删除工作流等误操作。
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.22f))
+                        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { },
+                    contentAlignment = Alignment.Center,
+                ) {
                     CircularProgressIndicator()
                 }
             }

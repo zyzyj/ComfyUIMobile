@@ -21,11 +21,71 @@ class LanAddressTest {
         assertTrue(LanAddress.isTrustedHost("vpn-comfy.example"))
     }
 
-    @Test fun rejectsHttpsAndMalformedAddresses() {
-        listOf("https://192.168.1.2:8188", "http://", "not a valid host").forEach { value ->
+    @Test fun acceptsHttpsForRemoteServers() {
+        assertEquals("https://192.168.1.2:8188", LanAddress.normalize("https://192.168.1.2:8188"))
+        assertEquals("https://comfy.example.com:443", LanAddress.normalize("https://comfy.example.com"))
+        assertEquals("https://comfy.example.com:18188", LanAddress.normalize("https://comfy.example.com:18188/"))
+        assertEquals("https://8.8.8.8:443", LanAddress.normalize("HTTPS://8.8.8.8"))
+    }
+
+    @Test fun rejectsUnsupportedSchemesAndMalformedAddresses() {
+        listOf("ftp://192.168.1.2:8188", "http://", "not a valid host").forEach { value ->
             assertTrue(runCatching { LanAddress.normalize(value) }.isFailure)
         }
         assertFalse(LanAddress.isTrustedHost(""))
+    }
+
+    @Test fun keepsReverseProxyCredentials() {
+        assertEquals(
+            "https://user:pass@comfy.example.com:443",
+            LanAddress.normalize("https://user:pass@comfy.example.com"),
+        )
+        assertEquals("user" to "pass", LanAddress.credentials("https://user:pass@comfy.example.com"))
+        assertEquals("user" to "p@ss", LanAddress.credentials("https://user:p%40ss@comfy.example.com"))
+    }
+
+    @Test fun stripsCredentialsForDisplayAndWebView() {
+        val withCredentials = "https://user:pass@comfy.example.com:8443"
+        assertEquals("https://comfy.example.com:8443", LanAddress.withoutCredentials(withCredentials))
+        assertEquals("comfy.example.com", LanAddress.displayHost(withCredentials))
+        // 没有凭据时保持原样，不影响现有的本地地址。
+        assertEquals("http://192.168.10.109:8188", LanAddress.withoutCredentials("http://192.168.10.109:8188"))
+        assertEquals("192.168.10.109", LanAddress.displayHost("http://192.168.10.109:8188"))
+    }
+
+    @Test fun keepsSubPathForReverseProxiedServers() {
+        assertEquals("https://comfy.example.com:443/comfyui", LanAddress.normalize("https://comfy.example.com/comfyui"))
+        assertEquals("https://comfy.example.com:443/comfyui", LanAddress.normalize("https://comfy.example.com/comfyui/"))
+        // 查询串与锚点对 base URL 没有意义，应当丢弃。
+        assertEquals("http://192.168.1.10:8188", LanAddress.normalize("http://192.168.1.10:8188/?foo=bar#x"))
+        // 归一化必须幂等。
+        val once = LanAddress.normalize("https://user:pass@comfy.example.com/comfyui")
+        assertEquals(once, LanAddress.normalize(once))
+    }
+
+    @Test fun doesNotMangleUrlContainingAtSign() {
+        // 凭据只可能出现在 authority 段，路径/查询里的 @ 不能被当成凭据分隔符。
+        assertEquals("http://host:8188/path?x=a@b", LanAddress.withoutCredentials("http://host:8188/path?x=a@b"))
+        assertEquals("host", LanAddress.displayHost("http://host:8188/path?x=a@b"))
+    }
+
+    @Test fun comparesOriginBySchemeHostAndPort() {
+        val base = "http://192.168.1.10:8188"
+        assertTrue(LanAddress.isSameOrigin(base, "http://192.168.1.10:8188/any/path"))
+        assertTrue(LanAddress.isSameOrigin("https://comfy.example.com:443", "https://comfy.example.com/"))
+        // 前缀相同但主机不同，必须判为不同源（startsWith 会在这里被骗过）。
+        assertFalse(LanAddress.isSameOrigin(base, "http://192.168.1.10:8188.attacker.tld/x"))
+        assertFalse(LanAddress.isSameOrigin(base, "http://192.168.1.11:8188/"))
+        assertFalse(LanAddress.isSameOrigin("https://a.com:443", "http://a.com:80/"))
+        assertFalse(LanAddress.isSameOrigin(base, "about:blank"))
+    }
+
+    @Test fun handlesIpv6Hosts() {
+        assertEquals("http://[::1]:8188", LanAddress.normalize("[::1]"))
+        assertEquals("https://[2001:db8::1]:443", LanAddress.normalize("https://[2001:db8::1]"))
+        // 地址内部的冒号不能被当成端口分隔符。
+        assertEquals("[::1]", LanAddress.displayHost("http://[::1]:8188"))
+        assertEquals("[2001:db8::1]", LanAddress.displayHost("https://user:pass@[2001:db8::1]:443"))
     }
 
     @Test fun createsCompleteSlash24Subnet() {

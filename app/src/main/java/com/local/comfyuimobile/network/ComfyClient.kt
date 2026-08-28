@@ -37,7 +37,8 @@ class PromptSubmissionException(
 class ComfyClient {
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
     private val client = OkHttpClient.Builder()
-        .connectTimeout(4, TimeUnit.SECONDS)
+        // 云端 / 公网服务器握手明显慢于局域网，4 秒会误判为不可达，放宽到 15 秒。
+        .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .pingInterval(20, TimeUnit.SECONDS)
@@ -56,7 +57,7 @@ class ComfyClient {
         val normalized = LanAddress.normalize(url)
         val root = executeJson(Request.Builder().url("$normalized/system_stats").get().build())
         val stats = parseSystemStats(root)
-        val host = normalized.removePrefix("http://").substringBefore(':')
+        val host = LanAddress.displayHost(normalized)
         stats to ServerProfile(
             id = UUID.nameUUIDFromBytes(normalized.toByteArray()).toString(),
             name = host,
@@ -261,7 +262,13 @@ class ComfyClient {
 
     fun openWebSocket(clientId: String, onMessage: (JSONObject) -> Unit, onFailure: (Throwable) -> Unit, onOpen: () -> Unit) {
         closeWebSocket()
-        val request = Request.Builder().url(baseUrl.replaceFirst("http://", "ws://") + "/ws?clientId=${encode(clientId)}").build()
+        // 判断忽略大小写、截取也必须忽略大小写，否则 HTTPS:// 会拼出 wssHTTPS:// 这种非法地址。
+        val wsBase = when {
+            baseUrl.startsWith("https", ignoreCase = true) -> "wss" + baseUrl.substring("https".length)
+            baseUrl.startsWith("http", ignoreCase = true) -> "ws" + baseUrl.substring("http".length)
+            else -> baseUrl
+        }
+        val request = Request.Builder().url("$wsBase/ws?clientId=${encode(clientId)}").build()
         socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) = onOpen()
             override fun onMessage(webSocket: WebSocket, text: String) {

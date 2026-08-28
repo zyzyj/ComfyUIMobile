@@ -167,7 +167,8 @@ data class AppUiState(
     val connectionMessage: String = "尚未连接",
     val connectionStep: Int = 0,
     val connectionTotalSteps: Int = 6,
-    val serverInput: String = "http://192.168.10.109:8188",
+    // 留空以便显示输入框的提示语；这里原先硬编码了开发者的内网地址，属于无谓的信息泄漏。
+    val serverInput: String = "",
     val activeServer: ServerProfile? = null,
     val savedServers: List<ServerProfile> = emptyList(),
     val discoveredServers: List<ServerProfile> = emptyList(),

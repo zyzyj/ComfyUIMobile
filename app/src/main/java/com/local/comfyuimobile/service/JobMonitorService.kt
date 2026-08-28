@@ -36,7 +36,9 @@ import java.util.concurrent.ConcurrentHashMap
 
 class JobMonitorService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val client = OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build()
+    // 与 ComfyClient 保持一致：公网/云端服务器握手可能超过 5 秒，
+    // 太短会让后台轮询在服务器可达的情况下持续假失败。
+    private val client = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     private val monitors = ConcurrentHashMap<String, Job>()
     private val workflowNames = ConcurrentHashMap<String, String>()
     private val workflowPaths = ConcurrentHashMap<String, String>()

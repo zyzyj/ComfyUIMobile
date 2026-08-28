@@ -245,7 +245,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun connect(address: String = state.value.serverInput) {
-        AppLogger.info("请求连接服务器：$address")
+        // 地址里可能带 user:pass@，日志会被导出，这里只记录脱敏后的地址。
+        AppLogger.info("请求连接服务器：${LanAddress.withoutCredentials(address)}")
         persistCurrentWorkflowDraft()
         reconnectJob?.cancel()
         client.closeWebSocket()
@@ -264,6 +265,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 val normalized = LanAddress.normalize(address)
+                // 状态里保留完整地址（可能含凭据），重连时才能继续带上登录信息；
+                // 明文密码的屏蔽统一由界面层显示时处理。
                 _state.update { it.copy(serverInput = normalized) }
                 client.setServer(normalized)
 
