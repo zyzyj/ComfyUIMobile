@@ -78,18 +78,22 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-      - name: 上报编译错误到 Issue（诊断）
+      - name: 上报编译错误到仓库文件（诊断）
         if: ${{ failure() }}
         run: |
-          {
-            echo "构建失败于分支 ${{ github.ref_name }} · $(date -u '+%Y-%m-%d %H:%M UTC')"
-            echo "run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            echo '```'
-            tail -c 8000 /tmp/gradle-debug.log 2>/dev/null || true
-            tail -c 2000 /tmp/gradle-release.log 2>/dev/null || true
-            echo '```'
-          } > /tmp/issue_body.txt
-          gh issue create --title "CI 构建失败诊断" --body-file /tmp/issue_body.txt || true
+          if [ -s /tmp/gradle-debug.log ] || [ -s /tmp/gradle-release.log ]; then
+            {
+              echo "构建失败于分支 ${{ github.ref_name }} · $(date -u '+%Y-%m-%d %H:%M UTC')"
+              echo "run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              echo '```'
+              tail -c 12000 /tmp/gradle-debug.log 2>/dev/null || true
+              tail -c 3000 /tmp/gradle-release.log 2>/dev/null || true
+              echo '```'
+            } > /tmp/error_body.txt
+            gh api -X PUT "/repos/${{ github.repository }}/contents/build-errors-${{ github.run_id }}.log" \
+              -f "message=ci: 记录构建错误 [skip ci]" \
+              -f "content=$(base64 -w0 /tmp/error_body.txt)" || true
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
