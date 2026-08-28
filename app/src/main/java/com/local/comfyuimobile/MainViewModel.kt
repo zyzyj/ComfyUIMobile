@@ -66,6 +66,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -724,6 +725,125 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setSaveFolder(uri: Uri?) {
         _state.update { it.copy(saveFolderUri = uri?.toString()) }
         viewModelScope.launch { preferences.setSaveFolderUri(uri?.toString().orEmpty()) }
+    }
+
+    fun quickSelectWorkflow(entry: WorkflowEntry) {
+        if (entry.isDirectory) return
+        AppLogger.info("快捷生图选择工作流：${entry.path}")
+        viewModelScope.launch {
+            runOperation("快捷工作流加载失败") {
+                _state.update { it.copy(loading = true, error = null) }
+                val serverUrl = _state.value.activeServer?.baseUrl ?: error("尚未连接 ComfyUI 服务器")
+                val raw = client.readWorkflow(entry.path)
+                val manifest = bridgeOperationMutex.withLock {
+                    (bridge ?: error("前端桥接不可用")).loadWorkflow(rawJson = raw, workflowPath = entry.path)
+                }
+                val enabledKeys = preferences.settings.first().quickEnabledParamsByWorkflow[entry.path].orEmpty()
+                _state.update {
+                    it.copy(
+                        quickWorkflowPath = entry.path,
+                        quickWorkflowName = entry.name,
+                        quickFields = manifest.fields,
+                        quickEnabledParams = enabledKeys.filter { key -> manifest.fields.any { it.key == key } },
+                        notice = "已加载快捷工作流：${entry.name}",
+                    )
+                }
+            }
+        }
+    }
+
+    /** 快捷生图页：更新某个参数的值（仅记录用户改动，未改动的保持工作流原值）。 */
+    fun quickUpdateField(key: String, value: String) {
+        _state.update { st ->
+            st.copy(quickFields = st.quickFields.map { field ->
+                if (field.key == key) field.copy(
+                    valueJson = valueJson(field.kind, value),
+                    displayValue = value,
+                ) else field
+            })
+        }
+    }
+
+    /** 快捷生图页：勾选/取消某个 DIY 参数，持久化到该工作流的配置。 */
+    fun quickToggleParam(key: String) {
+        val path = _state.value.quickWorkflowPath ?: return
+        val updated = _state.value.quickEnabledParams.toMutableList().apply {
+            if (contains(key)) remove(key) else add(key)
+        }
+        _state.update { it.copy(quickEnabledParams = updated) }
+        viewModelScope.launch { preferences.saveQuickEnabledParams(path, updated) }
+    }
+
+    /** 快捷生图页：按用户改过的参数 + 批量数量直接提交生成。 */
+    fun quickGenerate() {
+        if (
+            _state.value.generating || _state.value.loading ||
+            generationJob?.isActive == true || workflowSaveJob?.isActive == true
+        ) return
+        val workflowPath = _state.value.quickWorkflowPath ?: return
+        val workflowName = _state.value.quickWorkflowName ?: return
+        val fields = _state.value.quickFields
+        if (fields.isEmpty()) return
+        AppLogger.info("快捷生图提交：$workflowPath，参数 ${fields.size} 项，批量 ${_state.value.batchCount}")
+        _state.update {
+            it.copy(
+                generating = true,
+                error = null,
+                currentExecutingNodeId = null,
+                generationProgress = null,
+                generationMessage = "正在整理快捷生图参数",
+            )
+        }
+        generationJob = viewModelScope.launch {
+            runOperation("提交生成失败") {
+                val generated = bridgeOperationMutex.withLock {
+                    ensureBridgeReadyForQuick()
+                    (bridge ?: error("前端桥接不可用")).buildPrompt(fields, _state.value.batchCount)
+                }
+                val response = try {
+                    client.queuePrompt(
+                        generated.promptJson,
+                        generated.workflowJson,
+                        clientId,
+                        workflowPath,
+                        workflowName,
+                    )
+                } catch (error: PromptSubmissionException) {
+                    _state.update { it.copy(nodeProblems = error.nodeProblems) }
+                    throw error
+                }
+                awaitingQueueJobIds.add(response.promptId)
+                val submitted = _state.value.submittedJobIds + response.promptId
+                preferences.saveSubmittedJobs(submitted)
+                _state.update {
+                    it.copy(
+                        submittedJobIds = submitted,
+                        generating = false,
+                        nodeProblems = emptyMap(),
+                        activeJobId = response.promptId,
+                        currentExecutingNodeId = null,
+                        generationProgress = 0f,
+                        generationMessage = "已经加入队列，等待服务器执行",
+                        notice = "已加入队列：${response.promptId.take(8)}",
+                    )
+                }
+                startMonitor(response.promptId, workflowName, workflowPath)
+                refreshTasksInternal()
+            }
+        }.also { job ->
+            job.invokeOnCompletion { if (generationJob === job) generationJob = null }
+        }
+    }
+
+    private suspend fun ensureBridgeReadyForQuick() {
+        // 参数页可能在快捷页之后加载了别的工作流，桥接画布因此指向了别的图；
+        // 快捷生成前必须确保桥接侧就是快捷页选中的工作流，否则参数会写错图。
+        val path = _state.value.quickWorkflowPath ?: return
+        if (bridgeLoadedPath != path) {
+            val raw = client.readWorkflow(path)
+            (bridge ?: error("前端桥接不可用")).loadWorkflow(rawJson = raw, workflowPath = path)
+            bridgeLoadedPath = path
+        }
     }
 
     fun generate() {

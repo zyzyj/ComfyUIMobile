@@ -28,6 +28,7 @@ data class StoredSettings(
     val cacheClearedAt: Long = 0L,
     val favoriteResultKeys: Set<String> = emptySet(),
     val saveFolderUri: String = "",
+    val quickEnabledParamsByWorkflow: Map<String, List<String>> = emptyMap(),
 )
 
 class AppPreferences(private val context: Context) {
@@ -45,6 +46,7 @@ class AppPreferences(private val context: Context) {
         val cacheClearedAt = longPreferencesKey("cache_cleared_at")
         val favoriteResultKeys = stringPreferencesKey("favorite_result_keys")
         val saveFolderUri = stringPreferencesKey("save_folder_uri")
+        val quickEnabledParams = stringPreferencesKey("quick_enabled_params")
     }
 
     val settings: Flow<StoredSettings> = context.dataStore.data.map { preferences ->
@@ -63,6 +65,7 @@ class AppPreferences(private val context: Context) {
             cacheClearedAt = preferences[Keys.cacheClearedAt] ?: 0L,
             favoriteResultKeys = decodeStrings(preferences[Keys.favoriteResultKeys].orEmpty()).toSet(),
             saveFolderUri = preferences[Keys.saveFolderUri].orEmpty(),
+            quickEnabledParamsByWorkflow = decodeQuickParams(preferences[Keys.quickEnabledParams].orEmpty()),
         )
     }
 
@@ -157,6 +160,34 @@ class AppPreferences(private val context: Context) {
     suspend fun setSaveFolderUri(uri: String) {
         context.dataStore.edit { it[Keys.saveFolderUri] = uri }
     }
+
+    suspend fun saveQuickEnabledParams(workflowPath: String, keys: List<String>) {
+        context.dataStore.edit { preferences ->
+            val current = decodeQuickParams(preferences[Keys.quickEnabledParams].orEmpty())
+            val updated = current + (workflowPath to keys.filter(String::isNotBlank).distinct())
+            preferences[Keys.quickEnabledParams] = encodeQuickParams(updated)
+        }
+    }
+
+    private fun decodeQuickParams(raw: String): Map<String, List<String>> = runCatching {
+        val array = JSONArray(raw.ifBlank { "[]" })
+        buildMap {
+            repeat(array.length()) { index ->
+                val item = array.getJSONObject(index)
+                val path = item.optString("path")
+                if (path.isNotBlank()) {
+                    val keys = item.optJSONArray("keys") ?: JSONArray()
+                    put(path, List(keys.length()) { keys.optString(it) }.filter(String::isNotBlank))
+                }
+            }
+        }
+    }.getOrDefault(emptyMap())
+
+    private fun encodeQuickParams(map: Map<String, List<String>>): String = JSONArray().apply {
+        map.forEach { (path, keys) ->
+            put(JSONObject().put("path", path).put("keys", JSONArray(keys.take(200))))
+        }
+    }.toString()
 
     private fun decodeProfiles(raw: String): List<ServerProfile> = runCatching {
         val array = JSONArray(raw.ifBlank { "[]" })

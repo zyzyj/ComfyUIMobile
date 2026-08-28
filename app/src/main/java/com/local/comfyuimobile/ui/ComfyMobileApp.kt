@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
 import android.provider.OpenableColumns
+import android.view.ViewGroup
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -36,11 +37,17 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -59,6 +66,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronLeft
@@ -203,6 +211,7 @@ private enum class MainPage(val label: String, val icon: ImageVector) {
     PARAMETERS("参数", Icons.Default.Tune),
     RESULTS("结果", Icons.Default.Image),
     TASKS("任务", Icons.AutoMirrored.Filled.List),
+    QUICK("快捷", Icons.Default.Bolt),
 }
 
 private enum class ResultLayout { ALL, ALBUMS }
@@ -452,6 +461,9 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                 },
                 navigationIcon = { Icon(Icons.Default.Wifi, null, Modifier.padding(start = 12.dp), tint = MaterialTheme.colorScheme.secondary) },
                 actions = {
+                    IconButton(onClick = viewModel::disconnect) {
+                        Icon(Icons.Default.SwapHoriz, "切换服务器")
+                    }
                     IconButton(onClick = viewModel::refreshOrReconnect) {
                         Icon(
                             Icons.Default.Refresh,
@@ -494,6 +506,7 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                     onSelectedAlbumChange = { resultAlbumId = it },
                 )
                 MainPage.TASKS -> TaskScreen(state, viewModel)
+                MainPage.QUICK -> QuickGenScreen(state, viewModel)
             }
             if (state.loading || state.generating) {
                 // 必须消费掉点击事件，否则遮罩期间的触摸会穿透到底层列表，
@@ -1774,6 +1787,15 @@ private fun ImageGalleryViewer(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
     ) {
+        // 全屏约束：Dialog 默认高度是 wrap_content，内容超出窗口会把底部操作栏
+        // 挤出屏幕。这里强制窗口铺满整个屏幕。
+        val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
+        LaunchedEffect(dialogWindow) {
+            dialogWindow?.setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+        }
         Surface(Modifier.fillMaxSize(), color = Color.Black) {
             GallerySystemBars(chromeVisible)
             Box(Modifier.fillMaxSize()) {
@@ -1832,6 +1854,7 @@ private fun ImageGalleryViewer(
                     Row(
                         Modifier.fillMaxWidth().align(Alignment.BottomCenter)
                             .background(Color.Black.copy(alpha = 0.68f)).navigationBarsPadding()
+                            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
                             .padding(horizontal = 4.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -2069,6 +2092,236 @@ private fun TaskScreen(state: AppUiState, viewModel: MainViewModel) {
     }
 }
 
+/**
+ * 快捷生图页：选一个工作流 → 只填提示词（每个文本节点一个框）→
+ * 可从工作流节点参数里自由挑选想调节的参数 → 批量出图。
+ */
+@Composable
+private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
+    var showWorkflowPicker by remember { mutableStateOf(false) }
+    var showParamPicker by remember { mutableStateOf(false) }
+    val quickFields = state.quickFields
+    val textFields = quickFields.filter { it.kind == ParameterKind.MULTILINE }
+    val enabledKeys = state.quickEnabledParams.toSet()
+    val enabledFields = quickFields.filter { it.key in enabledKeys }
+    val addableFields = quickFields.filter { it.kind != ParameterKind.MULTILINE && it.key !in enabledKeys }
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text("快捷生图", style = MaterialTheme.typography.titleLarge)
+        Text(
+            "选一个工作流，只填提示词就能出图；下方可自由添加想调节的节点参数。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedButton(
+            onClick = { showWorkflowPicker = true },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(Icons.Default.Folder, null)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                state.quickWorkflowName ?: "选择工作流",
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+            )
+            Icon(Icons.Default.ExpandMore, null)
+        }
+        DropdownMenu(expanded = showWorkflowPicker, onDismissRequest = { showWorkflowPicker = false }) {
+            val candidates = state.workflows.filterNot { it.isDirectory }
+            if (candidates.isEmpty()) {
+                DropdownMenuItem(
+                    text = { Text("服务器上没有可用工作流，请先在工作流页上传") },
+                    onClick = { showWorkflowPicker = false },
+                )
+            } else {
+                candidates.forEach { entry ->
+                    DropdownMenuItem(
+                        text = { Text(entry.name, maxLines = 1) },
+                        onClick = {
+                            showWorkflowPicker = false
+                            viewModel.quickSelectWorkflow(entry)
+                        },
+                    )
+                }
+            }
+        }
+        if (quickFields.isEmpty()) {
+            EmptyState(Icons.Default.Bolt, "先选择工作流，再填写提示词")
+            return@Column
+        }
+
+        textFields.forEach { field ->
+            Text(
+                field.nodeTitle.ifBlank { field.nodeType },
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            OutlinedTextField(
+                value = field.displayValue,
+                onValueChange = { viewModel.quickUpdateField(field.key, it) },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 2,
+                label = { Text(field.label) },
+            )
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("出图数量", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            IconButton(
+                onClick = { if (state.batchCount > 1) viewModel.setBatchCount(state.batchCount - 1) },
+                enabled = !state.generating,
+            ) { Icon(Icons.Default.Remove, "减少出图数量") }
+            Text(
+                "${state.batchCount}",
+                modifier = Modifier.width(36.dp),
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            IconButton(
+                onClick = { if (state.batchCount < 16) viewModel.setBatchCount(state.batchCount + 1) },
+                enabled = !state.generating,
+            ) { Icon(Icons.Default.Add, "增加出图数量") }
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("自定义参数", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            TextButton(onClick = { showParamPicker = true }, enabled = addableFields.isNotEmpty()) {
+                Icon(Icons.Default.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("添加参数")
+            }
+        }
+        if (enabledFields.isEmpty()) {
+            Text(
+                if (addableFields.isEmpty()) "工作流没有可调节的节点参数" else "还没添加参数 —— 点「添加参数」从工作流里挑",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        enabledFields.forEach { field -> QuickParamRow(field, viewModel) }
+
+        if (showParamPicker) {
+            AlertDialog(
+                onDismissRequest = { showParamPicker = false },
+                title = { Text("添加可调节参数") },
+                text = {
+                    LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                        items(addableFields, key = { it.key }) { field ->
+                            Row(
+                                Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(field.label, maxLines = 1)
+                                    Text(
+                                        field.nodeTitle.ifBlank { field.nodeType },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                    )
+                                }
+                                IconButton(onClick = { viewModel.quickToggleParam(field.key) }) {
+                                    Icon(Icons.Default.Add, "添加")
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { showParamPicker = false }) { Text("完成") } },
+            )
+        }
+
+        Button(
+            onClick = viewModel::quickGenerate,
+            enabled = !state.generating && !state.loading && state.bridgeReady,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+        ) {
+            Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text(if (state.generating) "生成中…" else "快捷生成")
+        }
+        if (state.generating) {
+            state.generationProgress?.let { progress ->
+                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+            }
+            Text(state.generationMessage, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun QuickParamRow(field: ParameterField, viewModel: MainViewModel) {
+    val isSeed = field.name.contains("seed", ignoreCase = true)
+    when (field.kind) {
+        ParameterKind.COMBO -> {
+            var expanded by remember { mutableStateOf(false) }
+            Column {
+                Text("${field.nodeTitle.ifBlank { field.nodeType }} · ${field.label}", style = MaterialTheme.typography.labelMedium)
+                OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text(field.displayValue, modifier = Modifier.weight(1f), maxLines = 1)
+                    Icon(Icons.Default.ArrowDropDown, null)
+                }
+                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    field.options.forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(option) },
+                            onClick = {
+                                viewModel.quickUpdateField(field.key, option)
+                                expanded = false
+                            },
+                        )
+                    }
+                }
+            }
+        }
+        ParameterKind.BOOLEAN -> {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(field.label, modifier = Modifier.weight(1f))
+                Switch(
+                    field.displayValue.equals("true", ignoreCase = true),
+                    { viewModel.quickUpdateField(field.key, if (it) "true" else "false") },
+                )
+            }
+        }
+        ParameterKind.INTEGER, ParameterKind.DECIMAL -> {
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(field.label, modifier = Modifier.weight(1f))
+                    if (isSeed) {
+                        TextButton(onClick = { viewModel.quickUpdateField(field.key, Random.nextLong().absoluteValue.toString()) }) {
+                            Icon(Icons.Default.Refresh, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("随机")
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = field.displayValue,
+                    onValueChange = { newValue ->
+                        val valid = if (field.kind == ParameterKind.INTEGER) {
+                            newValue.isEmpty() || newValue.all { it.isDigit() || it == '-' }
+                        } else {
+                            newValue.isEmpty() || newValue.toDoubleOrNull() != null
+                        }
+                        if (valid) viewModel.quickUpdateField(field.key, newValue)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+        else -> {
+            // IMAGE / VIDEO / UNSUPPORTED 等：快捷页不提供编辑，保持工作流原值。
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(field.label, modifier = Modifier.weight(1f))
+                Text(
+                    "保持工作流原值",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun JobCard(job: JobSummary, viewModel: MainViewModel, tracked: Boolean) {
     val trackable = job.state in setOf(JobState.RUNNING, JobState.PENDING)
@@ -2183,6 +2436,9 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                 state.systemStats?.let { stats ->
                     Text("ComfyUI ${stats.comfyVersion} · 前端 ${stats.frontendVersion}")
                     stats.devices.forEach { Text("${it.name}\n显存 ${formatSize(it.vramFree)} / ${formatSize(it.vramTotal)} 可用") }
+                }
+                OutlinedButton(onClick = viewModel::disconnect, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.SwapHoriz, null); Spacer(Modifier.width(6.dp)); Text("切换服务器")
                 }
                 HorizontalDivider()
                 Text("图片保存位置", style = MaterialTheme.typography.titleSmall)
