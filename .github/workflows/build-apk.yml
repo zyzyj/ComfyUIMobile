@@ -38,7 +38,10 @@ jobs:
         run: chmod +x gradlew
 
       - name: 构建 Debug APK
-        run: ./gradlew :app:assembleDebug --stacktrace 2>&1 | tee /tmp/gradle-debug.log
+        # pipefail：让 Gradle 的失败退出码穿过 tee 管道，否则失败会被伪装成成功
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleDebug --stacktrace 2>&1 | tee /tmp/gradle-debug.log
 
       - name: 生成临时签名密钥
         # 项目要求签名配置必须位于仓库外，否则 release 任务直接失败
@@ -60,7 +63,9 @@ jobs:
           EOF
 
       - name: 构建 Release APK
-        run: ./gradlew :app:assembleRelease --stacktrace 2>&1 | tee /tmp/gradle-release.log
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleRelease --stacktrace 2>&1 | tee /tmp/gradle-release.log
 
       - name: 上传 Gradle 日志（失败诊断用）
         if: ${{ failure() }}
