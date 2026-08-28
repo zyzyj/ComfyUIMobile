@@ -563,7 +563,7 @@ class ComfyBridge(private val activity: Activity) {
         }
     }
 
-    suspend fun buildPrompt(fields: List<ParameterField>): GeneratedPrompt {
+    suspend fun buildPrompt(fields: List<ParameterField>, batchSize: Int = 1): GeneratedPrompt {
         awaitReady()
         lastBridgePhase = "准备参数，共 ${fields.size} 项"
         AppLogger.info("前端桥接：$lastBridgePhase")
@@ -618,6 +618,9 @@ class ComfyBridge(private val activity: Activity) {
                 "完整保留=${filterResult.keptFullPrompt}",
         )
         if (prompt.length() == 0) throw IllegalStateException("当前工作流没有可执行的输出链")
+        if (batchSize > 1 && !PromptBatch.inject(prompt, batchSize)) {
+            throw IllegalStateException("当前工作流没有可批量出图的节点（KSampler 或 EmptyLatentImage）")
+        }
         val workflow = root.getJSONObject("workflow")
         WorkflowPolicy.writeMobileLayout(workflow, fields)
         return GeneratedPrompt(prompt.toString(), workflow.toString())
@@ -916,7 +919,24 @@ class ComfyBridge(private val activity: Activity) {
             const app = window.__comfyMobileApp || window.comfyAPI?.app?.app;
             if (!app) return JSON.stringify({ok:false, error:'ComfyUI 前端对象尚未就绪'});
             const text = new TextDecoder().decode(Uint8Array.from(atob('$encodedWorkflow'), c => c.charCodeAt(0)));
-            const workflow = JSON.parse(text);
+            let workflow = JSON.parse(text);
+            // API（prompt）格式工作流：顶层是 {节点id:{class_type,inputs}}，没有 nodes 数组。
+            // 新版 ComfyUI 前端 loadGraphData 能自动转换；这里先尝试显式转换以兼容旧版前端。
+            const convertApiIfNeeded = async (graph) => {
+              if (!graph || typeof graph !== 'object' || Array.isArray(graph) || graph.nodes !== undefined) return graph;
+              const promptKeys = Object.keys(graph);
+              const looksLikePrompt = promptKeys.length > 0 && promptKeys.every(k => {
+                const v = graph[k];
+                return v && typeof v === 'object' && typeof v.class_type === 'string';
+              });
+              if (!looksLikePrompt) return graph;
+              try {
+                const mod = await import('/scripts/convertPromptToGraph.js');
+                if (typeof mod.convertPromptToGraph === 'function') return mod.convertPromptToGraph(graph, app);
+              } catch (_) { /* 旧版前端无此模块：交给 loadGraphData 内置逻辑处理 */ }
+              return graph;
+            };
+            workflow = await convertApiIfNeeded(workflow);
             let sourceWorkflow = workflow;
             const cloneValue = (value) => {
               if (value == null || typeof value !== 'object') return value;
@@ -951,6 +971,7 @@ class ComfyBridge(private val activity: Activity) {
                     return JSON.stringify({ok:false, error:'服务器工作流内容尚未加载：' + serverWorkflowPath});
                   }
                   sourceWorkflow = cloneValue(persistedWorkflow.activeState);
+                  sourceWorkflow = await convertApiIfNeeded(sourceWorkflow);
                   await app.loadGraphData(
                     sourceWorkflow,
                     true,
@@ -1276,7 +1297,15 @@ class ComfyBridge(private val activity: Activity) {
             }).filter(id => id && nodeById.has(id)))];
             const isOutputNode = (node) => {
               const data = node.constructor?.nodeData || node.nodeData || {};
-              return data.output_node === true || data.outputNode === true || /(?:Save|Preview|Output)/i.test(String(node.comfyClass || node.type || ''));
+              if (data.output_node === true || data.outputNode === true) return true;
+              const type = String(node.comfyClass || node.type || '');
+              if (/(?:Save|Preview|Output|Combine|Export|Send|Show|Display|Video|VHS|GIF|Webcam|Feeder)/i.test(type)) return true;
+              // 末端节点兜底：有上游输入连线、没有任何输出连线，也视为输出候选。
+              // 解决 VHS_VideoCombine 等真实终端节点不匹配正则导致整条链参数消失的问题。
+              const hasInputLink = (node.inputs || []).some(input => input.link != null);
+              const hasOutputLink = (node.outputs || []).some(output =>
+                Array.isArray(output.links) ? output.links.length > 0 : (output.link != null));
+              return hasInputLink && !hasOutputLink;
             };
             const outputNodes = activeNodes.filter(node => isOutputNode(node) && (node.inputs || []).some(input => input.link != null));
             if (!outputNodes.length) return JSON.stringify({ok:false, code:'no_output_node', error:'当前工作流没有已连线的输出节点'});

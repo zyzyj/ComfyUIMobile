@@ -23,6 +23,15 @@ class FieldValidatorTest {
         assertTrue(FieldValidator.problems(listOf(field("steps", ParameterKind.INTEGER, "x", linked = true))).isEmpty())
     }
 
+    @Test fun skipsEmptyNumericFieldsInsteadOfFailing() {
+        // 空值表示沿用默认值，不应报"不是有效数字"。
+        assertTrue(FieldValidator.problems(listOf(field("steps", ParameterKind.INTEGER, ""))).isEmpty())
+        assertTrue(FieldValidator.problems(listOf(field("cfg", ParameterKind.DECIMAL, ""))).isEmpty())
+        // 非空但非法的仍然报错。
+        assertEquals(1, FieldValidator.problems(listOf(field("steps", ParameterKind.INTEGER, "x"))).size)
+        assertEquals(1, FieldValidator.problems(listOf(field("cfg", ParameterKind.DECIMAL, "abc"))).size)
+    }
+
     private fun field(
         name: String,
         kind: ParameterKind,

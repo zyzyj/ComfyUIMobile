@@ -12,17 +12,32 @@ object WorkflowPolicy {
         serverModified != null && abs(serverModified - loadedModified) > 0.001
 
     /**
-     * Extracts the (node id -> type) map of a canvas workflow JSON. Value-level
-     * parameter edits keep this map identical; loading another workflow's JSON
-     * replaces it almost entirely.
+     * Extracts the (node id -> type) map of a workflow JSON. Both the canvas
+     * format ({nodes:[...]}) and the API prompt format ({id:{class_type,...}})
+     * are supported; otherwise returns null.
      */
     fun workflowNodeSignature(workflowJson: String): Map<String, String>? = runCatching {
         val root = JSONObject(workflowJson)
-        val nodes = root.optJSONArray("nodes") ?: return null
-        buildMap {
-            repeat(nodes.length()) { index ->
-                val node = nodes.getJSONObject(index)
-                put(node.optString("id"), node.optString("type"))
+        val nodes = root.optJSONArray("nodes")
+        if (nodes != null) {
+            buildMap {
+                repeat(nodes.length()) { index ->
+                    val node = nodes.getJSONObject(index)
+                    put(node.optString("id"), node.optString("type"))
+                }
+            }
+        } else {
+            // API prompt 格式：{ "3": {"class_type":"KSampler", ...}, ... }
+            val keys = root.keys()
+            if (!keys.hasNext()) return null
+            buildMap {
+                while (keys.hasNext()) {
+                    val id = keys.next()
+                    val entry = root.optJSONObject(id) ?: continue
+                    val classType = entry.optString("class_type")
+                    if (classType.isBlank()) return null
+                    put(id, classType)
+                }
             }
         }
     }.getOrNull()

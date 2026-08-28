@@ -31,6 +31,24 @@ class ParameterClassifierTest {
         )
     }
 
+    @Test fun classifiesStringDataTypeEvenWhenValueIsNotAString() {
+        // dataType=STRING 且当前值为 null/数字时，也应归为文本而不是 UNSUPPORTED。
+        assertEquals(
+            ParameterKind.TEXT,
+            ParameterClassifier.kind(
+                nodeType = "Node", name = "title", widgetType = "text",
+                value = null, options = emptyList(), dataType = "STRING",
+            ),
+        )
+        assertEquals(
+            ParameterKind.MULTILINE,
+            ParameterClassifier.kind(
+                nodeType = "Node", name = "text", widgetType = "customtext",
+                value = null, options = emptyList(), dataType = "STRING",
+            ),
+        )
+    }
+
     @Test fun putsPromptMediaAndSamplerFieldsInPrimarySection() {
         assertEquals(ParameterSection.PRIMARY, ParameterClassifier.section("CLIPTextEncode", "text", ParameterKind.MULTILINE))
         assertEquals(ParameterSection.PRIMARY, ParameterClassifier.section("KSampler", "control_after_generate", ParameterKind.COMBO))

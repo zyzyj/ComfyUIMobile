@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.os.Build
 import android.os.Environment
 import android.os.SystemClock
@@ -139,6 +140,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         cacheClearedAt = stored.cacheClearedAt,
                         favoriteResultKeys = stored.favoriteResultKeys,
                         recentWorkflowPaths = stored.recentWorkflows,
+                        saveFolderUri = stored.saveFolderUri.ifBlank { null },
                         serverInput = resolvedServerInput,
                     )
                 }
@@ -712,6 +714,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { preferences.removeServer(baseUrl) }
     }
 
+    fun setBatchCount(count: Int) {
+        val clamped = count.coerceIn(1, 16)
+        _state.update { it.copy(batchCount = clamped) }
+    }
+
+    /** 自定义图片保存目录：传 null 恢复默认（系统相册）。 */
+    fun setSaveFolder(uri: Uri?) {
+        _state.update { it.copy(saveFolderUri = uri?.toString()) }
+        viewModelScope.launch { preferences.setSaveFolderUri(uri?.toString().orEmpty()) }
+    }
+
     fun generate() {
         if (
             _state.value.generating || _state.value.loading ||
@@ -732,7 +745,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runOperation("提交生成失败") {
                 val generated = bridgeOperationMutex.withLock {
                     ensureSelectedWorkflowLoaded()
-                    (bridge ?: error("前端桥接不可用")).buildPrompt(_state.value.fields)
+                    (bridge ?: error("前端桥接不可用")).buildPrompt(_state.value.fields, _state.value.batchCount)
                 }
                 val response = try {
                     client.queuePrompt(
@@ -1105,7 +1118,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 val json = JSONObject(raw)
-                require(json.optJSONArray("nodes") != null) { "不是 ComfyUI 画布工作流 JSON" }
+                require(WorkflowFormat.isCanvas(json) || WorkflowFormat.isApiPrompt(json)) {
+                    "不是可识别的 ComfyUI 工作流（需要画布格式或 API 格式）"
+                }
                 val sourceName = filename.substringAfterLast('/').substringAfterLast('\\')
                 val targetName = if (isImage) sourceName.substringBeforeLast('.', sourceName) else sourceName
                 val safeName = WorkflowPath.fileName(targetName)
@@ -1975,6 +1990,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun saveToMediaStore(media: ResultMedia): Uri = withContext(Dispatchers.IO) {
         val resolver = app.contentResolver
+        // 用户自定义保存目录（SAF 文档树）：优先写入所选目录，未设置才走系统相册。
+        _state.value.saveFolderUri?.let { treeUri ->
+            val tree = Uri.parse(treeUri)
+            val doc = DocumentsContract.createDocument(resolver, tree, mimeType(media), media.filename)
+                ?: error("无法在所选目录创建文件")
+            try {
+                val output = resolver.openOutputStream(doc) ?: error("无法写入所选目录")
+                val localFile = media.localPath?.let(::File)?.takeIf { it.isFile }
+                if (localFile != null) {
+                    output.use { target -> localFile.inputStream().use { source -> source.copyTo(target) } }
+                } else {
+                    client.downloadTo(media.url, output)
+                }
+                return@withContext doc
+            } catch (error: Throwable) {
+                resolver.delete(doc, null, null)
+                throw error
+            }
+        }
         val collection = if (media.kind == MediaKind.IMAGE) MediaStore.Images.Media.EXTERNAL_CONTENT_URI else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, media.filename)

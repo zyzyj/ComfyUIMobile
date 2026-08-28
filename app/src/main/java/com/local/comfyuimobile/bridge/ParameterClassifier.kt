@@ -29,6 +29,17 @@ object ParameterClassifier {
         when (dataType.trim().uppercase()) {
             "FLOAT", "DOUBLE", "NUMBER" -> return ParameterKind.DECIMAL
             "INT", "INTEGER" -> return ParameterKind.INTEGER
+            // STRING 类型但当前值为 null/数字时也会走这里，避免落到 UNSUPPORTED。
+            "STRING" -> return if (
+                widgetType.contains("multiline", true) ||
+                    token.contains("multiline") ||
+                    token.contains("cliptextencode") ||
+                    name.equals("text", true)
+            ) {
+                ParameterKind.MULTILINE
+            } else {
+                ParameterKind.TEXT
+            }
         }
         if (
             precision?.let { it > 0 } == true ||

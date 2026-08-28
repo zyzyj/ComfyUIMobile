@@ -59,4 +59,15 @@ class WorkflowPolicyTest {
         val otherWorkflow = """{"nodes":[{"id":11,"type":"CheckpointLoaderSimple"},{"id":12,"type":"CLIPTextEncode"},{"id":13,"type":"VAEDecode"},{"id":14,"type":"EmptyLatentImage"}],"links":[]}"""
         assertTrue(WorkflowPolicy.draftStructureMismatched(otherWorkflow, server))
     }
+
+    @Test fun nodeSignatureSupportsApiPromptFormat() {
+        val api = """{"3":{"class_type":"KSampler","inputs":{"seed":1}},"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"x.safetensors"}}}"""
+        val signature = WorkflowPolicy.workflowNodeSignature(api)
+        assertEquals("KSampler", signature?.get("3"))
+        assertEquals("CheckpointLoaderSimple", signature?.get("4"))
+        // API 格式与画布格式混用时，覆盖率应能正确比较。
+        val canvas = """{"nodes":[{"id":"3","type":"KSampler"},{"id":"4","type":"CheckpointLoaderSimple"}],"links":[]}"""
+        assertEquals(1.0, WorkflowPolicy.draftStructureCoverage(api, canvas), 0.0001)
+        assertEquals(1.0, WorkflowPolicy.draftStructureCoverage(canvas, api), 0.0001)
+    }
 }

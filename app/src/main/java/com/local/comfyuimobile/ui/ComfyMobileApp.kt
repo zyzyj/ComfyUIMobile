@@ -57,6 +57,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CheckCircle
@@ -151,6 +152,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogWindowProvider
@@ -882,6 +884,27 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
                     }
                 }
             }
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("出图数量", style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.weight(1f))
+            IconButton(
+                onClick = { if (state.batchCount > 1) viewModel.setBatchCount(state.batchCount - 1) },
+                enabled = !state.generating,
+            ) { Icon(Icons.Default.Remove, "减少出图数量") }
+            Text(
+                "${state.batchCount}",
+                modifier = Modifier.width(36.dp),
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            IconButton(
+                onClick = { if (state.batchCount < 16) viewModel.setBatchCount(state.batchCount + 1) },
+                enabled = !state.generating,
+            ) { Icon(Icons.Default.Add, "增加出图数量") }
         }
         Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(
@@ -2106,6 +2129,9 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
         pendingLogExport = ""
         if (uri != null) viewModel.reportDiagnosticLogExport(success)
     }
+    val saveFolderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) viewModel.setSaveFolder(uri)
+    }
     LaunchedEffect(Unit) { viewModel.refreshLocalDraftCount() }
     if (showDiagnosticLog) {
         AlertDialog(
@@ -2157,6 +2183,32 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                 state.systemStats?.let { stats ->
                     Text("ComfyUI ${stats.comfyVersion} · 前端 ${stats.frontendVersion}")
                     stats.devices.forEach { Text("${it.name}\n显存 ${formatSize(it.vramFree)} / ${formatSize(it.vramTotal)} 可用") }
+                }
+                HorizontalDivider()
+                Text("图片保存位置", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (state.saveFolderUri != null) {
+                        "已选择自定义目录，生成结果将保存到所选文件夹"
+                    } else {
+                        "生成结果默认保存到系统相册 Pictures/ComfyUIMobile"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { saveFolderLauncher.launch(null) },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(Icons.Default.Folder, null); Spacer(Modifier.width(4.dp)); Text("选择目录")
+                    }
+                    if (state.saveFolderUri != null) {
+                        OutlinedButton(
+                            onClick = { viewModel.setSaveFolder(null) },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(Icons.Default.Delete, null); Spacer(Modifier.width(4.dp)); Text("恢复默认")
+                        }
+                    }
                 }
                 HorizontalDivider()
                 Text("本地作品保存白名单", style = MaterialTheme.typography.titleSmall)

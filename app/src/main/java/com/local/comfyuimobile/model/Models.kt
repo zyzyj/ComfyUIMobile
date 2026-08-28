@@ -200,6 +200,8 @@ data class AppUiState(
     val loading: Boolean = false,
     val scanning: Boolean = false,
     val generating: Boolean = false,
+    val batchCount: Int = 1,
+    val saveFolderUri: String? = null,
     val bridgeReady: Boolean = false,
     val advancedEditor: Boolean = false,
     val workflowOverwriteRequired: Boolean = false,

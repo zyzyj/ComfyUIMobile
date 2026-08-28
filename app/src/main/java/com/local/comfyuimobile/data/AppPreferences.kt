@@ -27,6 +27,7 @@ data class StoredSettings(
     val cacheOutputRules: List<CacheOutputRule> = emptyList(),
     val cacheClearedAt: Long = 0L,
     val favoriteResultKeys: Set<String> = emptySet(),
+    val saveFolderUri: String = "",
 )
 
 class AppPreferences(private val context: Context) {
@@ -43,6 +44,7 @@ class AppPreferences(private val context: Context) {
         val cacheOutputRules = stringPreferencesKey("cache_output_rules")
         val cacheClearedAt = longPreferencesKey("cache_cleared_at")
         val favoriteResultKeys = stringPreferencesKey("favorite_result_keys")
+        val saveFolderUri = stringPreferencesKey("save_folder_uri")
     }
 
     val settings: Flow<StoredSettings> = context.dataStore.data.map { preferences ->
@@ -60,6 +62,7 @@ class AppPreferences(private val context: Context) {
             cacheOutputRules = decodeCacheOutputRules(preferences[Keys.cacheOutputRules].orEmpty()),
             cacheClearedAt = preferences[Keys.cacheClearedAt] ?: 0L,
             favoriteResultKeys = decodeStrings(preferences[Keys.favoriteResultKeys].orEmpty()).toSet(),
+            saveFolderUri = preferences[Keys.saveFolderUri].orEmpty(),
         )
     }
 
@@ -149,6 +152,10 @@ class AppPreferences(private val context: Context) {
 
     suspend fun saveFavoriteResultKeys(keys: Set<String>) {
         context.dataStore.edit { it[Keys.favoriteResultKeys] = encodeStrings(keys.take(1_000)) }
+    }
+
+    suspend fun setSaveFolderUri(uri: String) {
+        context.dataStore.edit { it[Keys.saveFolderUri] = uri }
     }
 
     private fun decodeProfiles(raw: String): List<ServerProfile> = runCatching {
