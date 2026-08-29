@@ -214,6 +214,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setServerInput(value: String) = _state.update { it.copy(serverInput = value) }
+    fun setServerCookie(value: String) = _state.update { it.copy(serverCookie = value) }
     fun clearMessage() = _state.update { it.copy(error = null, notice = null) }
 
     fun openAdvancedEditor() {
