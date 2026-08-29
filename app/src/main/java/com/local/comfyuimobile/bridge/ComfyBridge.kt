@@ -204,13 +204,16 @@ class ComfyBridge(private val activity: Activity) {
         val origin = LanAddress.withoutCredentials(baseUrl.trimEnd('/'))
         httpCredentials = LanAddress.credentials(baseUrl)
         // 反向代理登录态（如 AI Studio api_serving）：把用户配置的 Cookie 注入 WebView 域。
+        // 注意必须逐段注入：CookieManager.setCookie 只接受单个 name=value，整串塞进去
+        // 遇到带引号或畸形段会全部失效（表现为 WebView 仍被重定向到登录页）。
         if (authCookie.isNotBlank()) {
             runCatching {
-                android.webkit.CookieManager.getInstance().apply {
-                    setAcceptCookie(true)
-                    setCookie(origin, authCookie)
-                    flush()
+                val manager = android.webkit.CookieManager.getInstance()
+                manager.setAcceptCookie(true)
+                CookieParser.parse(authCookie).forEach { pair ->
+                    manager.setCookie(origin, pair)
                 }
+                manager.flush()
             }
         }
         withContext(Dispatchers.Main.immediate) {
