@@ -291,6 +291,7 @@ fun ComfyMobileApp(viewModel: MainViewModel, bridge: ComfyBridge) {
 private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar: SnackbarHostState) {
     var settings by remember { mutableStateOf(false) }
     var showLoginDialog by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     Scaffold(
         topBar = {
             TopAppBar(
@@ -377,7 +378,9 @@ private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar
                             showLoginDialog = false
                             viewModel.connect()
                         } else {
-                            snackbar.showSnackbar("未检测到登录态，请确认登录成功后再点完成")
+                            scope.launch {
+                                snackbar.showSnackbar("未检测到登录态，请确认登录成功后再点完成")
+                            }
                         }
                     },
                 )
