@@ -8,6 +8,7 @@ data class ServerProfile(
     val baseUrl: String,
     val lastSeen: Long = 0L,
     val comfyVersion: String = "",
+    val cookie: String = "",
 )
 
 data class DeviceStats(
@@ -175,6 +176,7 @@ data class AppUiState(
     val connectionTotalSteps: Int = 6,
     // 留空以便显示输入框的提示语；这里原先硬编码了开发者的内网地址，属于无谓的信息泄漏。
     val serverInput: String = "",
+    val serverCookie: String = "",
     val activeServer: ServerProfile? = null,
     val savedServers: List<ServerProfile> = emptyList(),
     val discoveredServers: List<ServerProfile> = emptyList(),

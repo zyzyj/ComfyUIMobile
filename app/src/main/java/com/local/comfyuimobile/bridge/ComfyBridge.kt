@@ -63,8 +63,15 @@ class ComfyBridge(private val activity: Activity) {
     @Volatile private var allowedOrigin: String = ""
     // 反向代理登录凭据：WebView 不会沿用地址里的 user:pass@，需要在鉴权回调里补上。
     @Volatile private var httpCredentials: Pair<String, String>? = null
+    // 反向代理认证 Cookie（如 AI Studio api_serving 的登录态）。
+    @Volatile private var authCookie: String = ""
     @Volatile private var pageLoadError: String? = null
     @Volatile private var lastBridgePhase: String = "尚未执行前端脚本"
+
+    /** 设置反向代理认证 Cookie（空串表示不启用），配合 loadServer 注入 WebView。 */
+    fun setAuthCookie(cookie: String) {
+        authCookie = cookie.trim()
+    }
     @Volatile private var rendererEpoch: Int = 0
     @Volatile private var pageEpoch: Int = 0
     @Volatile private var finishedPageEpoch: Int = -1
@@ -196,6 +203,16 @@ class ComfyBridge(private val activity: Activity) {
         // 所以这里加载剥掉凭据的地址，凭据改由 onReceivedHttpAuthRequest 补上。
         val origin = LanAddress.withoutCredentials(baseUrl.trimEnd('/'))
         httpCredentials = LanAddress.credentials(baseUrl)
+        // 反向代理登录态（如 AI Studio api_serving）：把用户配置的 Cookie 注入 WebView 域。
+        if (authCookie.isNotBlank()) {
+            runCatching {
+                android.webkit.CookieManager.getInstance().apply {
+                    setAcceptCookie(true)
+                    setCookie(origin, authCookie)
+                    flush()
+                }
+            }
+        }
         withContext(Dispatchers.Main.immediate) {
             allowedOrigin = origin
             pageLoadError = null

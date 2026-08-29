@@ -36,12 +36,22 @@ class PromptSubmissionException(
 
 class ComfyClient {
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
+    @Volatile private var authCookie: String = ""
     private val client = OkHttpClient.Builder()
         // 云端 / 公网服务器握手明显慢于局域网，4 秒会误判为不可达，放宽到 15 秒。
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .pingInterval(20, TimeUnit.SECONDS)
+        // 反向代理登录态：用户配置的 Cookie 会附加到每个请求（如 AI Studio api_serving）。
+        .addInterceptor { chain ->
+            val original = chain.request()
+            if (authCookie.isBlank()) {
+                chain.proceed(original)
+            } else {
+                chain.proceed(original.newBuilder().header("Cookie", authCookie).build())
+            }
+        }
         .build()
 
     @Volatile private var baseUrl: String = ""
@@ -52,6 +62,13 @@ class ComfyClient {
     }
 
     fun serverUrl(): String = baseUrl
+
+    /** 设置反向代理认证 Cookie（空串表示不启用）。 */
+    fun setAuthCookie(cookie: String) {
+        authCookie = cookie.trim()
+    }
+
+    fun authCookie(): String = authCookie
 
     suspend fun probe(url: String = baseUrl): Pair<SystemStats, ServerProfile> = withContext(Dispatchers.IO) {
         val normalized = LanAddress.normalize(url)

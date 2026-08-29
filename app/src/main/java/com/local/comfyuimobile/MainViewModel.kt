@@ -276,6 +276,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 明文密码的屏蔽统一由界面层显示时处理。
                 _state.update { it.copy(serverInput = normalized) }
                 client.setServer(normalized)
+                // 反向代理认证 Cookie：连接时把用户配置的登录态注入 API 客户端与 WebView。
+                val cookie = _state.value.serverCookie
+                client.setAuthCookie(cookie)
+                activeBridge.setAuthCookie(cookie)
 
                 setConnectionStep(2, "地址检查通过，正在读取服务器版本和显卡信息")
                 val (stats, profile) = client.probe(normalized)
@@ -293,17 +297,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 require(client.objectInfo().length() > 0) { "服务器没有返回节点定义" }
 
                 setConnectionStep(6, "节点定义正常，正在保存连接并同步数据")
-                preferences.saveServer(profile)
+                val savedProfile = profile.copy(cookie = cookie)
+                preferences.saveServer(savedProfile)
                 _state.update {
                     val sameServerDocument = it.selectedWorkflow?.takeIf { document ->
                         WorkflowDraftStore.normalizeServer(document.serverUrl) ==
-                            WorkflowDraftStore.normalizeServer(profile.baseUrl)
+                            WorkflowDraftStore.normalizeServer(savedProfile.baseUrl)
                     }
                     it.copy(
                         status = ConnectionStatus.CONNECTED,
-                        connectionMessage = "已连接 ${profile.name}",
+                        connectionMessage = "已连接 ${savedProfile.name}",
                         connectionStep = it.connectionTotalSteps,
-                        activeServer = profile,
+                        activeServer = savedProfile,
                         systemStats = stats,
                         bridgeReady = true,
                         loading = false,
@@ -1872,6 +1877,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 delay(seconds * 1_000)
                 val server = _state.value.activeServer ?: return@launch
                 if (!isActive) return@launch
+                // 重连时恢复该服务器保存的认证 Cookie。
+                client.setAuthCookie(server.cookie)
+                bridge?.setAuthCookie(server.cookie)
                 val stats = runCatching { client.systemStats() }.getOrNull() ?: continue
                 val restored = runCatching {
                     val activeBridge = bridge ?: error("前端桥接不可用")

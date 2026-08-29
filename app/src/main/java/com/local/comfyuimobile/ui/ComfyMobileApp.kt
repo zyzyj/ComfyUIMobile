@@ -319,6 +319,21 @@ private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar
                 placeholder = { Text("http://192.168.1.10:8188 或 https://comfy.example.com") },
                 singleLine = true,
             )
+            OutlinedTextField(
+                value = state.serverCookie,
+                onValueChange = viewModel::setServerCookie,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("认证 Cookie（可选）") },
+                placeholder = { Text("百度 AI Studio 等反向代理需要登录态时，从浏览器复制粘贴") },
+                supportingText = {
+                    Text(
+                        "浏览器登录后按 F12 → Application → Cookies 复制整个 Cookie 值；不填则视为无需认证",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                },
+                minLines = 1,
+                singleLine = false,
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(onClick = { viewModel.connect() }, enabled = !state.loading) {
                     if (state.loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -345,6 +360,7 @@ private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar
                             // 完整地址（含凭据）进状态，重连才不会丢登录信息；
                             // 明文密码由输入框和卡片在显示时统一脱敏。
                             viewModel.setServerInput(profile.baseUrl)
+                            viewModel.setServerCookie(profile.cookie)
                             viewModel.connect(profile.baseUrl)
                         },
                         onDelete = { viewModel.removeServer(profile.baseUrl) },

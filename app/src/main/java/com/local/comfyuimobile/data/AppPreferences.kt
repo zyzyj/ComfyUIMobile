@@ -201,6 +201,7 @@ class AppPreferences(private val context: Context) {
                         baseUrl = item.getString("baseUrl"),
                         lastSeen = item.optLong("lastSeen"),
                         comfyVersion = item.optString("comfyVersion"),
+                        cookie = item.optString("cookie"),
                     ),
                 )
             }
@@ -215,7 +216,8 @@ class AppPreferences(private val context: Context) {
                     .put("name", profile.name)
                     .put("baseUrl", profile.baseUrl)
                     .put("lastSeen", profile.lastSeen)
-                    .put("comfyVersion", profile.comfyVersion),
+                    .put("comfyVersion", profile.comfyVersion)
+                    .put("cookie", profile.cookie),
             )
         }
     }.toString()
