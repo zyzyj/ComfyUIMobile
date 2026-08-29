@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
 import android.provider.OpenableColumns
+import android.graphics.ColorDrawable
 import android.view.ViewGroup
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -1838,7 +1839,7 @@ private fun ImageGalleryViewer(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 )
-                setBackgroundDrawable(android.graphics.ColorDrawable(android.graphics.Color.BLACK))
+                setBackgroundDrawable(ColorDrawable(android.graphics.Color.BLACK))
             }
         }
         Surface(Modifier.fillMaxSize(), color = Color.Black) {
@@ -1978,7 +1979,7 @@ private fun ImageGalleryViewer(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Text(current.filename)
-                    current.elapsedMs?.let { Text("生图耗时：${formatDuration(it)}", style = MaterialTheme.typography.bodySmall) }
+                    current.elapsedMs?.let { Text("生图耗时：${formatElapsed(it)}", style = MaterialTheme.typography.bodySmall) }
                     Text("任务：${current.jobId}", style = MaterialTheme.typography.bodySmall)
                     current.workflowName.takeIf { it.isNotBlank() }?.let {
                         Text("工作流：$it", style = MaterialTheme.typography.bodySmall)
@@ -1998,7 +1999,7 @@ private fun ImageGalleryViewer(
     }
 }
 
-private fun formatDuration(ms: Long): String {
+private fun formatElapsed(ms: Long): String {
     if (ms < 1000) return "${ms} 毫秒"
     val seconds = ms / 1000
     if (seconds < 60) return "$seconds 秒"

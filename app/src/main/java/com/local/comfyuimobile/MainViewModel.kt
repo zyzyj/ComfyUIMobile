@@ -40,6 +40,7 @@ import com.local.comfyuimobile.model.ParameterField
 import com.local.comfyuimobile.model.ParameterKind
 import com.local.comfyuimobile.model.ParameterSection
 import com.local.comfyuimobile.model.ResultMedia
+import com.local.comfyuimobile.model.ResultSource
 import com.local.comfyuimobile.model.SeedMode
 import com.local.comfyuimobile.model.WorkflowDocument
 import com.local.comfyuimobile.model.WorkflowEntry
