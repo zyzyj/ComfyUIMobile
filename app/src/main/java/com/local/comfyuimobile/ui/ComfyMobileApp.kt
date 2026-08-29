@@ -8,6 +8,9 @@ import android.net.Uri
 import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.graphics.drawable.ColorDrawable
+import android.webkit.CookieManager
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.view.ViewGroup
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -42,6 +45,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.WindowInsets
@@ -285,6 +290,7 @@ fun ComfyMobileApp(viewModel: MainViewModel, bridge: ComfyBridge) {
 @Composable
 private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar: SnackbarHostState) {
     var settings by remember { mutableStateOf(false) }
+    var showLoginDialog by remember { mutableStateOf(false) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -348,6 +354,34 @@ private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar
                     Text("扫描局域网")
                 }
             }
+            // 在 App 内登录：解决百度 AI Studio 等需要登录态的反向代理。
+            // 用户在 WebView 里完成登录后，Cookie 自动落入系统 CookieManager，
+            // 之后的连接（含换地址）都会自动携带，无需手动复制粘贴。
+            OutlinedButton(
+                onClick = { showLoginDialog = true },
+                enabled = state.serverInput.isNotBlank() && !state.loading,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.Default.Wifi, null)
+                Spacer(Modifier.width(6.dp))
+                Text("在 App 内登录（AI Studio 等反向代理）")
+            }
+            if (showLoginDialog) {
+                val loginUrl = LanAddress.withoutCredentials(state.serverInput).ifBlank { state.serverInput }
+                LoginDialog(
+                    startUrl = loginUrl,
+                    onDismiss = { showLoginDialog = false },
+                    onLoggedIn = { cookie ->
+                        if (cookie.isNotBlank()) {
+                            viewModel.setServerCookie(cookie)
+                            showLoginDialog = false
+                            viewModel.connect()
+                        } else {
+                            snackbar.showSnackbar("未检测到登录态，请确认登录成功后再点完成")
+                        }
+                    },
+                )
+            }
             if (state.status == ConnectionStatus.CONNECTING || state.status == ConnectionStatus.ERROR) {
                 ConnectionProgressCard(state)
             }
@@ -377,6 +411,88 @@ private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar
         }
     }
     if (settings) SettingsDialog(state, viewModel) { settings = false }
+}
+
+/**
+ * 在 App 内登录：内嵌 WebView 打开目标服务器地址（AI Studio 等会 302 到登录页），
+ * 用户完成登录后，登录态自动落在 Android 系统 CookieManager。点「完成」时
+ * 从 CookieManager 读取该域名的 Cookie 回传，后续连接自动携带。
+ */
+@Composable
+private fun LoginDialog(
+    startUrl: String,
+    onDismiss: () -> Unit,
+    onLoggedIn: (String) -> Unit,
+) {
+    var webView by remember { mutableStateOf<WebView?>(null) }
+    var currentUrl by remember { mutableStateOf(startUrl) }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        Surface(Modifier.fillMaxSize(), color = Color.White) {
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars)
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "关闭") }
+                    Column(Modifier.weight(1f)) {
+                        Text("在 App 内登录", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "登录成功后点右下角「完成」，Cookie 会自动保存",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF666666),
+                        )
+                    }
+                }
+                AndroidView(
+                    factory = { context ->
+                        WebView(context).apply {
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            settings.databaseEnabled = true
+                            settings.setSupportMultipleWindows(false)
+                            settings.loadWithOverviewMode = true
+                            settings.useWideViewPort = true
+                            webViewClient = object : WebViewClient() {
+                                override fun onPageFinished(view: WebView?, url: String?) {
+                                    super.onPageFinished(view, url)
+                                    url?.let { currentUrl = it }
+                                }
+                            }
+                            loadUrl(startUrl)
+                        }.also { webView = it }
+                    },
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    update = { webView = it },
+                )
+                Row(
+                    Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars)
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Cookie 将按域名自动复用，换地址也不用重填",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF888888),
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onDismiss) { Text("取消") }
+                    Button(
+                        onClick = {
+                            val cookie = runCatching {
+                                CookieManager.getInstance().getCookie(currentUrl.ifBlank { startUrl }).orEmpty()
+                            }.getOrDefault("")
+                            onLoggedIn(cookie)
+                        },
+                    ) { Text("完成") }
+                }
+            }
+        }
+    }
 }
 
 private val connectionStepNames = listOf(
