@@ -142,7 +142,8 @@ class JobMonitorService : Service() {
         }
         workflowNames[promptId] = workflowName
         workflowPaths[promptId] = workflowPath
-        serverUrls[promptId] = baseUrl        AppLogger.info("后台开始监控任务：$promptId，工作流=$workflowName")
+        serverUrls[promptId] = baseUrl
+        AppLogger.info("后台开始监控任务：$promptId，工作流=$workflowName")
         startForeground(
             FOREGROUND_ID,
             notification("正在生成", workflowName, true, promptId = promptId, baseUrl = baseUrl, workflowPath = workflowPath),

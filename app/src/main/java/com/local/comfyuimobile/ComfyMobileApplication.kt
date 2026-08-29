@@ -6,7 +6,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import coil.ImageLoader
 import coil.ImageLoaderFactory
-import coil.network.NetworkFetcher
+import coil.network.okhttp.OkHttpNetworkFetcherFactory
 import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.data.AuthCookieProvider
 import com.local.comfyuimobile.service.JobMonitorService
@@ -47,7 +47,7 @@ class ComfyMobileApplication : Application(), ImageLoaderFactory {
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
         .components {
             add(
-                NetworkFetcher.Factory(
+                OkHttpNetworkFetcherFactory(
                     callFactory = { imageOkHttpClient() },
                 ),
             )

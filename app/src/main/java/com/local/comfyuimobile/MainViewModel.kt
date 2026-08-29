@@ -1049,14 +1049,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun saveWorkflowAsLocalDraft(document: WorkflowDocument, workflowJson: String) {
         val serverUrl = document.serverUrl.ifBlank { _state.value.activeServer?.baseUrl.orEmpty() }
         workflowDrafts.save(
-            WorkflowDraftStore.WorkflowDraft(
+            WorkflowDraft(
                 serverUrl = serverUrl,
                 workflowPath = document.entry.path,
                 workflowName = document.entry.name,
                 baseModified = document.baseModified,
                 workflowJson = workflowJson,
                 structural = false,
-                fields = WorkflowDraftStore.WorkflowDraftFields.capture(_state.value.fields),
+                fields = WorkflowDraftFields.capture(_state.value.fields),
             ),
         )
         _state.update {
