@@ -6,7 +6,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import coil.ImageLoader
 import coil.ImageLoaderFactory
-import coil.network.okhttp.OkHttpNetworkFetcherFactory
 import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.data.AuthCookieProvider
 import com.local.comfyuimobile.service.JobMonitorService
@@ -45,13 +44,7 @@ class ComfyMobileApplication : Application(), ImageLoaderFactory {
      * 网络栈不经过 App 的 OkHttp 拦截器，导致图片 404。这里统一注入。
      */
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
-        .components {
-            add(
-                OkHttpNetworkFetcherFactory(
-                    callFactory = { imageOkHttpClient() },
-                ),
-            )
-        }
+        .okHttpClient { imageOkHttpClient() }
         .build()
 
     companion object {
