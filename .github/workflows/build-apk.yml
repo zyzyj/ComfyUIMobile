@@ -86,13 +86,18 @@ jobs:
               echo "构建失败于分支 ${{ github.ref_name }} · $(date -u '+%Y-%m-%d %H:%M UTC')"
               echo "run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
               echo '== Kotlin/编译错误行 =='
-              grep -aE "^e: |FAILED|What went wrong|Caused by:|Execution failed|OutOfMemory|Killed|error:" /tmp/gradle-debug.log 2>/dev/null | head -80
+              grep -aE "^e: |FAILED|What went wrong|Caused by:|Execution failed|OutOfMemory|Killed|error:" /tmp/gradle-debug.log 2>/dev/null | head -120
               echo '== 前 60 行 =='
               head -60 /tmp/gradle-debug.log 2>/dev/null
             } > /tmp/error_body.txt
-            gh api -X PUT "/repos/${{ github.repository }}/contents/build-errors-${{ github.run_id }}.log" \
+            set +e
+            RESP=$(gh api -X PUT "/repos/${{ github.repository }}/contents/build-errors-${{ github.run_id }}.log" \
               -f "message=ci: 记录构建错误 [skip ci]" \
-              -f "content=$(base64 -w0 /tmp/error_body.txt)" || true
+              -f "content=$(base64 -w0 /tmp/error_body.txt)" 2>&1)
+            echo "PUT 状态: $?"
+            echo "$RESP" | head -c 500
+          else
+            echo "警告: gradle 日志为空，无法上报错误详情"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

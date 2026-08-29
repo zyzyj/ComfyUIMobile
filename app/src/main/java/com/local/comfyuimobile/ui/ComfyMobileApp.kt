@@ -466,7 +466,6 @@ private fun LoginDialog(
                         }.also { webView = it }
                     },
                     modifier = Modifier.weight(1f).fillMaxWidth(),
-                    update = { webView = it },
                 )
                 Row(
                     Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars)
