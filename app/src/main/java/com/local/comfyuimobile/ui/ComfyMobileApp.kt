@@ -7,7 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
 import android.provider.OpenableColumns
-import android.graphics.ColorDrawable
+import android.graphics.drawable.ColorDrawable
 import android.view.ViewGroup
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
