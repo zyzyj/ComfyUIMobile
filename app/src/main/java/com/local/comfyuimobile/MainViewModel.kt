@@ -19,6 +19,7 @@ import com.local.comfyuimobile.bridge.AdvancedEditorSession
 import com.local.comfyuimobile.bridge.WorkflowImageReader
 import com.local.comfyuimobile.data.AppPreferences
 import com.local.comfyuimobile.data.AppLogger
+import com.local.comfyuimobile.data.AuthCookieProvider
 import com.local.comfyuimobile.data.LocalResultCache
 import com.local.comfyuimobile.data.PromptHistory
 import com.local.comfyuimobile.data.RecentWorkflows
@@ -281,6 +282,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val cookie = _state.value.serverCookie
                 client.setAuthCookie(cookie)
                 activeBridge.setAuthCookie(cookie)
+                AuthCookieProvider.current = cookie
 
                 setConnectionStep(2, "地址检查通过，正在读取服务器版本和显卡信息")
                 val (stats, profile) = client.probe(normalized)
@@ -999,7 +1001,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ensureSelectedWorkflowLoaded()
                     (bridge ?: error("前端桥接不可用")).syncWorkflow(_state.value.fields)
                 }
-                val saved = client.writeWorkflow(document.entry.path, workflowJson, overwrite = current != null)
+                // 部分云端平台（如百度 AI Studio 的 api_serving 代理）不开放 /userdata
+                // 工作流管理接口，保存会返回 404/400。此时降级为本地草稿保存，功能不中断。
+                val saved = try {
+                    client.writeWorkflow(document.entry.path, workflowJson, overwrite = current != null)
+                } catch (error: IllegalStateException) {
+                    val message = error.message.orEmpty()
+                    if (message.contains("404") || message.contains("400")) {
+                        saveWorkflowAsLocalDraft(document, workflowJson)
+                        return@runOperation
+                    }
+                    throw error
+                }
                 val updated = document.copy(
                     entry = saved,
                     rawJson = workflowJson,
@@ -1026,6 +1039,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             job.invokeOnCompletion {
                 if (workflowSaveJob === job) workflowSaveJob = null
             }
+        }
+    }
+
+    /**
+     * 服务器不支持云端工作流管理（如 AI Studio api_serving 未开放 /userdata）时的降级保存：
+     * 把工作流内容写入本地草稿，保证下次进入还能继续使用；同时明确提示用户。
+     */
+    private suspend fun saveWorkflowAsLocalDraft(document: WorkflowDocument, workflowJson: String) {
+        val serverUrl = document.serverUrl.ifBlank { _state.value.activeServer?.baseUrl.orEmpty() }
+        workflowDrafts.save(
+            WorkflowDraftStore.WorkflowDraft(
+                serverUrl = serverUrl,
+                workflowPath = document.entry.path,
+                workflowName = document.entry.name,
+                baseModified = document.baseModified,
+                workflowJson = workflowJson,
+                structural = false,
+                fields = WorkflowDraftStore.WorkflowDraftFields.capture(_state.value.fields),
+            ),
+        )
+        _state.update {
+            it.copy(
+                loading = false,
+                workflowOverwriteRequired = false,
+                workflowOverwriteReason = "",
+                notice = "此服务器不支持云端保存工作流，已保存到本地草稿（下次打开自动恢复）",
+            )
         }
     }
 
@@ -1323,16 +1363,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val sourceName = filename.substringAfterLast('/').substringAfterLast('\\')
                 val targetName = if (isImage) sourceName.substringBeforeLast('.', sourceName) else sourceName
                 val safeName = WorkflowPath.fileName(targetName)
-                val existingPaths = client.listWorkflows().mapTo(mutableSetOf()) { it.path }
+                // 服务器支持云端工作流管理时，先检查重名并写入服务器；
+                // 不支持（AI Studio 等返回 404/400）时降级为仅本地加载，不中断导入。
                 val baseName = safeName.substringBeforeLast(".json", safeName)
                 var candidateName = safeName
-                var copyNumber = 2
-                while ("workflows/$candidateName" in existingPaths) {
-                    candidateName = "$baseName-$copyNumber.json"
-                    copyNumber += 1
+                val entry = try {
+                    val existingPaths = client.listWorkflows().mapTo(mutableSetOf()) { it.path }
+                    var copyNumber = 2
+                    while ("workflows/$candidateName" in existingPaths) {
+                        candidateName = "$baseName-$copyNumber.json"
+                        copyNumber += 1
+                    }
+                    client.writeWorkflow("workflows/$candidateName", json.toString(), overwrite = false)
+                } catch (error: IllegalStateException) {
+                    val message = error.message.orEmpty()
+                    if (message.contains("404") || message.contains("400")) {
+                        WorkflowEntry(
+                            name = candidateName,
+                            path = "workflows/$candidateName",
+                            isDirectory = false,
+                            size = json.toString().toByteArray().size.toLong(),
+                        )
+                    } else {
+                        throw error
+                    }
                 }
-                val entry = client.writeWorkflow("workflows/$candidateName", json.toString(), overwrite = false)
-                refreshWorkflowsInternal()
+                runCatching { refreshWorkflowsInternal() }
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(
                         rawJson = json.toString(),
@@ -1373,18 +1429,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onLocalResultsSaved(count: Int, failed: Boolean, localSaveRequested: Boolean) = viewModelScope.launch {
         val local = localResultCache.load()
-        // 自动保存到系统相册：只处理"最近一次任务"新增的结果（按 createdAt 识别），
-        // 已保存过的历史任务不会被重复写入。
+        // 自动保存：只处理"最近一次任务"新增的结果（按 createdAt 识别）。
+        // 按用户偏好写入"图片保存位置"（自定义文件夹）；未设置自定义文件夹时
+        // 不写入系统相册（避免相册被生成图刷屏），仅保留在本地作品缓存里。
         var autoSaved = 0
+        var autoSkipped = false
+        val saveFolderUri = _state.value.saveFolderUri
         if (_state.value.autoSaveResults && local.isNotEmpty()) {
-            val latestCreatedAt = local.maxOf { it.createdAt }
-            local.filter { it.source == ResultSource.LOCAL && it.createdAt == latestCreatedAt }
-                .forEach { media ->
-                    runCatching { saveToMediaStore(media) }
-                        .onSuccess { autoSaved += 1 }
-                }
+            if (saveFolderUri.isNullOrBlank()) {
+                autoSkipped = true
+            } else {
+                val latestCreatedAt = local.maxOf { it.createdAt }
+                local.filter { it.source == ResultSource.LOCAL && it.createdAt == latestCreatedAt }
+                    .forEach { media ->
+                        runCatching { saveToMediaStore(media) }
+                            .onSuccess { autoSaved += 1 }
+                    }
+            }
         }
-        val autoSavedNote = if (autoSaved > 0) "，已自动保存 $autoSaved 张到系统相册" else ""
+        val autoSavedNote = when {
+            autoSaved > 0 -> "，已自动保存 $autoSaved 张到图片文件夹"
+            autoSkipped -> "，未设置图片保存位置，已跳过自动保存（仅保留在本地作品）"
+            else -> ""
+        }
         _state.update {
             it.copy(
                 localResults = local,
@@ -1881,6 +1948,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 重连时恢复该服务器保存的认证 Cookie。
                 client.setAuthCookie(server.cookie)
                 bridge?.setAuthCookie(server.cookie)
+                AuthCookieProvider.current = server.cookie
                 val stats = runCatching { client.systemStats() }.getOrNull() ?: continue
                 val restored = runCatching {
                     val activeBridge = bridge ?: error("前端桥接不可用")
@@ -2259,6 +2327,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val intent = Intent(app, JobMonitorService::class.java)
             .putExtra(JobMonitorService.EXTRA_BASE_URL, client.serverUrl())
             .putExtra(JobMonitorService.EXTRA_PROMPT_ID, promptId)
+            .putExtra(JobMonitorService.EXTRA_AUTH_COOKIE, client.authCookie())
             .putExtra(JobMonitorService.EXTRA_WORKFLOW_NAME, workflowName)
             .putExtra(JobMonitorService.EXTRA_WORKFLOW_PATH, workflowPath)
         runCatching { ContextCompat.startForegroundService(app, intent) }

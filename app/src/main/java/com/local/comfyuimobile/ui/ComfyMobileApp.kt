@@ -2569,9 +2569,9 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                 }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("生成完成自动保存到相册")
+                        Text("生成完成自动保存到图片文件夹")
                         Text(
-                            "任务完成后把最新结果自动写入系统相册（默认开启）",
+                            "任务完成后把最新结果自动写入上方选择的文件夹（未设置则只保留在本地作品）",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }

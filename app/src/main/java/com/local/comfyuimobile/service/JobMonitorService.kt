@@ -39,10 +39,13 @@ class JobMonitorService : Service() {
     // 与 ComfyClient 保持一致：公网/云端服务器握手可能超过 5 秒，
     // 太短会让后台轮询在服务器可达的情况下持续假失败。
     private val client = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+    // 反向代理认证 Cookie（AI Studio 等需要登录态），由 handleStartCommand 从 intent 设置。
+    @Volatile private var authCookie: String = ""
     private val monitors = ConcurrentHashMap<String, Job>()
     private val workflowNames = ConcurrentHashMap<String, String>()
     private val workflowPaths = ConcurrentHashMap<String, String>()
     private val serverUrls = ConcurrentHashMap<String, String>()
+    private val authCookies = ConcurrentHashMap<String, String>()
     private val localResultCache by lazy { LocalResultCache(applicationContext) }
     private val preferences by lazy { AppPreferences(applicationContext) }
     private val wakeLock by lazy {
@@ -69,6 +72,13 @@ class JobMonitorService : Service() {
         val baseUrl = intent?.getStringExtra(EXTRA_BASE_URL).orEmpty().ifBlank {
             serverUrls[promptId].orEmpty()
         }
+        // 反向代理认证 Cookie：随 intent 传入并记忆（AI Studio 等需要登录态，
+        // 后台轮询若不带上会被重定向到登录页返回 404/HTML）。
+        val cookie = intent?.getStringExtra(EXTRA_AUTH_COOKIE).orEmpty().ifBlank {
+            authCookies[promptId].orEmpty()
+        }
+        if (cookie.isNotBlank()) authCookies[promptId] = cookie
+        authCookie = cookie
         return try {
             // startForegroundService() 启动后必须立刻建立前台通知。日志、锁和任务恢复均放在其后，
             // 避免系统在进程繁忙或锁获取变慢时抛出 ForegroundServiceDidNotStartInTimeException。
@@ -132,8 +142,7 @@ class JobMonitorService : Service() {
         }
         workflowNames[promptId] = workflowName
         workflowPaths[promptId] = workflowPath
-        serverUrls[promptId] = baseUrl
-        AppLogger.info("后台开始监控任务：$promptId，工作流=$workflowName")
+        serverUrls[promptId] = baseUrl        AppLogger.info("后台开始监控任务：$promptId，工作流=$workflowName")
         startForeground(
             FOREGROUND_ID,
             notification("正在生成", workflowName, true, promptId = promptId, baseUrl = baseUrl, workflowPath = workflowPath),
@@ -253,7 +262,9 @@ class JobMonitorService : Service() {
 
     private fun readStatus(baseUrl: String, promptId: String): PollStatus {
         val encoded = URLEncoder.encode(promptId, Charsets.UTF_8.name())
-        val request = Request.Builder().url("$baseUrl/history/$encoded").get().build()
+        val builder = Request.Builder().url("$baseUrl/history/$encoded").get()
+        if (authCookie.isNotBlank()) builder.header("Cookie", authCookie)
+        val request = builder.build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) return PollStatus(false, false)
             val root = JSONObject(response.body?.string().orEmpty())
@@ -268,6 +279,7 @@ class JobMonitorService : Service() {
     private suspend fun saveLocalOutputs(baseUrl: String, promptId: String): SaveReport {
         val resultClient = ComfyClient()
         resultClient.setServer(baseUrl)
+        resultClient.setAuthCookie(authCookie)
         val history = resultClient.history(promptId)
         check(history.optJSONObject(promptId) != null) { "任务结果尚未写入历史" }
         val settings = preferences.settings.first()
@@ -430,6 +442,7 @@ class JobMonitorService : Service() {
         const val COMPLETION_CHANNEL_ID = "comfy_job_completion_v1"
         const val EXTRA_BASE_URL = "base_url"
         const val EXTRA_PROMPT_ID = "prompt_id"
+        const val EXTRA_AUTH_COOKIE = "auth_cookie"
         const val EXTRA_WORKFLOW_NAME = "workflow_name"
         const val EXTRA_WORKFLOW_PATH = "workflow_path"
         const val EXTRA_PROGRESS = "progress"
