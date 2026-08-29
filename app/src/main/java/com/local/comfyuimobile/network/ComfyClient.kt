@@ -37,28 +37,20 @@ class PromptSubmissionException(
 class ComfyClient {
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
     @Volatile private var authCookie: String = ""
-    // 自动 Cookie 提供者：由外部注入（从 Android CookieManager 按域名读取）。
-    // 用户在 App 内登录后，登录态自动落在 CookieManager，这里负责把它附加到 API 请求。
-    @Volatile var autoCookieProvider: (() -> String)? = null
     private val client = OkHttpClient.Builder()
         // 云端 / 公网服务器握手明显慢于局域网，4 秒会误判为不可达，放宽到 15 秒。
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .pingInterval(20, TimeUnit.SECONDS)
-        // 反向代理登录态：优先使用用户手动配置的 Cookie，否则尝试自动从
-        // CookieManager 读取（App 内登录落库的登录态），再没有就不加请求头。
+        // 反向代理登录态：用户手动配置的 Cookie（如 AI Studio api_serving 的
+        // 鉴权 Cookie）附加到每个请求；未配置则不加请求头。
         .addInterceptor { chain ->
             val original = chain.request()
-            val cookie = when {
-                authCookie.isNotBlank() -> authCookie
-                autoCookieProvider != null -> autoCookieProvider!!().orEmpty()
-                else -> ""
-            }
-            if (cookie.isBlank()) {
+            if (authCookie.isBlank()) {
                 chain.proceed(original)
             } else {
-                chain.proceed(original.newBuilder().header("Cookie", cookie).build())
+                chain.proceed(original.newBuilder().header("Cookie", authCookie).build())
             }
         }
         .build()

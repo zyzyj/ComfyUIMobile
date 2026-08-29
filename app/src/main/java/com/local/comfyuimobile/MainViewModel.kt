@@ -10,7 +10,6 @@ import android.os.Environment
 import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.OpenableColumns
-import android.webkit.CookieManager
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
@@ -278,15 +277,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 明文密码的屏蔽统一由界面层显示时处理。
                 _state.update { it.copy(serverInput = normalized) }
                 client.setServer(normalized)
-                // 反向代理认证 Cookie：优先使用用户手动配置的登录态；若未配置，
-                // 自动从 Android CookieManager 按域名读取（App 内登录落库的登录态，
-                // 或 WebView 访问服务器时积累的会话）。链接变化但域名不变时自动复用。
-                val cookie = _state.value.serverCookie.ifBlank {
-                    runCatching {
-                        CookieManager.getInstance().apply { setAcceptCookie(true) }
-                            .getCookie(LanAddress.withoutCredentials(normalized)).orEmpty()
-                    }.getOrDefault("")
-                }
+                // 反向代理认证 Cookie：用户手动配置的登录态（如 AI Studio api_serving）。
+                val cookie = _state.value.serverCookie
                 client.setAuthCookie(cookie)
                 activeBridge.setAuthCookie(cookie)
 
@@ -1886,15 +1878,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 delay(seconds * 1_000)
                 val server = _state.value.activeServer ?: return@launch
                 if (!isActive) return@launch
-                // 重连时恢复该服务器保存的认证 Cookie；未保存则尝试按域名自动读取。
-                val resumeCookie = server.cookie.ifBlank {
-                    runCatching {
-                        CookieManager.getInstance().apply { setAcceptCookie(true) }
-                            .getCookie(LanAddress.withoutCredentials(server.baseUrl)).orEmpty()
-                    }.getOrDefault("")
-                }
-                client.setAuthCookie(resumeCookie)
-                bridge?.setAuthCookie(resumeCookie)
+                // 重连时恢复该服务器保存的认证 Cookie。
+                client.setAuthCookie(server.cookie)
+                bridge?.setAuthCookie(server.cookie)
                 val stats = runCatching { client.systemStats() }.getOrNull() ?: continue
                 val restored = runCatching {
                     val activeBridge = bridge ?: error("前端桥接不可用")
