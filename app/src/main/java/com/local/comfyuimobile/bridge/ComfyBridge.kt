@@ -104,11 +104,18 @@ class ComfyBridge(private val activity: Activity) {
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
+                val firstForEpoch = finishedPageEpoch != pageEpoch
                 finishedPageEpoch = pageEpoch
-                AppLogger.info(
-                    "ComfyUI 网页完成加载：轮次=$pageEpoch，进度=${view.progress}%，" +
-                        "已挂载=${view.isAttachedToWindow}，地址=${url.orEmpty()}",
-                )
+                // 一次页面加载会触发多次 onPageFinished（主文档、iframe、重定向各一次）；
+                // 百度 AI Studio 这类平台还会十几秒自动重载一轮。全量记录会把诊断日志
+                // 冲垮——实测 17 分钟 208 条，占掉整份日志的一半以上，真正有用的报错
+                // 反而被埋掉。改成每轮只记第一次。
+                if (firstForEpoch) {
+                    AppLogger.info(
+                        "ComfyUI 网页完成加载：轮次=$pageEpoch，进度=${view.progress}%，" +
+                            "已挂载=${view.isAttachedToWindow}，地址=${url.orEmpty()}",
+                    )
+                }
                 super.onPageFinished(view, url)
             }
 
@@ -965,18 +972,20 @@ class ComfyBridge(private val activity: Activity) {
             };
             const serverWorkflowPath = ${encodedWorkflowPath?.let { "new TextDecoder().decode(Uint8Array.from(atob('$it'), c => c.charCodeAt(0)))" } ?: "''"};
             if (!$inspectCurrentGraph) {
+              // openedFromServer=true 表示已经按"服务器已保存的工作流"的方式打开成功。
+              // 打不开不算失败：百度 AI Studio 这类反向代理不开放 /userdata，工作流列表
+              // 永远是空的，但工作流的完整内容已经通过 base64 传进来了。以前这里直接
+              // return 错误，导致这类平台上导入、快捷生图、预读取三条路全线卡死。
+              // 现在改成就地降级——直接用传进来的内容加载。
+              let openedFromServer = false;
               if (serverWorkflowPath) {
               // Follow the same path as ComfyUI's workflow sidebar: resolve the
               // persisted ComfyWorkflow first and pass that object to loadGraphData.
               const workflowStore = app.extensionManager?.workflow;
-              if (!workflowStore?.getWorkflowByPath || !workflowStore?.syncWorkflows) {
-                return JSON.stringify({ok:false, error:'当前 ComfyUI 前端未提供官方工作流打开接口'});
-              }
-              await workflowStore.syncWorkflows();
-              const persistedWorkflow = workflowStore.getWorkflowByPath(serverWorkflowPath);
-              if (!persistedWorkflow) {
-                return JSON.stringify({ok:false, error:'服务器工作流列表中找不到：' + serverWorkflowPath});
-              }
+              if (workflowStore?.getWorkflowByPath && workflowStore?.syncWorkflows) {
+                await workflowStore.syncWorkflows();
+                const persistedWorkflow = workflowStore.getWorkflowByPath(serverWorkflowPath);
+                if (persistedWorkflow) {
               const alreadyActive = typeof workflowStore.isActive === 'function'
                 ? workflowStore.isActive(persistedWorkflow)
                 : workflowStore.activeWorkflow?.path === serverWorkflowPath;
@@ -1065,8 +1074,13 @@ class ComfyBridge(private val activity: Activity) {
                   openedGraph.extra = openedGraph.extra || {};
                   openedGraph.extra.comfyMobile = cloneValue(workflow.extra.comfyMobile);
                 }
-              }
-              } else {
+                openedFromServer = true;
+                } // 结束 if (persistedWorkflow)
+              } // 结束 if (!$nativeWorkflowOpen)
+              } // 结束 if (workflowStore?.getWorkflowByPath && ...)
+              } // 结束 if (serverWorkflowPath)
+              if (!openedFromServer) {
+                // 服务器工作流列表不可用（或本次根本没给路径）：直接用传入的内容加载。
                 await app.loadGraphData(workflow, true, false, null);
               }
             }
