@@ -1206,7 +1206,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         if (!isUserdataUnavailable(error)) throw error
                         null
                     }
-                val targetPath = current?.path ?: document.entry.path
+                val entry = current ?: document.entry
+                val targetPath = entry.path
                 val raw = runCatching { readWorkflowWithFallback(serverUrl, targetPath) }
                     .getOrDefault(document.rawJson)
                 val manifest = bridgeOperationMutex.withLock {
@@ -1220,12 +1221,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _state.update {
                     it.copy(
                         selectedWorkflow = WorkflowDocument(
-                            entry = current,
+                            entry = entry,
                             rawJson = raw,
                             fields = manifest.fields,
                             nodes = manifest.nodes,
                             serverUrl = document.serverUrl,
-                            baseModified = current.modified,
+                            baseModified = entry.modified,
                             hasUnsavedChanges = false,
                         ),
                         fields = manifest.fields,
