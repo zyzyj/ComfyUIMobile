@@ -156,7 +156,8 @@ class JobMonitorService : Service() {
         val monitor = scope.launch(start = CoroutineStart.LAZY) {
             var consecutivePollFailures = 0
             // v0.1.67：连续失败两次（10 秒）就放弃任务，避免日志里 80 次连刷。
-            val maxConsecutiveFailures = intent.getIntExtra(EXTRA_MAX_FAILURES, 2)
+            // intent 在 onStartCommand 里是可空类型，重启场景下可能为 null，这里给默认值兜底。
+            val maxConsecutiveFailures = intent?.getIntExtra(EXTRA_MAX_FAILURES, 2) ?: 2
             while (isActive) {
                 runCatching { readStatus(baseUrl, promptId) }.onSuccess { status ->
                     consecutivePollFailures = 0

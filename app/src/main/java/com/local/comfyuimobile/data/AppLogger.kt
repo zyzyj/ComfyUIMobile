@@ -53,6 +53,12 @@ object AppLogger {
 
     fun info(message: String) = write("信息", message)
 
+    /** v0.1.67：补上警告级日志，供「非致命但需要注意」的场景使用（如自动放弃轮询）。 */
+    fun warn(message: String, throwable: Throwable? = null) {
+        val detail = if (throwable == null) message else "$message\n${stackTrace(throwable)}"
+        write("警告", detail)
+    }
+
     fun error(message: String, throwable: Throwable? = null) {
         val detail = if (throwable == null) message else "$message\n${stackTrace(throwable)}"
         write("错误", detail)
@@ -79,7 +85,11 @@ object AppLogger {
 
     private fun write(level: String, message: String) {
         if (!enabled) return
-        if (level == "错误") Log.e(TAG, message) else Log.i(TAG, message)
+        when (level) {
+            "错误" -> Log.e(TAG, message)
+            "警告" -> Log.w(TAG, message)
+            else -> Log.i(TAG, message)
+        }
         synchronized(lock) {
             runCatching {
                 val app = context ?: return@runCatching
