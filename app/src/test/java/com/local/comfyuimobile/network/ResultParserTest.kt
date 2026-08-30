@@ -1,8 +1,12 @@
 package com.local.comfyuimobile.network
 
 import com.local.comfyuimobile.model.MediaKind
+import com.local.comfyuimobile.model.ResultMedia
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -63,5 +67,48 @@ class ResultParserTest {
         assertEquals(2, result.size)
         assertEquals(2, result.map { it.stableKey() }.toSet().size)
         assertEquals(1, result.map { it.url }.toSet().size)
+    }
+
+    // v0.1.67：图片信息要展示分辨率 + 复制种子。这两个工具方法必须能空值/null 兼容，
+    // 否则 ClipboardManager 会拿到 null 闪退。
+    @Test fun resultMediaReportsResolutionOnlyWhenBothDimensionsKnown() {
+        val media = ResultMedia(
+            jobId = "j1", nodeId = "9", filename = "x.png", subfolder = "", type = "output",
+            kind = MediaKind.IMAGE, url = "u",
+        )
+        assertNull(media.resolutionLabel())
+        assertNull(media.seedCopyValue())
+        val sized = media.copy(intrinsicWidth = 1920, intrinsicHeight = 1080, seed = "81")
+        assertEquals("1920 × 1080", sized.resolutionLabel())
+        assertEquals("81", sized.seedCopyValue())
+        val blankSeed = sized.copy(seed = "   ")
+        assertNull(blankSeed.seedCopyValue())
+        val onlyWidth = sized.copy(intrinsicHeight = null)
+        assertNull(onlyWidth.resolutionLabel())
+    }
+
+    @Test fun imageInfoShowsElapsedTimeAndSeedWhenParserExtractsFromPrompt() {
+        val history = JSONObject(
+            """{
+              "job-1":{
+                "prompt":[1,"j",{"11":{"class_type":"KSampler","inputs":{"seed":31415}}},
+                  {"create_time":100,"comfy_mobile":{"workflow_name":"ana"}}],
+                "outputs":{"9":{"images":[{"filename":"ana_00001.png","type":"output"}]}},
+                "status":{"messages":[
+                  ["execution_start",{"timestamp":100}],
+                  ["execution_success",{"timestamp":4800}]
+                ]}
+              }
+            }""",
+        )
+        val result = ResultParser.parse("http://192.168.1.2:8188", history)
+        assertEquals(1, result.size)
+        val media = result.first()
+        assertEquals("ana", media.workflowName)
+        assertEquals("31415", media.seed)
+        // 基础断言补全：确保耗时也传过来，否则图片信息面板不会显式展示耗时。
+        assertNotNull(media.elapsedMs)
+        assertTrue(media.elapsedMs!! >= 4_700L)
+        assertFalse(media.filename.isBlank())
     }
 }

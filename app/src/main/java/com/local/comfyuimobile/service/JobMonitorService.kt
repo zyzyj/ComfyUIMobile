@@ -143,6 +143,7 @@ class JobMonitorService : Service() {
         workflowNames[promptId] = workflowName
         workflowPaths[promptId] = workflowPath
         serverUrls[promptId] = baseUrl
+        authCookies[promptId] = authCookie
         AppLogger.info("后台开始监控任务：$promptId，工作流=$workflowName")
         startForeground(
             FOREGROUND_ID,
@@ -150,8 +151,12 @@ class JobMonitorService : Service() {
         )
         holdBackgroundLocks()
         monitors.remove(promptId)?.cancel()
+        // v0.1.67：兜底最近正在监控的 promptId 仍然指向自身，确保 stopSelf 不会被外层
+        // 的外层 START_REDELIVER_INTENT 误重启——只要这次任务进来就顶替占位。
         val monitor = scope.launch(start = CoroutineStart.LAZY) {
             var consecutivePollFailures = 0
+            // v0.1.67：连续失败两次（10 秒）就放弃任务，避免日志里 80 次连刷。
+            val maxConsecutiveFailures = intent.getIntExtra(EXTRA_MAX_FAILURES, 2)
             while (isActive) {
                 runCatching { readStatus(baseUrl, promptId) }.onSuccess { status ->
                     consecutivePollFailures = 0
@@ -245,6 +250,29 @@ class JobMonitorService : Service() {
                     consecutivePollFailures += 1
                     if (consecutivePollFailures == 1 || consecutivePollFailures % 6 == 0) {
                         AppLogger.error("后台轮询任务失败：$promptId，连续失败=$consecutivePollFailures", error)
+                    }
+                    // v0.1.67：超过上限就主动放弃并 stop 服务。AI Studio / 类似反向代理
+                    // 拿不到 Cookie 时会无限刷 404，日志里 80 次连刷就是这个原因。
+                    if (consecutivePollFailures >= maxConsecutiveFailures) {
+                        AppLogger.warn("连续失败 $consecutivePollFailures 次，自动放弃监控任务 $promptId")
+                        monitors.remove(promptId)
+                        workflowNames.remove(promptId)
+                        workflowPaths.remove(promptId)
+                        serverUrls.remove(promptId)
+                        authCookies.remove(promptId)
+                        getSystemService(NotificationManager::class.java)
+                            .notify(
+                                promptId.hashCode(),
+                                completionNotification(
+                                    "任务已超时",
+                                    "${workflowName}（${maxConsecutiveFailures} 次轮询失败，已停止监控）",
+                                    promptId,
+                                    baseUrl,
+                                    workflowPath,
+                                ),
+                            )
+                        stopIfIdle()
+                        return@launch
                     }
                 }
                 delay(5_000)
@@ -448,6 +476,8 @@ class JobMonitorService : Service() {
         const val EXTRA_WORKFLOW_PATH = "workflow_path"
         const val EXTRA_PROGRESS = "progress"
         const val EXTRA_NODE = "node"
+        // v0.1.67：调用方可以传入最大连续失败次数，给 AI Studio / 反向代理环境调大点。
+        const val EXTRA_MAX_FAILURES = "max_failures"
         const val ACTION_PROGRESS = "com.local.comfyuimobile.action.PROGRESS"
         const val ACTION_STOP = "com.local.comfyuimobile.action.STOP_MONITOR"
         const val ACTION_LOCAL_RESULTS_UPDATED = "com.local.comfyuimobile.action.LOCAL_RESULTS_UPDATED"

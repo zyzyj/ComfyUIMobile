@@ -141,8 +141,22 @@ data class ResultMedia(
     val positivePrompt: String? = null,
     val source: ResultSource = ResultSource.CLOUD,
     val localPath: String? = null,
+    // v0.1.67：图片查看页要直接显示分辨率并支持复制种子。ComfyUI /history
+    // 不返回 width/height，所以留空、由 UI 在第一次解码成功后回填。
+    val intrinsicWidth: Int? = null,
+    val intrinsicHeight: Int? = null,
 ) {
     fun stableKey(): String = listOf(jobId, nodeId, type, subfolder, filename).joinToString("/")
+
+    /** 解析后的分辨率文案，未知时返回 null。 */
+    fun resolutionLabel(): String? {
+        val w = intrinsicWidth ?: return null
+        val h = intrinsicHeight ?: return null
+        return "${w} × ${h}"
+    }
+
+    /** 复制种子时的展示文本。 */
+    fun seedCopyValue(): String? = seed?.takeIf { it.isNotBlank() }
 }
 
 data class CacheOutputRule(

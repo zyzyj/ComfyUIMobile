@@ -2137,6 +2137,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun refreshWorkflowsInternal() {
+        // v0.1.67：AI Studio 等反向代理服务器没有开放 /userdata 接口，listWorkflows 会 404。
+        // 失败时不重置 workflows 列表，保留旧工作流展示给用户；如果旧列表为空，再用
+        // RecentWorkflows 按当前 serverKey 恢复最近浏览过的路径作为兜底。
         runCatching { client.listWorkflows() }.onSuccess { entries ->
             _state.update { ui ->
                 val document = ui.selectedWorkflow
@@ -2154,6 +2157,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         else -> ui.workflowDraftConflictReason
                     },
                 )
+            }
+        }.onFailure { error ->
+            // v0.1.67：失败时保留旧列表，再尝试按最近浏览的路径构造占位条目，避免用户
+            // 看到空白列表。同时给 UI 一个柔和的 notice，提示云端工作流不可用。
+            AppLogger.warn("工作流刷新失败，保留本地最近浏览路径作为占位", error)
+            _state.update { ui ->
+                val placeholders = RecentWorkflows.resolveEntries(ui.recentWorkflowPaths, ui.workflows)
+                val serverKey = ui.activeServer?.baseUrl.orEmpty().let { WorkflowDraftStore.normalizeServer(it) }
+                val hasServerScopedRecents = serverKey.isNotBlank() && ui.recentWorkflowPaths.isNotEmpty()
+                if (ui.workflows.isEmpty() && placeholders.isNotEmpty() && hasServerScopedRecents) {
+                    ui.copy(
+                        workflows = placeholders,
+                        notice = ui.notice ?: "云端暂不可用 ${error.message?.take(40) ?: ""}，正在显示最近浏览的工作流",
+                    )
+                } else {
+                    ui
+                }
             }
         }
     }

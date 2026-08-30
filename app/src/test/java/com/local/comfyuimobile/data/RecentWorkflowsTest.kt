@@ -55,4 +55,16 @@ class RecentWorkflowsTest {
             RecentWorkflows.resolveEntries(listOf(serverEntry.path), listOf(serverEntry)).single(),
         )
     }
+
+    // v0.1.67：切换服务器 + AI Studio 云端 404 时，RecentWorkflows 需要按用户"最近浏览"
+    // 顺序兜底显示。这里保证空白/字符合法性都不会破坏 resolveEntries 的行为。
+    @Test fun blankPathsAreIgnoredAndOrderStaysStable() {
+        val resolved = RecentWorkflows.resolveEntries(
+            paths = listOf("", "workflows/A.json", "   ", "workflows/B.json"),
+            available = emptyList(),
+        )
+        assertEquals(2, resolved.size)
+        assertEquals("workflows/A.json", resolved.first().path)
+        assertEquals("workflows/B.json", resolved.last().path)
+    }
 }

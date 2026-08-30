@@ -1,6 +1,8 @@
 package com.local.comfyuimobile.ui
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
@@ -42,6 +44,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.WindowInsets
@@ -1828,7 +1831,16 @@ private fun ImageGalleryViewer(
     val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(items.indices)) { items.size }
     val pagerScope = rememberCoroutineScope()
     val transform = remember { GalleryTransformState() }
-    val current = items[pagerState.currentPage.coerceIn(items.indices)]
+    // v0.1.67：把解码后的 intrinsicWidth/Height 暂存到 galleryState，回传给 caller 让
+    // 文件信息面板能直接显示「分辨率：1920 × 1080」。原 Key 是 jobId+nodeId，足够稳定。
+    val galleryState = remember(items) { mutableStateOf(emptyMap<String, Pair<Int, Int>>()) }
+    // 把解码出的 intrinsicWidth/Height 回填到 current 上，让文件信息面板能直接显示分辨率。
+    val resolvedSize = galleryState.value[current.stableKey()]
+    val sized = if (resolvedSize != null && (current.intrinsicWidth != resolvedSize.first || current.intrinsicHeight != resolvedSize.second)) {
+        current.copy(intrinsicWidth = resolvedSize.first, intrinsicHeight = resolvedSize.second)
+    } else current
+    // 局部变量遮蔽：函数余下部分统一用 sized 渲染（已含回填分辨率），避免重复条件。
+    val current = sized
     var chromeVisible by remember { mutableStateOf(true) }
     var moreExpanded by remember { mutableStateOf(false) }
     var showInfo by remember { mutableStateOf(false) }
@@ -1867,6 +1879,12 @@ private fun ImageGalleryViewer(
                         transform = transform,
                         onTap = { chromeVisible = !chromeVisible },
                         onZoom = { chromeVisible = false },
+                        onResolved = { size ->
+                            val key = items[page].stableKey()
+                            if (galleryState.value[key] != size) {
+                                galleryState.value = galleryState.value + (key to size)
+                            }
+                        },
                     )
                 }
                 if (pagerState.currentPage > 0) {
@@ -1894,7 +1912,9 @@ private fun ImageGalleryViewer(
                 if (chromeVisible) {
                     Row(
                         Modifier.fillMaxWidth().align(Alignment.TopCenter)
-                            .background(Color.Black.copy(alpha = 0.62f)).padding(horizontal = 8.dp, vertical = 10.dp),
+                            // v0.1.67：完全置黑，原来 0.62 alpha 在浅色背景下能透出首页。
+                            .background(Color.Black).statusBarsPadding()
+                            .padding(horizontal = 8.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "关闭", tint = Color.White) }
@@ -1915,10 +1935,12 @@ private fun ImageGalleryViewer(
                     }
                     Row(
                         Modifier.fillMaxWidth().align(Alignment.BottomCenter)
-                            .background(Color.Black.copy(alpha = 0.68f)).navigationBarsPadding()
-                            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 4.dp, vertical = 8.dp),
+                            // v0.1.67：之前是 0.68 透明黑底 + windowInsetsPadding，部分机型仍会
+                            // 被系统手势条盖住。这里换成纯黑 + navigationBarsPadding，再额外留一段空白，
+                            // 让五个图标 + 「更多」菜单有充分点击区，不会贴底。
+                            .background(Color.Black)
+                            .navigationBarsPadding()
+                            .padding(horizontal = 4.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         GalleryAction(Icons.Default.Share, "分享") { onShare(current) }
@@ -1986,6 +2008,16 @@ private fun ImageGalleryViewer(
         }
     }
     if (showInfo) {
+        // v0.1.67：长按「随机种子」可复制到剪贴板，分辨率直接展示（首次解码后由
+        // ZoomableGalleryImage 回填到 ResultMedia.intrinsicWidth/intrinsicHeight）。
+        val context = LocalContext.current
+        var copyFeedback by remember { mutableStateOf<String?>(null) }
+        LaunchedEffect(copyFeedback) {
+            if (copyFeedback != null) {
+                kotlinx.coroutines.delay(2_000)
+                copyFeedback = null
+            }
+        }
         AlertDialog(
             onDismissRequest = { showInfo = false },
             title = { Text("文件信息") },
@@ -2000,14 +2032,35 @@ private fun ImageGalleryViewer(
                     current.workflowName.takeIf { it.isNotBlank() }?.let {
                         Text("工作流：$it", style = MaterialTheme.typography.bodySmall)
                     }
-                    current.seed?.takeIf { it.isNotBlank() }?.let {
-                        Text("随机种子：$it", style = MaterialTheme.typography.bodySmall)
+                    current.seedCopyValue()?.let { seedValue ->
+                        val seedColor = MaterialTheme.colorScheme.primary
+                        Text(
+                            "随机种子：$seedValue（长按复制）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = seedColor,
+                            modifier = Modifier
+                                .combinedClickable(
+                                    onClick = {},
+                                    onLongClick = {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                        clipboard?.setPrimaryClip(ClipData.newPlainText("seed", seedValue))
+                                        copyFeedback = "已复制种子到剪贴板"
+                                    },
+                                )
+                                .padding(vertical = 2.dp),
+                        )
                     }
+                    val resolution = current.resolutionLabel()
+                    Text(
+                        if (resolution != null) "分辨率：$resolution" else "分辨率：解码中…",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                     Text("输出部件：${current.nodeId}", style = MaterialTheme.typography.bodySmall)
                     current.positivePrompt?.takeIf { it.isNotBlank() }?.let {
                         Text("正向提示词：$it", style = MaterialTheme.typography.bodySmall)
                     }
                     Text("来源：${if (current.source == ResultSource.LOCAL) "本地缓存" else "ComfyUI 服务器"}", style = MaterialTheme.typography.bodySmall)
+                    copyFeedback?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
                 }
             },
             confirmButton = { TextButton(onClick = { showInfo = false }) { Text("关闭") } },
@@ -2071,6 +2124,7 @@ private fun ZoomableGalleryImage(
     transform: GalleryTransformState,
     onTap: () -> Unit,
     onZoom: () -> Unit,
+    onResolved: (Pair<Int, Int>) -> Unit = {},
 ) {
     var viewport by remember(media.localPath, media.url) { mutableStateOf(IntSize.Zero) }
     var imageSize by remember(media.localPath, media.url) { mutableStateOf(IntSize.Zero) }
@@ -2134,10 +2188,11 @@ private fun ZoomableGalleryImage(
             },
             contentScale = ContentScale.Fit,
             onSuccess = { state ->
-                imageSize = IntSize(
-                    state.result.drawable.intrinsicWidth.coerceAtLeast(1),
-                    state.result.drawable.intrinsicHeight.coerceAtLeast(1),
-                )
+                val w = state.result.drawable.intrinsicWidth.coerceAtLeast(1)
+                val h = state.result.drawable.intrinsicHeight.coerceAtLeast(1)
+                imageSize = IntSize(w, h)
+                // v0.1.67：把解码尺寸上报给 GalleryViewer，让文件信息面板直接展示分辨率。
+                onResolved(w to h)
             },
         )
     }
