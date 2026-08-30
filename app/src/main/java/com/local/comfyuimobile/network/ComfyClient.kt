@@ -1,12 +1,15 @@
 package com.local.comfyuimobile.network
 
+import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.model.DeviceStats
 import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.JobSummary
 import com.local.comfyuimobile.model.ServerProfile
 import com.local.comfyuimobile.model.SystemStats
 import com.local.comfyuimobile.model.WorkflowEntry
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -58,9 +61,22 @@ class ComfyClient {
     @Volatile private var baseUrl: String = ""
     @Volatile private var socket: WebSocket? = null
 
+    /**
+     * v0.1.68：记录这台服务器实际支持哪些 ComfyUI 接口。
+     * 反向代理（百度 AI Studio 等）不开放 /userdata，以前每 11 秒刷一次、
+     * 17 分钟刷了 56 次，日志被同一页 HTML 彻底淹没。
+     */
+    private val capabilities = ServerCapabilities()
+
     fun setServer(url: String) {
         baseUrl = url.trimEnd('/')
     }
+
+    /** 供 UI 查询"这台服务器有哪些功能不可用"，用于给出明确提示。 */
+    fun capabilities(): ServerCapabilities = capabilities
+
+    /** 当前服务器不可用的功能摘要（空串表示全部可用）。 */
+    fun unsupportedFeatures(): String = capabilities.unavailableSummary(baseUrl)
 
     fun serverUrl(): String = baseUrl
 
@@ -71,9 +87,38 @@ class ComfyClient {
 
     fun authCookie(): String = authCookie
 
+    /**
+     * v0.1.68：反向代理（百度 AI Studio 等）在实例冷启动 / 会话尚未建立时，第一次
+     * 请求会返回平台自己的错误页而不是 JSON——有时还伪装成 HTTP 200。日志里用户
+     * 连点五次连接、前四次全栽在这上面。这里对"拿到的是网页而不是 JSON"这种情况
+     * 自动重试两次，把冷启动的抖动吃掉，而不是让用户反复点。
+     */
+    private suspend fun probeOnceWithRetry(normalized: String): JSONObject = withContext(Dispatchers.IO) {
+        var lastError: Throwable? = null
+        repeat(PROBE_ATTEMPTS) { attempt ->
+            if (attempt > 0) delay(PROBE_RETRY_DELAYS_MS[attempt - 1])
+            val outcome = runCatching {
+                executeJson(Request.Builder().url("$normalized/system_stats").get().build())
+            }
+            if (outcome.isSuccess) return@withContext outcome.getOrThrow()
+            val error = outcome.exceptionOrNull() ?: return@repeat
+            // runCatching 连取消信号一起吞了，这里必须放行，否则退出页面时
+            // 这个协程会赖着不走，把下一次连接的请求也一起搅乱。
+            if (error is CancellationException) throw error
+            lastError = error
+            // 只在"服务器返回了网页"或 5xx 时重试：这是冷启动抖动的典型特征。
+            // ComfyUI 自己返回的 4xx JSON 错误、DNS 失败、连接被拒都不重试，
+            // 免得把本来秒回的错误拖成 5 秒超时。
+            val retriable = error is PlatformResponseException && (error.html || error.httpCode >= 500)
+            if (!retriable) throw error
+            AppLogger.warn("服务器第 ${attempt + 1}/$PROBE_ATTEMPTS 次探测返回了网页或 5xx，准备重试", error)
+        }
+        throw lastError ?: IllegalStateException("服务器探测失败")
+    }
+
     suspend fun probe(url: String = baseUrl): Pair<SystemStats, ServerProfile> = withContext(Dispatchers.IO) {
         val normalized = LanAddress.normalize(url)
-        val root = executeJson(Request.Builder().url("$normalized/system_stats").get().build())
+        val root = probeOnceWithRetry(normalized)
         val stats = parseSystemStats(root)
         val host = LanAddress.displayHost(normalized)
         stats to ServerProfile(
@@ -93,9 +138,45 @@ class ComfyClient {
 
     suspend fun objectInfo(): JSONObject = withContext(Dispatchers.IO) { getJson("/object_info") }
 
+    /**
+     * v0.1.68：在能力门控下执行 /userdata 请求。
+     *
+     * 判定为"平台不支持"后进入指数退避（30s → 60s → … → 10 分钟封顶），
+     * 而不是继续定时刷。日志里 17 分钟刷 56 次同一页 HTML 就是这么来的。
+     */
+    private fun <T> userdataCall(block: () -> T): T {
+        val capability = ServerCapabilities.Capability.USERDATA
+        val key = baseUrl
+        if (!capabilities.shouldRetry(key, capability, System.currentTimeMillis())) {
+            throw PlatformResponseException(
+                capabilities.reason(key, capability) ?: "该服务器不支持云端工作流，已暂停重试",
+                404,
+                true,
+            )
+        }
+        return try {
+            block().also { capabilities.markSuccess(key, capability) }
+        } catch (error: PlatformResponseException) {
+            capabilities.markFailure(
+                key, capability, System.currentTimeMillis(),
+                error.message.orEmpty(), error.unsupported,
+            )
+            throw error
+        } catch (error: Exception) {
+            // 超时、连接中断属于暂时故障，不该把接口永久标记成"不支持"
+            capabilities.markFailure(
+                key, capability, System.currentTimeMillis(),
+                error.message.orEmpty(), false,
+            )
+            throw error
+        }
+    }
+
     suspend fun listWorkflows(): List<WorkflowEntry> = withContext(Dispatchers.IO) {
         val url = "$baseUrl/v2/userdata?path=${encode("workflows")}" 
-        val array = executeArray(Request.Builder().url(url).get().build())
+        val array = userdataCall {
+            executeArray(Request.Builder().url(url).get().build())
+        }
         buildList {
             repeat(array.length()) { index ->
                 val item = array.getJSONObject(index)
@@ -117,13 +198,13 @@ class ComfyClient {
     }
 
     suspend fun readWorkflow(path: String): String = withContext(Dispatchers.IO) {
-        executeText(Request.Builder().url(userdataUrl(path)).get().build())
+        userdataCall { executeText(Request.Builder().url(userdataUrl(path)).get().build()) }
     }
 
     suspend fun writeWorkflow(path: String, json: String, overwrite: Boolean): WorkflowEntry = withContext(Dispatchers.IO) {
         val url = userdataUrl(path) + "?overwrite=$overwrite&full_info=true"
         val request = Request.Builder().url(url).post(json.toRequestBody(jsonMedia)).build()
-        val response = executeJson(request)
+        val response = userdataCall { executeJson(request) }
         WorkflowEntry(
             name = path.substringAfterLast('/'),
             path = response.optString("path", path),
@@ -135,7 +216,8 @@ class ComfyClient {
 
     suspend fun moveWorkflow(source: String, destination: String): WorkflowEntry = withContext(Dispatchers.IO) {
         val url = userdataUrl(source) + "/move/" + UserdataPath.encode(destination) + "?overwrite=false&full_info=true"
-        val response = executeJson(Request.Builder().url(url).post(ByteArray(0).toRequestBody()).build())
+        val request = Request.Builder().url(url).post(ByteArray(0).toRequestBody()).build()
+        val response = userdataCall { executeJson(request) }
         WorkflowEntry(
             name = destination.substringAfterLast('/'),
             path = response.optString("path", destination),
@@ -146,7 +228,12 @@ class ComfyClient {
     }
 
     suspend fun deleteWorkflow(path: String) = withContext(Dispatchers.IO) {
-        executeText(Request.Builder().url(userdataUrl(path)).delete().build(), allowedCodes = setOf(200, 204))
+        userdataCall {
+            executeText(
+                Request.Builder().url(userdataUrl(path)).delete().build(),
+                allowedCodes = setOf(200, 204),
+            )
+        }
     }
 
     suspend fun queue(): List<JobSummary> = withContext(Dispatchers.IO) {
@@ -323,13 +410,12 @@ class ComfyClient {
     private fun executeText(request: Request, allowedCodes: Set<Int> = setOf(200)): String {
         client.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
-            if (response.code !in allowedCodes) {
-                val message = runCatching {
-                    val error = JSONObject(body).optJSONObject("error")
-                    error?.optString("message").takeUnless { it.isNullOrBlank() } ?: body
-                }.getOrDefault(body)
-                throw IllegalStateException("HTTP ${response.code}: ${message.take(600)}")
-            }
+            // v0.1.68：反向代理托管的 ComfyUI（百度 AI Studio、CloudStudio 等）不支持的
+            // 接口会返回网页——有时是 404 错误页，有时更坑，是 HTTP 200 + 登录页。
+            // 以前只校验 HTTP 码，200+HTML 被当成合法 JSON，后面解析抛出莫名其妙的
+            // JSONException；而错误时又把整页 HTML 灌进日志，一次 34 行、刷几十次就把
+            // 诊断日志彻底淹没。改由 PlatformResponseGuard 按内容统一判定并压缩成一行。
+            PlatformResponseGuard.guard(response.code, body, allowedCodes)
             return body
         }
     }
@@ -433,4 +519,11 @@ class ComfyClient {
 
     private fun userdataUrl(path: String): String = "$baseUrl/userdata/${UserdataPath.encode(path)}"
     private fun encode(value: String): String = URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
+
+    private companion object {
+        /** 探测服务器最多试几次（含首次）。 */
+        const val PROBE_ATTEMPTS = 3
+        /** 两次探测之间的等待，下标 0 对应第 2 次尝试前的等待。 */
+        val PROBE_RETRY_DELAYS_MS = longArrayOf(1_500L, 3_000L)
+    }
 }

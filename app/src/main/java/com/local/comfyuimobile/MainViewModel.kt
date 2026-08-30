@@ -29,6 +29,7 @@ import com.local.comfyuimobile.data.WorkflowDraft
 import com.local.comfyuimobile.data.WorkflowDraftFields
 import com.local.comfyuimobile.data.WorkflowDraftStore
 import com.local.comfyuimobile.data.WorkflowFormat
+import com.local.comfyuimobile.data.WorkflowContentCache
 import com.local.comfyuimobile.model.AppUiState
 import com.local.comfyuimobile.model.AppDestination
 import com.local.comfyuimobile.model.AppNavigationRequest
@@ -53,6 +54,7 @@ import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.network.LanScanner
 import com.local.comfyuimobile.network.ResultParser
 import com.local.comfyuimobile.network.PromptSubmissionException
+import com.local.comfyuimobile.network.PlatformResponseException
 import com.local.comfyuimobile.network.ProgressStateParser
 import com.local.comfyuimobile.service.JobMonitorService
 import com.local.comfyuimobile.service.JobNotificationNavigation
@@ -278,6 +280,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 明文密码的屏蔽统一由界面层显示时处理。
                 _state.update { it.copy(serverInput = normalized) }
                 client.setServer(normalized)
+                // v0.1.68：换服务器等于换平台，之前记的"某接口不支持"要作废重新探测，
+                // 否则从 AI Studio 切回本地服务器后会沿用旧的退避判断。
+                client.capabilities().reset(client.serverUrl())
+                userdataUnsupportedLogged = false
                 // 反向代理认证 Cookie：用户手动配置的登录态（如 AI Studio api_serving）。
                 val cookie = _state.value.serverCookie
                 client.setAuthCookie(cookie)
@@ -418,6 +424,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * v0.1.68：读工作流内容，服务器读不到就退回本地缓存。
+     *
+     * 百度 AI Studio 这类反向代理不开放 /userdata，readWorkflow 必然失败。但导入时
+     * 内容已经完整进内存了，不该因为服务器不提供文件读写就把整条链路卡死——
+     * 日志里用户连点四次快捷生图、每次都在 0.1 秒内失败，就是这个原因。
+     */
+    private suspend fun readWorkflowWithFallback(serverUrl: String, path: String): String {
+        val cached = WorkflowContentCache[serverUrl, path]
+        return runCatching { client.readWorkflow(path) }
+            .onSuccess { WorkflowContentCache.put(serverUrl, path, it) }
+            .getOrElse { error ->
+                // runCatching 会连取消信号一起吞掉，必须放行，否则退出页面后
+                // 这个协程会继续往下走，把状态写进一个已经不存在的界面。
+                if (error is CancellationException) throw error
+                cached?.also {
+                    AppLogger.warn("服务器上读不到 $path，改用本地缓存的工作流内容", error)
+                } ?: throw error
+            }
+    }
+
+    /**
+     * v0.1.68：/userdata 不可用只记一次日志。
+     * 这个失败是周期性的（每轮刷新都来一次），全量记录会把诊断日志淹掉。
+     */
+    private var userdataUnsupportedLogged = false
+
+    /**
+     * v0.1.68：判断这次 /userdata 失败是不是"这台服务器根本没有云端工作流接口"。
+     *
+     * 两种都算：
+     *  1. 能力门控已经把它标记为不支持（退避期内会快速失败，消息里不再有 404 字样）；
+     *  2. 服务器直接回了 404/400（老版本 ComfyUI、或反代直接拒绝）。
+     *
+     * 以前只认第 2 种的字符串，门控一上就漏判，导入/保存会在 AI Studio 上直接失败。
+     */
+    private fun isUserdataUnavailable(error: Throwable): Boolean =
+        (error is PlatformResponseException && error.unsupported) ||
+            (error is IllegalStateException && error.message.orEmpty().let { it.contains("404") || it.contains("400") })
+
+    /** 服务器不提供云端工作流时，用文件本身的信息构造一个"仅本地"的条目。 */
+    private fun localOnlyEntry(name: String, json: JSONObject): WorkflowEntry =
+        WorkflowEntry(
+            name = name,
+            path = "workflows/$name",
+            isDirectory = false,
+            size = json.toString().toByteArray().size.toLong(),
+        )
+
     fun selectWorkflow(entry: WorkflowEntry, recordAsOpened: Boolean = false) {
         if (entry.isDirectory) return
         AppLogger.info("预读取工作流：${entry.path}")
@@ -444,7 +499,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // advanced-editor structure edits, the edited workflow JSON.
                 // The server file is always the base, so a draft can never
                 // replace the whole workflow with another workflow's data.
-                val serverRaw = client.readWorkflow(entry.path)
+                val serverRaw = readWorkflowWithFallback(serverUrl, entry.path)
                 val structuralDraft = draft != null && draft.structural && !draft.workflowJson.isNullOrBlank()
                 val draftDiscarded = structuralDraft &&
                     WorkflowPolicy.draftStructureMismatched(draft.workflowJson!!, serverRaw)
@@ -786,7 +841,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runOperation("快捷工作流加载失败") {
                 _state.update { it.copy(loading = true, error = null) }
                 val serverUrl = _state.value.activeServer?.baseUrl ?: error("尚未连接 ComfyUI 服务器")
-                val raw = client.readWorkflow(entry.path)
+                val raw = readWorkflowWithFallback(serverUrl, entry.path)
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(rawJson = raw, workflowPath = entry.path)
                 }
@@ -894,7 +949,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 快捷生成前必须确保桥接侧就是快捷页选中的工作流，否则参数会写错图。
         val path = _state.value.quickWorkflowPath ?: return
         if (bridgeLoadedPath != path) {
-            val raw = client.readWorkflow(path)
+            val raw = readWorkflowWithFallback(_state.value.activeServer?.baseUrl.orEmpty(), path)
             (bridge ?: error("前端桥接不可用")).loadWorkflow(rawJson = raw, workflowPath = path)
             bridgeLoadedPath = path
         }
@@ -1006,12 +1061,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val saved = try {
                     client.writeWorkflow(document.entry.path, workflowJson, overwrite = current != null)
                 } catch (error: IllegalStateException) {
-                    val message = error.message.orEmpty()
-                    if (message.contains("404") || message.contains("400")) {
-                        saveWorkflowAsLocalDraft(document, workflowJson)
-                        return@runOperation
-                    }
-                    throw error
+                    // v0.1.68：改用统一判定，能力门控下的"已暂停重试"也能识别为不支持。
+                    if (!isUserdataUnavailable(error)) throw error
+                    saveWorkflowAsLocalDraft(document, workflowJson)
+                    return@runOperation
                 }
                 val updated = document.copy(
                     entry = saved,
@@ -1145,16 +1198,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runOperation("读取服务器工作流失败") {
                 flushCurrentDraft()
                 _state.update { it.copy(loading = true, error = null) }
-                val current = client.listWorkflows().firstOrNull { it.path == document.entry.path }
-                    ?: error("服务器上已找不到 ${document.entry.path}")
-                val raw = client.readWorkflow(current.path)
+                val serverUrl = _state.value.activeServer?.baseUrl.orEmpty()
+                val current = runCatching { client.listWorkflows().firstOrNull { it.path == document.entry.path } }
+                    .getOrElse { error ->
+                        // v0.1.68：不支持云端工作流的服务器上，这一步注定失败，
+                        // 但"丢弃草稿"这个意图仍然可以完成——用本地已有的内容重建。
+                        if (!isUserdataUnavailable(error)) throw error
+                        null
+                    }
+                val targetPath = current?.path ?: document.entry.path
+                val raw = runCatching { readWorkflowWithFallback(serverUrl, targetPath) }
+                    .getOrDefault(document.rawJson)
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(
                         rawJson = raw,
-                        workflowPath = current.path,
+                        workflowPath = targetPath,
                     )
                 }
-                bridgeLoadedPath = current.path
+                bridgeLoadedPath = targetPath
                 workflowDrafts.delete(document.serverUrl, document.entry.path)
                 _state.update {
                     it.copy(
@@ -1376,18 +1437,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     client.writeWorkflow("workflows/$candidateName", json.toString(), overwrite = false)
                 } catch (error: IllegalStateException) {
-                    val message = error.message.orEmpty()
-                    if (message.contains("404") || message.contains("400")) {
-                        WorkflowEntry(
-                            name = candidateName,
-                            path = "workflows/$candidateName",
-                            isDirectory = false,
-                            size = json.toString().toByteArray().size.toLong(),
-                        )
-                    } else {
-                        throw error
-                    }
+                    if (!isUserdataUnavailable(error)) throw error
+                    AppLogger.warn("服务器不支持云端工作流，导入降级为仅本地加载", error)
+                    localOnlyEntry(candidateName, json)
                 }
+                WorkflowContentCache.put(
+                    _state.value.activeServer?.baseUrl.orEmpty(),
+                    entry.path,
+                    json.toString(),
+                )
                 runCatching { refreshWorkflowsInternal() }
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(
@@ -2161,7 +2219,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }.onFailure { error ->
             // v0.1.67：失败时保留旧列表，再尝试按最近浏览的路径构造占位条目，避免用户
             // 看到空白列表。同时给 UI 一个柔和的 notice，提示云端工作流不可用。
-            AppLogger.warn("工作流刷新失败，保留本地最近浏览路径作为占位", error)
+            // v0.1.68：这种失败每 11 秒就来一次（AI Studio 实测 17 分钟 56 次），
+            // 只在第一次记日志，后面静默跳过，不然诊断日志还是会被同一句话占满。
+            val unsupported = error is PlatformResponseException && error.unsupported
+            if (!unsupported || !userdataUnsupportedLogged) {
+                AppLogger.warn("工作流刷新失败，保留本地最近浏览路径作为占位", error)
+                if (unsupported) userdataUnsupportedLogged = true
+            }
             _state.update { ui ->
                 val placeholders = RecentWorkflows.resolveEntries(ui.recentWorkflowPaths, ui.workflows)
                 val serverKey = ui.activeServer?.baseUrl.orEmpty().let { WorkflowDraftStore.normalizeServer(it) }
@@ -2169,7 +2233,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (ui.workflows.isEmpty() && placeholders.isNotEmpty() && hasServerScopedRecents) {
                     ui.copy(
                         workflows = placeholders,
-                        notice = ui.notice ?: "云端暂不可用 ${error.message?.take(40) ?: ""}，正在显示最近浏览的工作流",
+                        notice = ui.notice ?: if (unsupported) {
+                            "这台服务器不支持云端工作流列表，已切换为最近浏览的工作流；" +
+                                "需要云端工作流请换用直连的 ComfyUI 服务器"
+                        } else {
+                            "云端工作流列表暂时读不到，正在显示最近浏览的工作流"
+                        },
                     )
                 } else {
                     ui
@@ -2707,7 +2776,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val document = _state.value.selectedWorkflow ?: return
         if (WorkflowDraftStore.normalizeServer(document.serverUrl) != WorkflowDraftStore.normalizeServer(serverUrl)) return
 
-        val current = client.listWorkflows().firstOrNull { it.path == document.entry.path }
+        // v0.1.68：这个函数在"连接"流程里被调用，listWorkflows 一旦抛异常，整个连接
+        // 就会被判失败。不支持云端工作流的服务器上它必然失败，这里容忍掉，退回本地内容。
+        val current = runCatching { client.listWorkflows().firstOrNull { it.path == document.entry.path } }
+            .getOrElse { error ->
+                if (!isUserdataUnavailable(error)) throw error
+                null
+            }
         val serverChanged = current == null || WorkflowPolicy.hasModifiedConflict(document.baseModified, current.modified)
         val loadServerVersion = !document.hasUnsavedChanges && current != null && serverChanged
         val raw = if (loadServerVersion) client.readWorkflow(current.path) else document.rawJson
