@@ -1831,16 +1831,15 @@ private fun ImageGalleryViewer(
     val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(items.indices)) { items.size }
     val pagerScope = rememberCoroutineScope()
     val transform = remember { GalleryTransformState() }
-    // v0.1.67：把解码后的 intrinsicWidth/Height 暂存到 galleryState，回传给 caller 让
-    // 文件信息面板能直接显示「分辨率：1920 × 1080」。原 Key 是 jobId+nodeId，足够稳定。
+    // v0.1.67：把解码后的 intrinsicWidth/Height 暂存到 galleryState，让文件信息面板
+    // 能直接显示「分辨率：1920 × 1080」。Key 用 stableKey（jobId+nodeId…），足够稳定。
     val galleryState = remember(items) { mutableStateOf(emptyMap<String, Pair<Int, Int>>()) }
-    // 把解码出的 intrinsicWidth/Height 回填到 current 上，让文件信息面板能直接显示分辨率。
-    val resolvedSize = galleryState.value[current.stableKey()]
-    val sized = if (resolvedSize != null && (current.intrinsicWidth != resolvedSize.first || current.intrinsicHeight != resolvedSize.second)) {
-        current.copy(intrinsicWidth = resolvedSize.first, intrinsicHeight = resolvedSize.second)
-    } else current
-    // 局部变量遮蔽：函数余下部分统一用 sized 渲染（已含回填分辨率），避免重复条件。
-    val current = sized
+    val rawCurrent = items[pagerState.currentPage.coerceIn(items.indices)]
+    val resolvedSize = galleryState.value[rawCurrent.stableKey()]
+    // 只有解码出尺寸后才 copy 回填；未解码时原样使用，避免不必要的对象重建。
+    val current = if (resolvedSize != null) {
+        rawCurrent.copy(intrinsicWidth = resolvedSize.first, intrinsicHeight = resolvedSize.second)
+    } else rawCurrent
     var chromeVisible by remember { mutableStateOf(true) }
     var moreExpanded by remember { mutableStateOf(false) }
     var showInfo by remember { mutableStateOf(false) }
@@ -1935,11 +1934,12 @@ private fun ImageGalleryViewer(
                     }
                     Row(
                         Modifier.fillMaxWidth().align(Alignment.BottomCenter)
-                            // v0.1.67：之前是 0.68 透明黑底 + windowInsetsPadding，部分机型仍会
-                            // 被系统手势条盖住。这里换成纯黑 + navigationBarsPadding，再额外留一段空白，
-                            // 让五个图标 + 「更多」菜单有充分点击区，不会贴底。
+                            // v0.1.67：之前是 0.68 透明黑底，部分机型仍会被系统手势条盖住；
+                            // 这里换成纯黑，并保留横向滚动（小屏上图标不会被挤出屏幕），
+                            // 纵向 padding 从 8dp 加到 10dp，让五个图标 + 「更多」有充分点击区。
                             .background(Color.Black)
                             .navigationBarsPadding()
+                            .horizontalScroll(rememberScrollState())
                             .padding(horizontal = 4.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
