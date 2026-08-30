@@ -1,0 +1,121 @@
+构建失败于分支 main · 2026-08-30 05:00 UTC
+run: https://github.com/zyzyj/ComfyUIMobile/actions/runs/33293605764
+== Kotlin/编译错误行 ==
+> Task :app:compileDebugKotlin FAILED
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/MainViewModel.kt:2164:23 Unresolved reference 'warn'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/service/JobMonitorService.kt:159:48 Only safe (?.) or non-null asserted (!!.) calls are allowed on a nullable receiver of type 'android.content.Intent?'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/service/JobMonitorService.kt:257:35 Unresolved reference 'warn'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1838:43 Unresolved reference 'current'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1839:46 Unresolved reference 'current'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1839:94 Unresolved reference 'current'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1840:9 Unresolved reference 'current'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1841:12 Unresolved reference 'current'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1850:30 Unresolved reference 'stableKey'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1923:41 Unresolved reference 'createdAt'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1923:51 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1923:58 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1923:63 'operator' modifier is required on 'FirNamedFunctionSymbol kotlin/compareTo' in 'compareTo'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1923:100 Unresolved reference 'filename'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1953:41 Unresolved reference 'source'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1954:56 Unresolved reference 'source'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1954:121 Unresolved reference 'source'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1958:56 Unresolved reference 'source'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1967:47 Unresolved reference 'source'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2005:59 Unresolved reference 'filename'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2029:34 Unresolved reference 'filename'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2030:29 Unresolved reference 'elapsedMs'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2030:40 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2030:44 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2030:46 @Composable invocations can only happen from the context of a @Composable function
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2030:102 @Composable invocations can only happen from the context of a @Composable function
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2031:40 Unresolved reference 'jobId'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2032:29 Unresolved reference 'workflowName'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2032:42 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2032:49 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2032:70 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2032:70 Not enough information to infer type argument for 'T'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2032:70 Not enough information to infer type argument for 'R'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2032:74 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2035:29 Unresolved reference 'seedCopyValue'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2035:46 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2035:52 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2036:55 @Composable invocations can only happen from the context of a @Composable function
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2037:25 @Composable invocations can only happen from the context of a @Composable function
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2039:51 @Composable invocations can only happen from the context of a @Composable function
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2053:46 Unresolved reference 'resolutionLabel'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2058:42 Unresolved reference 'nodeId'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2059:29 Unresolved reference 'positivePrompt'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2059:45 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2059:52 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2059:73 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2059:73 Not enough information to infer type argument for 'T'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2059:73 Not enough information to infer type argument for 'R'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2059:77 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:2062:44 Unresolved reference 'source'.
+* What went wrong:
+Execution failed for task ':app:compileDebugKotlin'.
+org.gradle.api.tasks.TaskExecutionException: Execution failed for task ':app:compileDebugKotlin'.
+Caused by: org.gradle.workers.internal.DefaultWorkerExecutor$WorkExecutionException: A failure occurred while executing org.jetbrains.kotlin.compilerRunner.GradleCompilerRunnerWithWorkers$GradleKotlinCompilerWorkAction
+Caused by: org.jetbrains.kotlin.gradle.tasks.CompilationErrorException: Compilation error. See log for more details
+BUILD FAILED in 2m 59s
+== 前 60 行 ==
+Downloading https://services.gradle.org/distributions/gradle-8.11.1-bin.zip
+.............10%.............20%.............30%.............40%.............50%.............60%.............70%.............80%.............90%.............100%
+
+Welcome to Gradle 8.11.1!
+
+Here are the highlights of this release:
+ - Parallel load and store for Configuration Cache
+ - Java compilation errors at the end of the build output
+ - Consolidated report for warnings and deprecations
+
+For more details see https://docs.gradle.org/8.11.1/release-notes.html
+
+Starting a Gradle Daemon (subsequent builds will be faster)
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:mergeDebugNativeDebugMetadata NO-SOURCE
+> Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :app:generateDebugBuildConfig
+> Task :app:generateDebugResValues
+> Task :app:checkDebugAarMetadata
+> Task :app:mapDebugSourceSetPaths
+> Task :app:generateDebugResources
+> Task :app:packageDebugResources
+> Task :app:mergeDebugResources
+> Task :app:createDebugCompatibleScreenManifests
+> Task :app:extractDeepLinksDebug
+> Task :app:parseDebugLocalResources
+> Task :app:processDebugMainManifest
+> Task :app:processDebugManifest
+> Task :app:processDebugManifestForPackage
+> Task :app:javaPreCompileDebug
+> Task :app:mergeDebugShaders
+> Task :app:compileDebugShaders NO-SOURCE
+> Task :app:generateDebugAssets UP-TO-DATE
+> Task :app:mergeDebugAssets
+> Task :app:compressDebugAssets
+> Task :app:desugarDebugFileDependencies
+> Task :app:processDebugResources
+> Task :app:checkDebugDuplicateClasses
+> Task :app:compileDebugKotlin
+> Task :app:mergeExtDexDebug
+
+> Task :app:compileDebugKotlin FAILED
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/MainViewModel.kt:2164:23 Unresolved reference 'warn'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/service/JobMonitorService.kt:159:48 Only safe (?.) or non-null asserted (!!.) calls are allowed on a nullable receiver of type 'android.content.Intent?'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/service/JobMonitorService.kt:257:35 Unresolved reference 'warn'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1838:43 Unresolved reference 'current'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1839:46 Unresolved reference 'current'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1839:94 Unresolved reference 'current'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1840:9 Unresolved reference 'current'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1841:12 Unresolved reference 'current'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1850:30 Unresolved reference 'stableKey'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1923:41 Unresolved reference 'createdAt'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1923:51 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1923:58 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1923:63 'operator' modifier is required on 'FirNamedFunctionSymbol kotlin/compareTo' in 'compareTo'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1923:100 Unresolved reference 'filename'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1953:41 Unresolved reference 'source'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1954:56 Unresolved reference 'source'.
+e: file:///home/runner/work/ComfyUIMobile/ComfyUIMobile/app/src/main/java/com/local/comfyuimobile/ui/ComfyMobileApp.kt:1954:121 Unresolved reference 'source'.
