@@ -334,7 +334,11 @@ private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar
                         style = MaterialTheme.typography.bodySmall,
                     )
                 },
+                // v0.1.69：maxLines 必须给上限。Cookie 动辄几百字符，以前只有
+                // minLines=2 没有 maxLines，粘一段 AI Studio 的两件套就把整个连接页
+                // 撑成只剩输入框，"连接"按钮要滑半天才够得着。限 4 行、超出内部滚动。
                 minLines = 2,
+                maxLines = 4,
                 singleLine = false,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -2301,7 +2305,10 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
                 value = field.displayValue,
                 onValueChange = { viewModel.quickUpdateField(field.key, it) },
                 modifier = Modifier.fillMaxWidth(),
+                // v0.1.69：提示词同理，粘一大段 tag 会把下面的出图数量、生图按钮
+                // 全部顶出屏幕。限 6 行、超出内部滚动。
                 minLines = 2,
+                maxLines = 6,
                 label = { Text(field.label) },
             )
         }

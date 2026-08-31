@@ -122,4 +122,53 @@ class PlatformResponseGuardTest {
         val error = runCatching { PlatformResponseGuard.guard(502, "") }.exceptionOrNull()
         assertFalse((error as PlatformResponseException).html)
     }
+
+    @Test
+    fun loginPageIsNotRetriable() {
+        // v0.1.69：Cookie 不会因为多试两次就自己出现。日志里 16:04:38 起连着 8 次
+        // "需要登录或登录已失效"，每次都白等三轮退避——登录页必须第一次就报出来。
+        val error = runCatching { PlatformResponseGuard.guard(200, loginPage) }.exceptionOrNull()
+            as PlatformResponseException
+        assertTrue(error.loginPage)
+        assertFalse(error.retriable)
+    }
+
+    @Test
+    fun coldStartHtmlIsStillRetriable() {
+        // 冷启动抖动页（非登录页）：重试能好，不能把重试关掉。
+        val body = "<html><body>service temporarily unavailable</body></html>"
+        val error = runCatching { PlatformResponseGuard.guard(200, body) }.exceptionOrNull()
+            as PlatformResponseException
+        assertFalse(error.loginPage)
+        assertTrue(error.retriable)
+    }
+
+    @Test
+    fun server5xxIsRetriableButPlain4xxIsNot() {
+        val e500 = runCatching { PlatformResponseGuard.guard(500, "boom") }.exceptionOrNull()
+            as PlatformResponseException
+        assertTrue(e500.retriable)
+        val e400 = runCatching { PlatformResponseGuard.guard(400, """{"error":{"message":"bad"}}""") }
+            .exceptionOrNull() as PlatformResponseException
+        assertFalse(e400.retriable)
+    }
+
+    @Test
+    fun unsupportedHtmlStillRetriesBecauseColdStartLooksIdentical() {
+        // unsupported 的用途是能力门控（ServerCapabilities），不是重试开关：
+        // 所有 HTML 都会标 unsupported，而 AI Studio 冷启动吐的也是 HTML，
+        // 重试层面区分不了"不支持"和"抖动"，所以非登录页 HTML 照旧可重试。
+        val error = runCatching { PlatformResponseGuard.guard(404, aistudioErrorPage) }.exceptionOrNull()
+            as PlatformResponseException
+        assertTrue(error.unsupported)
+        assertTrue(error.retriable)
+    }
+
+    @Test
+    fun plainJson4xxIsUnsupportedFalseAndNotRetriable() {
+        val e400 = runCatching { PlatformResponseGuard.guard(400, """{"error":{"message":"bad"}}""") }
+            .exceptionOrNull() as PlatformResponseException
+        assertFalse(e400.unsupported)
+        assertFalse(e400.retriable)
+    }
 }

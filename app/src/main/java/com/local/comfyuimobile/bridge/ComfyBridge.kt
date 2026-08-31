@@ -68,6 +68,18 @@ class ComfyBridge(private val activity: Activity) {
     @Volatile private var pageLoadError: String? = null
     @Volatile private var lastBridgePhase: String = "尚未执行前端脚本"
 
+    /**
+     * 服务器是否提供可用的云端工作流列表（ComfyUI 的 /userdata 接口）。
+     *
+     * 百度 AI Studio 这类反向代理不转发 /userdata，ComfyUI 前端的
+     * `workflowStore.syncWorkflows()` 会**永远挂住不返回**——日志里从 16:02:59 一直
+     * 挂到 Activity 重建都没有结果，导入工作流因此整个卡死。光靠脚本里的超时闸门
+     * 只是"卡 8 秒再降级"，关掉这个开关才能连那 8 秒都省掉。
+     *
+     * MainViewModel 探测到 /userdata 不可用后置 false，换服务器时恢复 true。
+     */
+    @Volatile var serverWorkflowStoreAvailable: Boolean = true
+
     /** 设置反向代理认证 Cookie（空串表示不启用），配合 loadServer 注入 WebView。 */
     fun setAuthCookie(cookie: String) {
         authCookie = cookie.trim()
@@ -397,6 +409,12 @@ class ComfyBridge(private val activity: Activity) {
           try {
             const app = window.__comfyMobileApp || window.comfyAPI?.app?.app;
             const workflowStore = app?.extensionManager?.workflow;
+            // /userdata 不可用时（AI Studio 等反向代理）服务器工作流列表是空的，
+            // 画布上的内容本来就是 App 自己用 loadGraphData 灌进去的，没有"切换标签"
+            // 这回事。以前这里会硬报"找不到被编辑的工作流"，让高级编辑无法保存。
+            if (${!serverWorkflowStoreAvailable}) {
+              return JSON.stringify({ok:true, switched:false, skipped:true});
+            }
             if (!workflowStore?.openWorkflow || !workflowStore?.getWorkflowByPath) {
               return JSON.stringify({ok:false, error:'ComfyUI 工作流仓库尚未就绪'});
             }
@@ -978,12 +996,21 @@ class ComfyBridge(private val activity: Activity) {
               // return 错误，导致这类平台上导入、快捷生图、预读取三条路全线卡死。
               // 现在改成就地降级——直接用传进来的内容加载。
               let openedFromServer = false;
-              if (serverWorkflowPath) {
+              // v0.1.69：已知 /userdata 不可用时连列表都不查。少了这一步，AI Studio 上
+              // 每次加载工作流就不会再白等一轮（即便有下面的超时闸门也要等满 8 秒）。
+              const skipServerWorkflow = ${!serverWorkflowStoreAvailable};
+              if (serverWorkflowPath && !skipServerWorkflow) {
               // Follow the same path as ComfyUI's workflow sidebar: resolve the
               // persisted ComfyWorkflow first and pass that object to loadGraphData.
               const workflowStore = app.extensionManager?.workflow;
               if (workflowStore?.getWorkflowByPath && workflowStore?.syncWorkflows) {
-                await workflowStore.syncWorkflows();
+                // 反向代理平台上 syncWorkflows() 会挂住不返回（请求 /userdata 拿不到
+                // 结果也不报错）。加一道超时闸门，超时就当服务器上没有这份工作流，
+                // 交给下面的 loadGraphData 用传入内容兜底，而不是把整个导入卡死。
+                await Promise.race([
+                  workflowStore.syncWorkflows(),
+                  new Promise(resolve => setTimeout(resolve, $WORKFLOW_SYNC_TIMEOUT_MS))
+                ]);
                 const persistedWorkflow = workflowStore.getWorkflowByPath(serverWorkflowPath);
                 if (persistedWorkflow) {
               const alreadyActive = typeof workflowStore.isActive === 'function'
@@ -1726,6 +1753,12 @@ class ComfyBridge(private val activity: Activity) {
     companion object {
         private const val IMAGE_IMPORT_PATH = "__comfy_mobile_import"
         private val SUPPORTED_WORKFLOW_IMAGE_TYPES = setOf("image/png", "image/webp", "image/avif")
+        /**
+         * 查服务器工作流列表的超时上限（毫秒）。正常 ComfyUI 上 syncWorkflows() 是
+         * 一次本地 /userdata 往返，几百毫秒就回来；反向代理平台上它可能永远不返回，
+         * 所以必须有闸门，超时就当作"服务器上没有这份工作流"，直接用传入的内容加载。
+         */
+        private const val WORKFLOW_SYNC_TIMEOUT_MS = 8_000L
 
         internal fun normalizeServerWorkflowPath(value: String?): String? = value
             ?.trim()
