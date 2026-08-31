@@ -171,4 +171,23 @@ class PlatformResponseGuardTest {
         assertFalse(e400.unsupported)
         assertFalse(e400.retriable)
     }
+
+    @Test
+    fun authWallHtmlReportsLoginInsteadOfUnsupported() {
+        // v0.1.70：反代的登录墙常以 403 + 普通错误页出现（日志 19:40:39 那次
+        // 报成了"该服务器不支持此接口"，其实是 Cookie 没带对，重试也不会好）。
+        val error = runCatching { PlatformResponseGuard.guard(403, aistudioErrorPage) }.exceptionOrNull()
+            as PlatformResponseException
+        assertTrue(error.loginPage)
+        assertFalse(error.retriable)
+        assertTrue(error.message!!.contains("需要登录"))
+    }
+
+    @Test
+    fun authWall401BehavesTheSameWay() {
+        val error = runCatching { PlatformResponseGuard.guard(401, aistudioErrorPage) }.exceptionOrNull()
+            as PlatformResponseException
+        assertTrue(error.loginPage)
+        assertTrue(error.message!!.contains("需要登录"))
+    }
 }

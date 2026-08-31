@@ -21,7 +21,10 @@ object PlatformResponseGuard {
     const val MAX_BODY_CHARS = 120
 
     /** 判定为"不支持此接口"的 HTTP 码。 */
-    private val UNSUPPORTED_CODES = setOf(400, 401, 403, 404, 405, 501)
+    private val UNSUPPORTED_CODES = setOf(400, 404, 405, 501)
+
+    /** 反向代理的登录墙常见码：返回 HTML 时按"需要登录"报，而不是"不支持"。 */
+    private val AUTH_CODES = setOf(401, 403)
 
     enum class BodyKind { JSON, HTML, EMPTY, TEXT, REDIRECT }
 
@@ -67,6 +70,10 @@ object PlatformResponseGuard {
         return when {
             looksLikeLoginPage(body) ->
                 "需要登录或登录已失效（HTTP $httpCode，服务器返回的是登录页）"
+            // 反向代理的登录墙常以 401/403 + 普通错误页出现（日志 19:40:39 那次 403
+            // 报成了"该服务器不支持此接口"，其实 Cookie 没带对，文案纯属误导）。
+            httpCode in AUTH_CODES ->
+                "需要登录或登录已失效（HTTP $httpCode，服务器返回的是网页错误页）"
             httpCode in UNSUPPORTED_CODES ->
                 "该服务器不支持此接口（HTTP $httpCode，返回的是网页错误页）"
             else ->
@@ -81,7 +88,8 @@ object PlatformResponseGuard {
     @Throws(PlatformResponseException::class)
     fun guard(httpCode: Int, body: String, allowedCodes: Set<Int> = setOf(200)) {
         val html = isHtml(body)
-        val login = html && looksLikeLoginPage(body)
+        // 登录墙：明文登录页，或者 401/403 + HTML（同一次会话重试不会变好）。
+        val login = html && (looksLikeLoginPage(body) || httpCode in AUTH_CODES)
         if (httpCode !in allowedCodes) {
             throw PlatformResponseException(
                 describe(httpCode, body), httpCode, isUnsupported(httpCode, body), html, login,
