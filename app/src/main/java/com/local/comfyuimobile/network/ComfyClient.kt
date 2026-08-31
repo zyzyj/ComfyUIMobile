@@ -68,8 +68,22 @@ class ComfyClient {
      */
     private val capabilities = ServerCapabilities()
 
+    /**
+     * 路径是否需要双重百分号编码。
+     *
+     * 百度 AI Studio 的反向代理会把 URL 路径解掉一层编码再转发给后端，中文工作流名
+     * （如"任务快照-xxx.json"）于是变成裸的非 ASCII 字节，被 Python 侧的 HTTP 服务器
+     * 直接以 `Invalid char in url path`（HTTP 400）拒掉——日志里 16:08:50 的
+     * "工作流另存失败"就是它。
+     *
+     * 把 `%` 再编码成 `%25`，代理解掉一层之后到达 ComfyUI 的正好是单次编码，
+     * aiohttp 解出来还是原来的中文。只对实测出问题的服务器启用。
+     */
+    @Volatile private var doubleEncodedUserdataPath = false
+
     fun setServer(url: String) {
         baseUrl = url.trimEnd('/')
+        doubleEncodedUserdataPath = false
     }
 
     /** 供 UI 查询"这台服务器有哪些功能不可用"，用于给出明确提示。 */
@@ -109,7 +123,10 @@ class ComfyClient {
             // 只在"服务器返回了网页"或 5xx 时重试：这是冷启动抖动的典型特征。
             // ComfyUI 自己返回的 4xx JSON 错误、DNS 失败、连接被拒都不重试，
             // 免得把本来秒回的错误拖成 5 秒超时。
-            val retriable = error is PlatformResponseException && (error.html || error.httpCode >= 500)
+            // v0.1.69：登录页同样不该重试——Cookie 不会因为多试两次就自己出现。
+            // 日志里 16:04:38 起连着 8 次"需要登录或登录已失效"，每次都要干等三轮
+            // 退避，用户看到的只是"转半天圈然后告诉我没登录"。
+            val retriable = error is PlatformResponseException && error.retriable
             if (!retriable) throw error
             AppLogger.warn("服务器第 ${attempt + 1}/$PROBE_ATTEMPTS 次探测返回了网页或 5xx，准备重试", error)
         }
@@ -154,23 +171,43 @@ class ComfyClient {
                 true,
             )
         }
-        return try {
-            block().also { capabilities.markSuccess(key, capability) }
-        } catch (error: PlatformResponseException) {
-            capabilities.markFailure(
-                key, capability, System.currentTimeMillis(),
-                error.message.orEmpty(), error.unsupported,
-            )
-            throw error
-        } catch (error: Exception) {
-            // 超时、连接中断属于暂时故障，不该把接口永久标记成"不支持"
-            capabilities.markFailure(
-                key, capability, System.currentTimeMillis(),
-                error.message.orEmpty(), false,
-            )
-            throw error
+        // 最多跑两遍：第二遍是在"路径被代理解掉一层编码"时，改用双重编码再试。
+        repeat(2) { attempt ->
+            try {
+                return block().also { capabilities.markSuccess(key, capability) }
+            } catch (error: Exception) {
+                // runCatching 之后这里也要放行取消信号，否则退出页面后协程会赖着不走。
+                if (error is CancellationException) throw error
+                val shouldDoubleEncode = attempt == 0 &&
+                    !doubleEncodedUserdataPath &&
+                    error is PlatformResponseException &&
+                    needsDoubleEncodedPath(error)
+                if (shouldDoubleEncode) {
+                    doubleEncodedUserdataPath = true
+                    AppLogger.warn("服务器拒绝路径里的中文（HTTP 400），改用双重编码重试一次", error)
+                    return@repeat
+                }
+                when (error) {
+                    is PlatformResponseException -> capabilities.markFailure(
+                        key, capability, System.currentTimeMillis(),
+                        error.message.orEmpty(), error.unsupported,
+                    )
+                    // 超时、连接中断属于暂时故障，不该把接口永久标记成"不支持"
+                    else -> capabilities.markFailure(
+                        key, capability, System.currentTimeMillis(),
+                        error.message.orEmpty(), false,
+                    )
+                }
+                throw error
+            }
         }
+        throw IllegalStateException("云端工作流请求未返回结果")
     }
+
+    /** 服务器/代理把 URL 路径里的非 ASCII 字节直接拒了的典型报错。 */
+    private fun needsDoubleEncodedPath(error: PlatformResponseException): Boolean =
+        error.httpCode == 400 &&
+            error.message.orEmpty().contains("Invalid char in url path", ignoreCase = true)
 
     suspend fun listWorkflows(): List<WorkflowEntry> = withContext(Dispatchers.IO) {
         val url = "$baseUrl/v2/userdata?path=${encode("workflows")}" 
@@ -202,9 +239,11 @@ class ComfyClient {
     }
 
     suspend fun writeWorkflow(path: String, json: String, overwrite: Boolean): WorkflowEntry = withContext(Dispatchers.IO) {
-        val url = userdataUrl(path) + "?overwrite=$overwrite&full_info=true"
-        val request = Request.Builder().url(url).post(json.toRequestBody(jsonMedia)).build()
-        val response = userdataCall { executeJson(request) }
+        // 同 moveWorkflow：URL 放 block 里，重试时才吃得到双重编码开关。
+        val response = userdataCall {
+            val url = userdataUrl(path) + "?overwrite=$overwrite&full_info=true"
+            executeJson(Request.Builder().url(url).post(json.toRequestBody(jsonMedia)).build())
+        }
         WorkflowEntry(
             name = path.substringAfterLast('/'),
             path = response.optString("path", path),
@@ -215,9 +254,14 @@ class ComfyClient {
     }
 
     suspend fun moveWorkflow(source: String, destination: String): WorkflowEntry = withContext(Dispatchers.IO) {
-        val url = userdataUrl(source) + "/move/" + UserdataPath.encode(destination) + "?overwrite=false&full_info=true"
-        val request = Request.Builder().url(url).post(ByteArray(0).toRequestBody()).build()
-        val response = userdataCall { executeJson(request) }
+        // URL 必须在 block 里构造：双重编码开关是第一次失败后才打开的，
+        // 提前算好 URL 的话，重试时用的还是旧编码。
+        val response = userdataCall {
+            val url = userdataUrl(source) + "/move/" +
+                UserdataPath.encode(destination, doubleEncode = doubleEncodedUserdataPath) +
+                "?overwrite=false&full_info=true"
+            executeJson(Request.Builder().url(url).post(ByteArray(0).toRequestBody()).build())
+        }
         WorkflowEntry(
             name = destination.substringAfterLast('/'),
             path = response.optString("path", destination),
@@ -517,7 +561,8 @@ class ComfyClient {
         }
     }
 
-    private fun userdataUrl(path: String): String = "$baseUrl/userdata/${UserdataPath.encode(path)}"
+    private fun userdataUrl(path: String): String =
+        "$baseUrl/userdata/${UserdataPath.encode(path, doubleEncode = doubleEncodedUserdataPath)}"
     private fun encode(value: String): String = URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
 
     private companion object {

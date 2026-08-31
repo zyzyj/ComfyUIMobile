@@ -30,6 +30,7 @@ import com.local.comfyuimobile.data.WorkflowDraftFields
 import com.local.comfyuimobile.data.WorkflowDraftStore
 import com.local.comfyuimobile.data.WorkflowFormat
 import com.local.comfyuimobile.data.WorkflowContentCache
+import com.local.comfyuimobile.data.WorkflowSnapshotStore
 import com.local.comfyuimobile.model.AppUiState
 import com.local.comfyuimobile.model.AppDestination
 import com.local.comfyuimobile.model.AppNavigationRequest
@@ -44,6 +45,7 @@ import com.local.comfyuimobile.model.ParameterSection
 import com.local.comfyuimobile.model.ResultMedia
 import com.local.comfyuimobile.model.ResultSource
 import com.local.comfyuimobile.model.SeedMode
+import com.local.comfyuimobile.model.ServerProfile
 import com.local.comfyuimobile.model.WorkflowDocument
 import com.local.comfyuimobile.model.WorkflowEntry
 import com.local.comfyuimobile.model.WorkflowNode
@@ -90,6 +92,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences = AppPreferences(application)
     private val localResultCache = LocalResultCache(application)
     private val workflowDrafts = WorkflowDraftStore(application)
+    private val workflowSnapshots = WorkflowSnapshotStore(application)
     private val client = ComfyClient()
     private val scanner = LanScanner(application, client)
     private val updates = UpdateManager(application)
@@ -118,6 +121,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var lastUpdateCheck: Long = 0L
     private var bridgeLoadedPath: String? = null
     private var serverInputSeeded = false
+    /**
+     * 已经回填过 Cookie 的服务器地址。
+     *
+     * 用户一旦手动改动 Cookie 输入框（包括主动清空），就再也不许自动回填覆盖，
+     * 否则"清空重填"这个动作会被下一次 DataStore 推送直接抹掉。
+     */
+    private var cookieSeededAddress: String? = null
+    private var cookiePersistJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -137,9 +148,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     else -> current.serverInput
                 }
+                // v0.1.69：Cookie 跟地址一样要回填。以前只在连接成功时随 ServerProfile
+                // 存了一份，输入框却始终绑定着初始为空的 state.serverCookie，
+                // 于是"第二次用还得重输一遍"（日志里 16:04:38 起连着 8 次
+                // "需要登录或登录已失效"都是这么来的）。
+                // 只在地址变化时回填一次，用户手改过就不再覆盖。
+                val resolvedCookie = when {
+                    cookieSeededAddress == resolvedServerInput -> current.serverCookie
+                    else -> {
+                        cookieSeededAddress = resolvedServerInput
+                        cookieForAddress(resolvedServerInput, stored.profiles)
+                    }
+                }
                 _state.update {
                     it.copy(
                         savedServers = stored.profiles,
+                        serverCookie = resolvedCookie,
                         promptHistory = stored.promptHistory,
                         submittedJobIds = stored.submittedJobs,
                         autoSaveResults = stored.autoSaveResults,
@@ -216,8 +240,61 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setServerInput(value: String) = _state.update { it.copy(serverInput = value) }
-    fun setServerCookie(value: String) = _state.update { it.copy(serverCookie = value) }
+    fun setServerInput(value: String) {
+        // 换了地址就允许重新回填一次 Cookie；不换则保持用户当前输入。
+        if (cookieSeededAddress != value) cookieSeededAddress = null
+        _state.update { it.copy(serverInput = value) }
+    }
+
+    fun setServerCookie(value: String) {
+        // 记下"这个地址用户自己改过了"，别让下一次 DataStore 推送把输入覆盖掉。
+        cookieSeededAddress = _state.value.serverInput
+        _state.update { it.copy(serverCookie = value) }
+        persistCookieFor(_state.value.serverInput, value)
+    }
+
+    /**
+     * 把 Cookie 写回已保存的服务器档案。
+     *
+     * 以前 Cookie 只在连接成功那一刻才随 [ServerProfile] 落盘，于是"填了 Cookie
+     * 但这次没连上"（比如手滑输错端口）就白填了。这里改成边输边存：只要这个地址
+     * 已经存过档案，就顺手把 Cookie 一起更新。
+     */
+    private fun persistCookieFor(address: String, cookie: String) {
+        val profile = savedProfileFor(address) ?: return
+        if (profile.cookie == cookie) return
+        // 用户粘贴/删除时 onValueChange 每个字符都来一次，直接存就是每键一次磁盘写
+        // 外加一次全量状态广播。停 800ms 再落盘，输完再存。
+        cookiePersistJob?.cancel()
+        cookiePersistJob = viewModelScope.launch {
+            delay(800)
+            runCatching { preferences.saveServer(profile.copy(cookie = cookie)) }
+                .onFailure { AppLogger.warn("保存认证 Cookie 失败", it) }
+        }
+    }
+
+    /**
+     * 按地址找已保存的服务器档案。
+     *
+     * 必须归一化后再比：`https://a.com:443/x` 和 `https://a.com/x` 是同一台服务器，
+     * 但字符串不同。日志里用户第二次连的是带 `:443` 的地址，正是这个差异让
+     * 之前存下的 Cookie 查不到。
+     */
+    private fun savedProfileFor(address: String): ServerProfile? {
+        val target = runCatching { LanAddress.normalize(address) }.getOrNull() ?: return null
+        return _state.value.savedServers.firstOrNull {
+            runCatching { LanAddress.normalize(it.baseUrl) }.getOrDefault(it.baseUrl) == target
+        }
+    }
+
+    /** 取某个地址已保存的 Cookie，没有就返回空串。 */
+    private fun cookieForAddress(address: String, profiles: List<ServerProfile>): String {
+        val target = runCatching { LanAddress.normalize(address) }.getOrNull() ?: return ""
+        return profiles.firstOrNull {
+            runCatching { LanAddress.normalize(it.baseUrl) }.getOrDefault(it.baseUrl) == target
+        }?.cookie.orEmpty()
+    }
+
     fun clearMessage() = _state.update { it.copy(error = null, notice = null) }
 
     fun openAdvancedEditor() {
@@ -284,6 +361,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 否则从 AI Studio 切回本地服务器后会沿用旧的退避判断。
                 client.capabilities().reset(client.serverUrl())
                 userdataUnsupportedLogged = false
+                // v0.1.69：换服务器等于换平台，前端脚本的降级开关要复位，
+                // 否则从 AI Studio 切回直连服务器后仍会跳过服务器工作流列表。
+                activeBridge.serverWorkflowStoreAvailable = true
                 // 反向代理认证 Cookie：用户手动配置的登录态（如 AI Studio api_serving）。
                 val cookie = _state.value.serverCookie
                 client.setAuthCookie(cookie)
@@ -425,24 +505,58 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * v0.1.68：读工作流内容，服务器读不到就退回本地缓存。
+     * v0.1.68：读工作流正文，服务器读不到就退回本地缓存。
      *
      * 百度 AI Studio 这类反向代理不开放 /userdata，readWorkflow 必然失败。但导入时
      * 内容已经完整进内存了，不该因为服务器不提供文件读写就把整条链路卡死——
      * 日志里用户连点四次快捷生图、每次都在 0.1 秒内失败，就是这个原因。
+     *
+     * v0.1.69：回退升级为两级（内存缓存 → 磁盘快照）。内存缓存进程一回收就没了，
+     * 而这类平台上服务器那条路是**永久**走不通的，只靠内存的话用户导入一次能用、
+     * 杀掉 App 再进来就又是"工作流加载失败"。
+     * 服务器读成功时两边一起刷新，直连 ComfyUI 的行为跟以前完全一样。
      */
     private suspend fun readWorkflowWithFallback(serverUrl: String, path: String): String {
         val cached = WorkflowContentCache[serverUrl, path]
-        return runCatching { client.readWorkflow(path) }
-            .onSuccess { WorkflowContentCache.put(serverUrl, path, it) }
-            .getOrElse { error ->
-                // runCatching 会连取消信号一起吞掉，必须放行，否则退出页面后
-                // 这个协程会继续往下走，把状态写进一个已经不存在的界面。
-                if (error is CancellationException) throw error
-                cached?.also {
-                    AppLogger.warn("服务器上读不到 $path，改用本地缓存的工作流内容", error)
-                } ?: throw error
+            ?: runCatching { workflowSnapshots.read(serverUrl, path) }.getOrNull()
+        // 不能写成 runCatching{}.onSuccess{ cacheWorkflowContent(...) }：
+        // onSuccess 的 lambda 不是 suspend 上下文，里面调不了挂起函数。
+        val fetched = try {
+            client.readWorkflow(path)
+        } catch (error: CancellationException) {
+            // 取消信号必须放行，否则退出页面后这个协程会继续往下走，
+            // 把状态写进一个已经不存在的界面。
+            throw error
+        } catch (error: Throwable) {
+            cached?.also {
+                AppLogger.warn("服务器上读不到 $path，改用本地缓存的工作流内容", error)
+            } ?: throw error
+        }
+        cacheWorkflowContent(serverUrl, path, fetched)
+        return fetched
+    }
+
+    /** 把工作流正文写进两级缓存：内存（立即）+ 磁盘快照（尽力而为）。 */
+    private suspend fun cacheWorkflowContent(serverUrl: String, path: String, json: String) {
+        if (serverUrl.isBlank() || path.isBlank() || json.isBlank()) return
+        WorkflowContentCache.put(serverUrl, path, json)
+        runCatching { workflowSnapshots.write(serverUrl, path, json) }
+            .onFailure { AppLogger.warn("工作流本地快照写入失败（不影响使用）", it) }
+    }
+
+    /** 本地快照跟着工作流改名 / 移动一起搬走，否则新路径读不到正文。 */
+    private suspend fun renameWorkflowSnapshot(serverUrl: String, from: String, to: String) {
+        if (serverUrl.isBlank() || from.isBlank() || to.isBlank() || from == to) return
+        runCatching {
+            workflowSnapshots.read(serverUrl, from)?.let { json ->
+                workflowSnapshots.write(serverUrl, to, json)
+                workflowSnapshots.remove(serverUrl, from)
             }
+            WorkflowContentCache[serverUrl, from]?.let { json ->
+                WorkflowContentCache.put(serverUrl, to, json)
+                WorkflowContentCache.remove(serverUrl, from)
+            }
+        }.onFailure { AppLogger.warn("工作流本地快照改名失败（不影响使用）", it) }
     }
 
     /**
@@ -1066,6 +1180,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     saveWorkflowAsLocalDraft(document, workflowJson)
                     return@runOperation
                 }
+                // v0.1.69：保存成功后本地快照也要跟着更新，否则下次回退到旧正文。
+                cacheWorkflowContent(document.serverUrl, saved.path, workflowJson)
                 val updated = document.copy(
                     entry = saved,
                     rawJson = workflowJson,
@@ -1143,6 +1259,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .put("revision", 0)
                     .toString()
                 val saved = client.writeWorkflow(destination, savedJson, overwrite = false)
+                cacheWorkflowContent(document.serverUrl, saved.path, savedJson)
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(
                         rawJson = savedJson,
@@ -1271,6 +1388,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     (bridge ?: error("前端桥接不可用")).syncWorkflow(document.fields)
                 }
                 val moved = client.moveWorkflow(document.entry.path, "$folder/$fileName")
+                renameWorkflowSnapshot(document.serverUrl, document.entry.path, moved.path)
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(currentJson, workflowPath = moved.path)
                 }
@@ -1316,6 +1434,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     (bridge ?: error("前端桥接不可用")).syncWorkflow(document.fields)
                 }
                 val moved = client.moveWorkflow(document.entry.path, destination)
+                renameWorkflowSnapshot(document.serverUrl, document.entry.path, moved.path)
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(currentJson, workflowPath = moved.path)
                 }
@@ -1358,6 +1477,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 flushCurrentDraft()
                 client.deleteWorkflow(document.entry.path)
                 workflowDrafts.delete(document.serverUrl, document.entry.path)
+                runCatching { workflowSnapshots.remove(document.serverUrl, document.entry.path) }
                 preferences.removeRecentWorkflow(document.entry.path)
                 _state.update {
                     it.copy(
@@ -1383,6 +1503,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 flushCurrentDraft()
                 client.deleteWorkflow(path)
                 runCatching { workflowDrafts.delete(serverUrl, path) }
+                runCatching { workflowSnapshots.remove(serverUrl, path) }
                 preferences.removeRecentWorkflow(path)
                 _state.update {
                     it.copy(
@@ -1442,7 +1563,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     AppLogger.warn("服务器不支持云端工作流，导入降级为仅本地加载", error)
                     localOnlyEntry(candidateName, json)
                 }
-                WorkflowContentCache.put(
+                // 内存 + 磁盘各存一份：AI Studio 上服务器那份永远读不回来，
+                // 只放内存的话杀掉 App 再进就又打不开了。
+                cacheWorkflowContent(
                     _state.value.activeServer?.baseUrl.orEmpty(),
                     entry.path,
                     json.toString(),
@@ -2200,6 +2323,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 失败时不重置 workflows 列表，保留旧工作流展示给用户；如果旧列表为空，再用
         // RecentWorkflows 按当前 serverKey 恢复最近浏览过的路径作为兜底。
         runCatching { client.listWorkflows() }.onSuccess { entries ->
+            // v0.1.69：前端脚本也要跟着"能查服务器列表"。恢复可用时（比如从 AI Studio
+            // 切回直连服务器）必须置回 true，否则之后永远走降级路径。
+            bridge?.serverWorkflowStoreAvailable = true
             _state.update { ui ->
                 val document = ui.selectedWorkflow
                 val current = document?.let { selected -> entries.firstOrNull { it.path == selected.entry.path } }
@@ -2223,6 +2349,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // v0.1.68：这种失败每 11 秒就来一次（AI Studio 实测 17 分钟 56 次），
             // 只在第一次记日志，后面静默跳过，不然诊断日志还是会被同一句话占满。
             val unsupported = error is PlatformResponseException && error.unsupported
+            // v0.1.69：告诉前端脚本别再查服务器工作流列表——AI Studio 上那句
+            // syncWorkflows() 会一直挂住不返回，是导入卡死的直接原因。
+            if (unsupported) bridge?.serverWorkflowStoreAvailable = false
             if (!unsupported || !userdataUnsupportedLogged) {
                 AppLogger.warn("工作流刷新失败，保留本地最近浏览路径作为占位", error)
                 if (unsupported) userdataUnsupportedLogged = true

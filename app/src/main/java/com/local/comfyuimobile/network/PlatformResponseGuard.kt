@@ -81,14 +81,15 @@ object PlatformResponseGuard {
     @Throws(PlatformResponseException::class)
     fun guard(httpCode: Int, body: String, allowedCodes: Set<Int> = setOf(200)) {
         val html = isHtml(body)
+        val login = html && looksLikeLoginPage(body)
         if (httpCode !in allowedCodes) {
             throw PlatformResponseException(
-                describe(httpCode, body), httpCode, isUnsupported(httpCode, body), html,
+                describe(httpCode, body), httpCode, isUnsupported(httpCode, body), html, login,
             )
         }
         // 关键：200 + HTML 同样是失败，否则后面解析会抛出难以理解的 JSONException
         if (html) {
-            throw PlatformResponseException(describe(httpCode, body), httpCode, true, html)
+            throw PlatformResponseException(describe(httpCode, body), httpCode, true, html, login)
         }
     }
 
@@ -120,4 +121,18 @@ class PlatformResponseException(
     val httpCode: Int,
     val unsupported: Boolean = false,
     val html: Boolean = false,
-) : IllegalStateException(message)
+    /** true 表示正文是登录页：这是认证问题，重试多少次都不会自己变好。 */
+    val loginPage: Boolean = false,
+) : IllegalStateException(message) {
+
+    /**
+     * 值不值得再试一次。
+     *
+     * 在 v0.1.68 的规则（网页或 5xx 可重试）上**只**加一条：登录页不重试——
+     * Cookie 不会因为多试两次就自己出现。注意不能用 `!unsupported`：
+     * [PlatformResponseGuard] 对所有 HTML 都标 unsupported，而 AI Studio 实例
+     * 冷启动时吐的正是 HTML，那属于抖动，重试一次就能好，不能误杀。
+     */
+    val retriable: Boolean
+        get() = !loginPage && (html || httpCode >= 500)
+}
