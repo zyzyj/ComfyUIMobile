@@ -544,6 +544,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .onFailure { AppLogger.warn("工作流本地快照写入失败（不影响使用）", it) }
     }
 
+    /**
+     * 读工作流正文；读不到且本机也没存过内容时，报一条"该怎么办"的指引。
+     *
+     * 背景：AI Studio 这类平台的列表里会展示"最近浏览过的路径"占位条目，
+     * 它们既读不到服务器、本机也没有内容，用户点了就是一句冷冰冰的
+     * "该服务器不支持此接口"（这次日志里连点 15 次失败全是这个）。
+     * 必须告诉用户出路：导入一次，本机就有底子了。
+     */
+    private suspend fun readWorkflowOrGuide(serverUrl: String, entry: WorkflowEntry): String =
+        try {
+            readWorkflowWithFallback(serverUrl, entry.path)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: IllegalStateException) {
+            if (!isUserdataUnavailable(error)) throw error
+            throw IllegalStateException(
+                "${entry.name} 读不到：这台服务器不提供云端工作流存储，本机也没有保存过它的内容。" +
+                    "请回「工作流」页点「打开工作流文件」从手机导入一次，" +
+                    "导入后会自动保存在本机，以后直接点开就能用。",
+            )
+        }
+
     /** 本地快照跟着工作流改名 / 移动一起搬走，否则新路径读不到正文。 */
     private suspend fun renameWorkflowSnapshot(serverUrl: String, from: String, to: String) {
         if (serverUrl.isBlank() || from.isBlank() || to.isBlank() || from == to) return
@@ -613,7 +635,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // advanced-editor structure edits, the edited workflow JSON.
                 // The server file is always the base, so a draft can never
                 // replace the whole workflow with another workflow's data.
-                val serverRaw = readWorkflowWithFallback(serverUrl, entry.path)
+                val serverRaw = readWorkflowOrGuide(serverUrl, entry)
                 val structuralDraft = draft != null && draft.structural && !draft.workflowJson.isNullOrBlank()
                 val draftDiscarded = structuralDraft &&
                     WorkflowPolicy.draftStructureMismatched(draft.workflowJson!!, serverRaw)
@@ -955,7 +977,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runOperation("快捷工作流加载失败") {
                 _state.update { it.copy(loading = true, error = null) }
                 val serverUrl = _state.value.activeServer?.baseUrl ?: error("尚未连接 ComfyUI 服务器")
-                val raw = readWorkflowWithFallback(serverUrl, entry.path)
+                val raw = readWorkflowOrGuide(serverUrl, entry)
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(rawJson = raw, workflowPath = entry.path)
                 }
@@ -2357,21 +2379,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (unsupported) userdataUnsupportedLogged = true
             }
             _state.update { ui ->
+                val serverKey = ui.activeServer?.baseUrl.orEmpty()
+                // v0.1.70：优先展示本机保存过正文的工作流——列表里的每一条都真正打得开。
+                // 以前只有"最近浏览过的路径"占位，那种条目只有路径没有内容，用户点了
+                // 必然报"该服务器不支持此接口"（日志里连点 15 次失败全是它），看起来就像 App 坏了。
+                val snapshots = runCatching { workflowSnapshots.list(serverKey) }.getOrElse { emptyList() }
                 val placeholders = RecentWorkflows.resolveEntries(ui.recentWorkflowPaths, ui.workflows)
-                val serverKey = ui.activeServer?.baseUrl.orEmpty().let { WorkflowDraftStore.normalizeServer(it) }
+                // 快照优先，占位里和快照重复的（同路径）去掉，避免一行出现两次。
+                val entries = snapshots +
+                    placeholders.filter { place -> snapshots.none { it.path == place.path } }
                 val hasServerScopedRecents = serverKey.isNotBlank() && ui.recentWorkflowPaths.isNotEmpty()
-                if (ui.workflows.isEmpty() && placeholders.isNotEmpty() && hasServerScopedRecents) {
-                    ui.copy(
-                        workflows = placeholders,
-                        notice = ui.notice ?: if (unsupported) {
-                            "这台服务器不支持云端工作流列表，已切换为最近浏览的工作流；" +
-                                "需要云端工作流请换用直连的 ComfyUI 服务器"
-                        } else {
-                            "云端工作流列表暂时读不到，正在显示最近浏览的工作流"
-                        },
+                when {
+                    entries.isEmpty() -> ui
+                    // 平台确实不支持 /userdata（永久性）：列表怎么摆都读不到服务器，
+                    // 诚实展示"本机打得开"的快照条目 + 占位。
+                    unsupported && (snapshots.isNotEmpty() || ui.workflows.isEmpty()) -> ui.copy(
+                        workflows = entries,
+                        notice = ui.notice ?: "这台服务器不提供云端工作流列表，已改为显示保存在本机的工作流；" +
+                            "新工作流请点「打开工作流文件」导入",
                     )
-                } else {
-                    ui
+                    // 暂时性故障（超时/断连）：保留旧列表不动，空列表才用占位兜底（v0.1.67 行为）。
+                    ui.workflows.isEmpty() && placeholders.isNotEmpty() && hasServerScopedRecents -> ui.copy(
+                        workflows = entries,
+                        notice = ui.notice ?: "云端工作流列表暂时读不到，正在显示最近浏览的工作流",
+                    )
+                    else -> ui
                 }
             }
         }

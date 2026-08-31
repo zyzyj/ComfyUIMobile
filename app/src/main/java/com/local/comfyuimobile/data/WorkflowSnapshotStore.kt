@@ -1,6 +1,7 @@
 package com.local.comfyuimobile.data
 
 import android.content.Context
+import com.local.comfyuimobile.model.WorkflowEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -39,6 +40,19 @@ class WorkflowSnapshotStore internal constructor(private val directory: File) {
         mutex.withLock { readNow(serverUrl, workflowPath) }
     }
 
+    /**
+     * 列出这台服务器上"本机确实存有正文"的工作流。
+     *
+     * 用途：AI Studio 这类平台不开放 /userdata，服务器工作流列表永远拿不到，
+     * 以前只能拿"最近浏览过的路径"当占位——那种条目只有路径没有内容，用户点了
+     * 必然报"工作流加载失败"（日志里连点 15 次全是它）。快照列表里的每一条
+     * 都能真正打开。需要 Android 的 [WorkflowEntry]（在 model 包），本类其余
+     * 部分保持纯 Kotlin 以便单测。
+     */
+    suspend fun list(serverUrl: String): List<WorkflowEntry> = withContext(Dispatchers.IO) {
+        mutex.withLock { listNow(serverUrl) }
+    }
+
     suspend fun write(serverUrl: String, workflowPath: String, json: String) = withContext(Dispatchers.IO) {
         if (serverUrl.isBlank() || workflowPath.isBlank() || json.isBlank()) return@withContext
         mutex.withLock { writeNow(serverUrl, workflowPath, json) }
@@ -73,8 +87,33 @@ class WorkflowSnapshotStore internal constructor(private val directory: File) {
         }
     }
 
-    private fun writeNow(serverUrl: String, workflowPath: String, json: String) {
-        directory.mkdirs()
+    private fun listNow(serverUrl: String): List<WorkflowEntry> {
+        val normalized = normalizeServer(serverUrl)
+        if (normalized.isBlank()) return emptyList()
+        return directory.listFiles { file -> file.isFile && file.extension == "json" }
+            .orEmpty()
+            .mapNotNull { file ->
+                runCatching {
+                    val root = JSONObject(file.readText(Charsets.UTF_8))
+                    if (normalizeServer(root.optString("serverUrl")) != normalized) return@mapNotNull null
+                    val path = root.optString("workflowPath")
+                    val json = root.optString("json")
+                    if (path.isBlank() || json.isBlank()) return@mapNotNull null
+                    WorkflowEntry(
+                        name = path.substringAfterLast('/'),
+                        path = path,
+                        isDirectory = false,
+                        size = json.toByteArray().size.toLong(),
+                        // WorkflowEntry.modified 用秒（和 ComfyUI /userdata 一致），快照存毫秒。
+                        modified = root.optLong("updatedAt") / 1000.0,
+                    )
+                }.getOrNull()
+            }
+            // 最近保存的排前面：用户刚导入的应该第一个看到。
+            .sortedByDescending { it.modified }
+    }
+
+    private fun writeNow(serverUrl: String, workflowPath: String, json: String) {        directory.mkdirs()
         val target = fileFor(serverUrl, workflowPath)
         val temporary = File(directory, ".${target.name}.${UUID.randomUUID()}.tmp")
         try {
