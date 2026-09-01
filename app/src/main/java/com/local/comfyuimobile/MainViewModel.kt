@@ -2443,22 +2443,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 快照优先，占位里和快照重复的（同路径）去掉，避免一行出现两次。
                 val entries = snapshots +
                     placeholders.filter { place -> snapshots.none { it.path == place.path } }
-                val hasServerScopedRecents = serverKey.isNotBlank() && ui.recentWorkflowPaths.isNotEmpty()
                 when {
                     entries.isEmpty() -> ui
-                    // 平台确实不支持 /userdata（永久性）：列表怎么摆都读不到服务器，
-                    // 诚实展示"本机打得开"的快照条目 + 占位。
-                    unsupported && (snapshots.isNotEmpty() || ui.workflows.isEmpty()) -> ui.copy(
+                    // v0.1.74：不再区分"永久不支持"和"暂时性故障"——AI Studio 的网关
+                    // 对 /userdata 行为不稳定（404/403/200 空列表轮着来），探测结果
+                    // 不可信，两种情况的处理方式也一致：把本机打得开的快照条目摆出来，
+                    // 诚实提示云端列表读不到。恢复连接后列表能读回来时自然回到正常态。
+                    else -> ui.copy(
                         workflows = entries,
-                        notice = ui.notice ?: "这台服务器不提供云端工作流列表，已改为显示保存在本机的工作流；" +
+                        notice = ui.notice ?: "云端工作流列表暂时读不到，正在显示保存在本机的工作流；" +
                             "新工作流请点「打开工作流文件」导入",
                     )
-                    // 暂时性故障（超时/断连）：保留旧列表不动，空列表才用占位兜底（v0.1.67 行为）。
-                    ui.workflows.isEmpty() && placeholders.isNotEmpty() && hasServerScopedRecents -> ui.copy(
-                        workflows = entries,
-                        notice = ui.notice ?: "云端工作流列表暂时读不到，正在显示最近浏览的工作流",
-                    )
-                    else -> ui
                 }
             }
         }
