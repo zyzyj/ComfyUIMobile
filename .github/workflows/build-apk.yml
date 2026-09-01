@@ -43,18 +43,43 @@ jobs:
           set -o pipefail
           ./gradlew :app:assembleDebug --stacktrace 2>&1 | tee /tmp/gradle-debug.log
 
-      - name: 生成临时签名密钥
+      - name: 恢复签名密钥缓存
+        # 签名必须跨构建保持稳定：App 内更新在装 APK 前会比对签名证书，
+        # 每次现生成 keystore 会导致"签名与当前应用不一致"而永远装不上。
+        uses: actions/cache@v4
+        with:
+          path: .signing-cache
+          key: comfyui-mobile-signing-keystore-v1
+
+      - name: 准备签名配置
         # 项目要求签名配置必须位于仓库外，否则 release 任务直接失败
         # app/build.gradle.kts 查找路径为 rootProject.file("../app/tools/signing/...")
+        #
+        # 三级优先：① 仓库 Secret 里固定的密钥（最稳，换机器也不变）；
+        # ② 上一次构建缓存下来的密钥；③ 都没有才现场生成一份并写进缓存。
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
         run: |
+          set -euo pipefail
           SIGN_DIR="${GITHUB_WORKSPACE}/../app/tools/signing"
           mkdir -p "$SIGN_DIR"
-          keytool -genkeypair -v \
-            -keystore "$SIGN_DIR/ComfyUIMobile-release.jks" \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -alias comfyuimobile \
-            -storepass comfyuimobile -keypass comfyuimobile \
-            -dname "CN=ComfyUI Mobile, OU=Dev, O=ComfyUI, L=Unknown, ST=Unknown, C=CN"
+          if [ -n "${KEYSTORE_BASE64:-}" ]; then
+            echo "使用仓库 Secret 中的固定签名密钥"
+            echo "$KEYSTORE_BASE64" | base64 -d > "$SIGN_DIR/ComfyUIMobile-release.jks"
+          elif [ -f .signing-cache/ComfyUIMobile-release.jks ]; then
+            echo "复用缓存中的签名密钥，保证与历史版本签名一致"
+            cp .signing-cache/ComfyUIMobile-release.jks "$SIGN_DIR/"
+          else
+            echo "首次构建：生成签名密钥并写入缓存"
+            keytool -genkeypair -v \
+              -keystore "$SIGN_DIR/ComfyUIMobile-release.jks" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -alias comfyuimobile \
+              -storepass comfyuimobile -keypass comfyuimobile \
+              -dname "CN=ComfyUI Mobile, OU=Dev, O=ComfyUI, L=Unknown, ST=Unknown, C=CN"
+            mkdir -p .signing-cache
+            cp "$SIGN_DIR/ComfyUIMobile-release.jks" .signing-cache/
+          fi
           cat > "$SIGN_DIR/ComfyUIMobile-signing.properties" <<EOF
           storeFile=$SIGN_DIR/ComfyUIMobile-release.jks
           storePassword=comfyuimobile
