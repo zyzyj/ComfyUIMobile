@@ -892,14 +892,42 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
             OutlinedCard(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
                 Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Sync,
+                            null,
+                            Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.width(6.dp))
                         Text(state.generationMessage, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                         state.activeJobId?.let { Text(it.take(8), style = MaterialTheme.typography.labelSmall) }
                     }
-                    state.generationProgress?.let { progress ->
-                        LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+                    // v0.1.76：进度条只在采样阶段显示确定百分比；排队/加载模型/解码
+                    // 等阶段没有 progress 消息，用不确定进度条表示"正在处理中"，避免
+                    // 停在 0%/100% 造成"进度与任务不符"的错觉。
+                    if (state.activeJobId != null) {
+                        val progress = state.generationProgress
+                        if (progress != null) {
+                            LinearProgressIndicator(
+                                progress = { progress.coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
                     }
                 }
             }
+        }
+        // v0.1.76：页面自动重载（AI Studio 平台每十几秒一次）期间桥接在恢复，
+        // 生图/高级编辑按钮会短暂灰掉。在这里给出可见解释，不再"莫名其妙"。
+        if (!state.bridgeReady && state.activeServer != null && state.status == ConnectionStatus.CONNECTED) {
+            Text(
+                "网页正在重载，正在恢复连接…（几秒内恢复）",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+            )
         }
         CompositionLocalProvider(
             LocalBringIntoViewSpec provides parameterBringIntoViewSpec,
@@ -999,7 +1027,7 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
                 enabled = !state.generating && !state.loading && state.bridgeReady && localProblems.isEmpty(),
                 modifier = Modifier.weight(1f),
             ) {
-                Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text("生成")
+                Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text(if (state.generating) "生成中…" else "生成")
             }
         }
         val firstProblem = localProblems.firstOrNull()?.let { problem ->
@@ -2030,8 +2058,12 @@ private fun ImageGalleryViewer(
                     Modifier.verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Text(current.filename)
-                    current.elapsedMs?.let { Text("生图耗时：${formatElapsed(it)}", style = MaterialTheme.typography.bodySmall) }
+                    Text(current.filename, style = MaterialTheme.typography.titleSmall)
+                    // v0.1.76：耗时拆成两行——总耗时（含排队，本机记录）+ 执行耗时（服务器记录）。
+                    // AI Studio 排队可能占大头，只看执行耗时会让用户觉得"生图时间不对"。
+                    current.totalElapsedMs?.let { Text("总耗时（含排队）：${formatElapsed(it)}", style = MaterialTheme.typography.bodySmall) }
+                    current.elapsedMs?.let { Text("执行耗时：${formatElapsed(it)}", style = MaterialTheme.typography.bodySmall) }
+                    HorizontalDivider(Modifier.padding(vertical = 2.dp))
                     Text("任务：${current.jobId}", style = MaterialTheme.typography.bodySmall)
                     current.workflowName.takeIf { it.isNotBlank() }?.let {
                         Text("工作流：$it", style = MaterialTheme.typography.bodySmall)
@@ -2385,8 +2417,12 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
             Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text(if (state.generating) "生成中…" else "快捷生成")
         }
         if (state.generating) {
-            state.generationProgress?.let { progress ->
+            // v0.1.76：排队/加载阶段无进度消息，显示不确定进度条；采样阶段显示百分比。
+            val progress = state.generationProgress
+            if (progress != null) {
                 LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+            } else {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
             Text(state.generationMessage, style = MaterialTheme.typography.bodySmall)
         }

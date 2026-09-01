@@ -149,7 +149,7 @@ class ComfyBridge(private val activity: Activity) {
                         // 只校验 epoch：渲染进程崩溃重建后 webView 会被替换并重新 loadUrl，
                         // pageEpoch 必然 +1，旧延迟回调自然失效，无需再判 view 存活状态。
                         if (pageEpoch == epoch) onPageLoaded?.invoke(view)
-                    }, 1_500L)
+                    }, 800L)
                 }
                 super.onPageFinished(view, url)
             }

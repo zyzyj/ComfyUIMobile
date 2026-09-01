@@ -126,6 +126,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val monitoredJobIds = ConcurrentHashMap.newKeySet<String>()
     private val awaitingQueueJobIds = ConcurrentHashMap.newKeySet<String>()
     private val takenOverJobIds = ConcurrentHashMap.newKeySet<String>()
+    // v0.1.76：任务耗时统计。submittedAt = App 提交时刻（排队起点），completedAt =
+    // execution_success/error 时刻。两者都在本机记录，同源无时钟偏差，用来给图片
+    // 信息页补"总耗时（含排队）"——服务器 /history 只有执行耗时，AI Studio 这类
+    // 平台排队时间长，用户体感严重偏短。
+    private val submittedAt = ConcurrentHashMap<String, Long>()
+    private val completedAt = ConcurrentHashMap<String, Long>()
     @Volatile private var pendingReconnectNodeId: String? = null
     @Volatile private var pendingNotificationWorkflowPath: String? = null
     private var visibleNodeChangedAt = 0L
@@ -1082,6 +1088,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     throw error
                 }
                 awaitingQueueJobIds.add(response.promptId)
+                submittedAt[response.promptId] = System.currentTimeMillis()
                 val submitted = _state.value.submittedJobIds + response.promptId
                 preferences.saveSubmittedJobs(submitted)
                 _state.update {
@@ -1091,7 +1098,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         nodeProblems = emptyMap(),
                         activeJobId = response.promptId,
                         currentExecutingNodeId = null,
-                        generationProgress = 0f,
+                        generationProgress = null,
                         generationMessage = "已经加入队列，等待服务器执行",
                         notice = "已加入队列：${response.promptId.take(8)}",
                     )
@@ -1151,6 +1158,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     throw error
                 }
                 awaitingQueueJobIds.add(response.promptId)
+                submittedAt[response.promptId] = System.currentTimeMillis()
                 val submitted = _state.value.submittedJobIds + response.promptId
                 preferences.saveSubmittedJobs(submitted)
                 var history = _state.value.promptHistory
@@ -1166,7 +1174,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         nodeProblems = emptyMap(),
                         activeJobId = response.promptId,
                         currentExecutingNodeId = null,
-                        generationProgress = 0f,
+                        generationProgress = null,
                         generationMessage = "已经加入队列，等待服务器执行",
                         notice = "已加入队列：${response.promptId.take(8)}",
                     )
@@ -2255,8 +2263,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             it.copy(
                                 activeJobId = id,
                                 currentExecutingNodeId = null,
-                                generationProgress = 0f,
-                                generationMessage = "服务器已经开始生成",
+                                // v0.1.76：执行开始阶段（加载模型/CLIP/VAE）没有进度消息，
+                                // 置 null 让 UI 显示不确定进度条，不再停在 0% 假装卡住。
+                                generationProgress = null,
+                                generationMessage = "服务器已经开始生成，正在加载模型",
                             )
                         }
                     }
@@ -2353,6 +2363,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val id = data.optTextOrEmpty("prompt_id")
                 if (id.isNotBlank()) {
                     markJobObserved(id)
+                    completedAt[id] = System.currentTimeMillis()
                     updateJob(id) { it.copy(state = JobState.SUCCESS, progress = 1f, currentNode = null) }
                     if (tracksVisibleJob(id)) {
                         finishVisibleExecution(id)
@@ -2371,6 +2382,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val detail = data.optTextOrEmpty("exception_message").ifBlank { if (type == "execution_interrupted") "任务已中断" else "服务器执行失败" }
                 if (id.isNotBlank()) {
                     markJobObserved(id)
+                    completedAt[id] = System.currentTimeMillis()
                     updateJob(id) { it.copy(state = if (type == "execution_interrupted") JobState.CANCELLED else JobState.ERROR, currentNode = nodeId.ifBlank { null }, message = detail) }
                     if (tracksVisibleJob(id)) {
                         _state.update {
@@ -2572,7 +2584,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val history = client.history()
             ResultParser.parse(client.serverUrl(), history)
         }.onSuccess { results ->
-            _state.update { it.copy(results = results) }
+            // v0.1.76：把本机记录的"提交→完成"总耗时合并进结果（含排队时间）。
+            // 没有本机记录的（App 重启后从 history 重新加载的历史任务）保持 null。
+            val enhanced = if (submittedAt.isEmpty() || completedAt.isEmpty()) results else results.map { media ->
+                val submitted = submittedAt[media.jobId] ?: return@map media
+                val completed = completedAt[media.jobId] ?: return@map media
+                val total = completed - submitted
+                if (total > 0) media.copy(totalElapsedMs = total) else media
+            }
+            _state.update { it.copy(results = enhanced) }
         }
     }
 
