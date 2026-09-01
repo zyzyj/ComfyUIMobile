@@ -208,7 +208,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun attachBridge(value: ComfyBridge) {
         bridge = value
         value.onWebViewRecreated = {
-            restoreBridgeAfterRendererRecreated()
+            restoreBridgeAfterRendererRecreated(quick = false)
+        }
+        // AI Studio 平台每十几秒自动重载一轮页面：每次加载完成都快速恢复桥接，
+        // 把"灰色窗口"压缩到几秒，而不是等渲染进程崩溃（那可能好几分钟才来一次）。
+        value.onPageLoaded = {
+            restoreBridgeAfterRendererRecreated(quick = true)
         }
     }
 
@@ -2951,31 +2956,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (snapshot != null) persistDraftSnapshot(snapshot)
     }
 
-    private fun restoreBridgeAfterRendererRecreated() {
+    private var rendererRecoveryJob: kotlinx.coroutines.Job? = null
+    private var rendererRecoveryFailures = 0
+
+    /**
+     * 桥接恢复（页面重载完成或渲染进程崩溃重建后调用）。
+     *
+     * quick=true：页面每完成一次加载都会触发（AI Studio 平台每十几秒自动重载一轮），
+     * 用短超时快速恢复，失败不重连——HTTP 是通的，等下一次页面加载完成自动重试，
+     * 避免 loadServer 主动 reload 与平台重载叠加成"重载风暴"（渲染进程崩溃重建后
+     * 如果再用 90 秒长超时死等，期间 bridgeReady 一直 false，三个生图按钮全灰，
+     * 用户完全无法操作，这正是 v0.1.74 在 AI Studio 上的现场）。
+     *
+     * quick=false：渲染进程崩溃重建，用长超时完整恢复；连续失败超过阈值才回退重连。
+     */
+    private fun restoreBridgeAfterRendererRecreated(quick: Boolean = false) {
+        if (rendererRecoveryJob?.isActive == true) return
         val server = _state.value.activeServer ?: return
-        viewModelScope.launch {
+        rendererRecoveryJob = viewModelScope.launch {
             _state.update {
                 it.copy(
                     bridgeReady = false,
-                    connectionMessage = "ComfyUI 网页已重建，正在恢复本地工作副本",
+                    connectionMessage = if (quick) "ComfyUI 网页已重载，正在恢复本地工作副本" else "ComfyUI 网页已重建，正在恢复本地工作副本",
                 )
             }
-            runCatching {
+            val outcome = runCatching {
                 val activeBridge = bridge ?: error("前端桥接不可用")
                 bridgeOperationMutex.withLock {
-                    activeBridge.awaitReady()
+                    activeBridge.awaitReady(timeoutMillis = if (quick) 15_000L else 90_000L)
                     restoreWorkingCopyAfterReconnect(activeBridge, server.baseUrl, bridgeLocked = true)
                 }
-            }.onSuccess {
+            }
+            if (outcome.isSuccess) {
+                rendererRecoveryFailures = 0
                 _state.update {
                     it.copy(
                         bridgeReady = true,
                         connectionMessage = "已恢复本地工作副本",
                     )
                 }
-            }.onFailure { error ->
-                AppLogger.error("WebView 重建后恢复工作副本失败", error)
-                scheduleReconnect()
+            } else {
+                rendererRecoveryFailures += 1
+                AppLogger.error(
+                    if (quick) "页面重载后恢复工作副本失败（第 ${rendererRecoveryFailures} 次）" else "WebView 重建后恢复工作副本失败",
+                    outcome.exceptionOrNull(),
+                )
+                if (!quick && rendererRecoveryFailures >= 3) {
+                    rendererRecoveryFailures = 0
+                    scheduleReconnect()
+                }
+            }
+        }.also { job ->
+            job.invokeOnCompletion {
+                if (rendererRecoveryJob === job) rendererRecoveryJob = null
             }
         }
     }
