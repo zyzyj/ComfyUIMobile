@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  v0.1.71：服务器地址 + 认证 Cookie（百度 AI Studio / CloudStudio 的登录态）以明文存在
+  DataStore（files/datastore/comfy_mobile.preferences_pb）里，默认会被云端备份
+  （Google 云端硬盘）和新机迁移一起带走。Cookie 等同于平台账号密码，不该出设备，
+  所以这里把整个 datastore 目录排除掉。
+
+  剩下那两个 SharedPreferences 只存"日志开关 / 更新下载进度 / 一个随机 client id"，
+  不含凭据，留着备份也无所谓。
+
+  代价：换机不会自动恢复服务器列表，需要手动再填一次。相比凭据被同步上云，值。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="datastore" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="datastore" />
+    </device-transfer>
+</data-extraction-rules>

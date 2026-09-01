@@ -69,6 +69,31 @@ object LanAddress {
     }
 
     /**
+     * 取出去掉端口、去掉方括号、统一小写的裸主机名，**只用于比对，不用于展示**
+     * （展示请用 [displayHost]，它保留 IPv6 的方括号，看着更像个地址）。
+     *
+     * 系统 WebView 在 `onReceivedHttpAuthRequest` 里回传的 host 带不带端口、IPv6 带不带
+     * 方括号都没个准谱，所以比对前两边必须走同一套归一化：`[::1]:8188`、`[::1]`、
+     * `::1`、`EXAMPLE.com:8188` 要分别收敛成 `::1` / `example.com`。
+     */
+    fun bareHost(urlOrAuthority: String): String {
+        val cleaned = withoutCredentials(urlOrAuthority)
+        val withoutScheme = cleaned.substringAfter("://", cleaned)
+        val authority = withoutScheme.substringBefore('/').substringBefore('?').substringBefore('#')
+        val host = when {
+            authority.startsWith('[') -> {
+                val end = authority.indexOf(']')
+                if (end > 0) authority.substring(1, end) else authority.trimStart('[')
+            }
+            // 没有方括号却有多个冒号，只能是裸写的 IPv6（如 fe80::1），
+            // 这时候再按冒号切端口会把地址切烂。
+            authority.count { it == ':' } >= 2 -> authority
+            else -> authority.substringBefore(':')
+        }
+        return host.trim().trim('.').lowercase()
+    }
+
+    /**
      * 判断目标地址与基准地址是否同源（scheme + host + port 三者一致）。
      * 不能用 startsWith 做前缀匹配：http://host:8188.attacker.tld 会以
      * http://host:8188 开头，从而骗过校验被放进特权 WebView。

@@ -178,10 +178,12 @@ class ComfyBridge(private val activity: Activity) {
 
             override fun onReceivedHttpAuthRequest(view: WebView, handler: HttpAuthHandler, host: String, realm: String) {
                 val credentials = httpCredentials
-                // displayHost 已经去掉端口并保留 IPv6 方括号，这里不能再按 ':' 截断，
-                // 否则 [::1] 会被切成 "[" 而永远匹配不上。系统回传的 host 可能带端口，需要去掉。
-                val expectedHost = LanAddress.displayHost(allowedOrigin)
-                if (credentials != null && host.substringBefore(':').equals(expectedHost, ignoreCase = true)) {
+                // v0.1.71：这里原来写着"不能再按 ':' 截断"，代码却偏偏就是
+                // host.substringBefore(':')，而 displayHost() 保留 IPv6 的方括号，
+                // 于是 [::1]:8188 被切成 "["，跟 "[::1]" 永远对不上 —— IPv6 服务器
+                // 的 HTTP Basic 自动登录一直是坏的。改用两边都做归一化再比。
+                val expectedHost = LanAddress.bareHost(allowedOrigin)
+                if (credentials != null && LanAddress.bareHost(host) == expectedHost) {
                     handler.proceed(credentials.first, credentials.second)
                     return
                 }

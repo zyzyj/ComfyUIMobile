@@ -109,4 +109,20 @@ class LanAddressTest {
         assertEquals("192.168.7.1", addresses.first())
         assertEquals("192.168.7.254", addresses.last())
     }
+
+    @Test fun bareHostNormalizesPortsAndBrackets() {
+        // v0.1.71：Basic Auth 的 host 比对全靠它。两边必须收敛到同一个字符串，
+        // 否则 IPv6 服务器永远匹配不上（老代码按 ':' 切，把 [::1]:8188 切成了 "["）。
+        assertEquals("::1", LanAddress.bareHost("[::1]:8188"))
+        assertEquals("::1", LanAddress.bareHost("[::1]"))
+        assertEquals("::1", LanAddress.bareHost("::1"))
+        assertEquals("::1", LanAddress.bareHost("http://[::1]:8188/prompt"))
+        assertEquals("2001:db8::1", LanAddress.bareHost("https://user:pass@[2001:db8::1]:443"))
+        assertEquals("comfy.example.com", LanAddress.bareHost("http://comfy.example.com:8188"))
+        assertEquals("comfy.example.com", LanAddress.bareHost("comfy.example.com"))
+        // 大小写与末尾的点不该影响匹配。
+        assertEquals("comfy.example.com", LanAddress.bareHost("HTTP://COMFY.Example.COM.:8188/"))
+        // 空输入不能崩。
+        assertEquals("", LanAddress.bareHost(""))
+    }
 }

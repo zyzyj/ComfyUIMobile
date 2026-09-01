@@ -392,17 +392,50 @@ class ComfyClient {
         UploadResponse(response.getString("name"), response.optString("subfolder"), response.optString("type", "input"))
     }
 
+    /**
+     * 取消任务。
+     *
+     * v0.1.71 改动：原生 ComfyUI **没有** `/api/jobs/{id}` 这个接口（那是 Manager 一类插件
+     * 才提供的），所以它必然 404，然后刀就落到了 `/interrupt` 上。问题是 /interrupt 的语义
+     * 是"中断**当前正在执行**的那一个任务"——如果目标任务其实已经跑完、或者被别的客户端
+     * 插队顶掉了，这一刀砍的就是别人正在跑的任务。
+     *
+     * 现在的做法：
+     * 1. 先照常发 `/queue` delete。对排队中的任务这就是取消本身；对运行中的任务它不起作用，
+     *    但也不会误伤（ComfyUI 的 delete 只作用于排队队列）。
+     * 2. 只有确认目标还在 `queue_running` 里，才发 /interrupt。确认不了就干脆不动手。
+     */
     suspend fun cancel(job: JobSummary) = withContext(Dispatchers.IO) {
+        val delete = JSONObject().put("delete", JSONArray().put(job.id))
+        val deleteRequest = Request.Builder().url("$baseUrl/queue").post(delete.toString().toRequestBody(jsonMedia)).build()
         if (job.state == JobState.PENDING) {
-            val body = JSONObject().put("delete", JSONArray().put(job.id))
-            executeText(Request.Builder().url("$baseUrl/queue").post(body.toString().toRequestBody(jsonMedia)).build())
-        } else {
-            val specific = Request.Builder().url("$baseUrl/api/jobs/${encode(job.id)}").delete().build()
-            runCatching { executeText(specific) }.getOrElse {
-                executeText(Request.Builder().url("$baseUrl/interrupt").post(ByteArray(0).toRequestBody()).build())
-            }
+            // 排队中的任务必须摘掉才算取消，删失败就得如实报错，不能装成功。
+            executeText(deleteRequest)
+            return@withContext
         }
+        runCatching { executeText(deleteRequest) }
+            .onFailure { error -> AppLogger.warn("取消任务时清理队列失败：${job.id}", error) }
+        if (!isJobRunning(job.id)) {
+            AppLogger.info("任务 ${job.id} 已不在执行队列中，跳过中断以免误伤其他任务")
+            return@withContext
+        }
+        executeText(Request.Builder().url("$baseUrl/interrupt").post(ByteArray(0).toRequestBody()).build())
     }
+
+    /**
+     * 目标任务是否真的还站在执行队列里。
+     * 读不到队列时保守返回 false——宁可这次取消不生效，也不能误中断别人的任务。
+     */
+    private fun isJobRunning(promptId: String): Boolean = runCatching {
+        val root = executeJson(Request.Builder().url("$baseUrl/queue").get().build())
+        val running = root.optJSONArray("queue_running") ?: return@runCatching false
+        for (index in 0 until running.length()) {
+            // /queue 的每一项形如 [jobIndex, promptId, prompt, extraData, outputsToExecute]
+            val item = running.optJSONArray(index) ?: continue
+            if (item.length() >= 2 && item.optString(1) == promptId) return@runCatching true
+        }
+        false
+    }.getOrDefault(false)
 
     suspend fun clearPending() = withContext(Dispatchers.IO) {
         val body = JSONObject().put("clear", true)

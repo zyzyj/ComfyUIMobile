@@ -155,9 +155,11 @@ class JobMonitorService : Service() {
         // 的外层 START_REDELIVER_INTENT 误重启——只要这次任务进来就顶替占位。
         val monitor = scope.launch(start = CoroutineStart.LAZY) {
             var consecutivePollFailures = 0
-            // v0.1.67：连续失败两次（10 秒）就放弃任务，避免日志里 80 次连刷。
+            // v0.1.71：给"重试也没用"的失败一次复检机会，所以上限从 2 提到 4。
+            // 普通抖动（5xx / 网络）每次 +1，4 次（20 秒）后放弃；
+            // 永久性失败（404/403 这类）每次 +2，两次即达上限，10 秒后放弃。
             // intent 在 onStartCommand 里是可空类型，重启场景下可能为 null，这里给默认值兜底。
-            val maxConsecutiveFailures = intent?.getIntExtra(EXTRA_MAX_FAILURES, 2) ?: 2
+            val maxConsecutiveFailures = intent?.getIntExtra(EXTRA_MAX_FAILURES, 4) ?: 4
             while (isActive) {
                 runCatching { readStatus(baseUrl, promptId) }.onSuccess { status ->
                     consecutivePollFailures = 0
@@ -248,12 +250,18 @@ class JobMonitorService : Service() {
                         return@launch
                     }
                 }.onFailure { error ->
-                    consecutivePollFailures += 1
+                    // v0.1.71：区分"抖动"和"这条路根本走不通"。反向代理拿不到 Cookie 时
+                    // /history 会稳定返回 403/404，重试一万次也不会变好，直接按 2 次计，
+                    // 10 秒内放弃并发通知；5xx 与网络异常仍按 1 次计，多给几次机会。
+                    val permanent = error is PollFailure && error.permanent
+                    consecutivePollFailures += if (permanent) 2 else 1
                     if (consecutivePollFailures == 1 || consecutivePollFailures % 6 == 0) {
                         AppLogger.error("后台轮询任务失败：$promptId，连续失败=$consecutivePollFailures", error)
                     }
                     // v0.1.67：超过上限就主动放弃并 stop 服务。AI Studio / 类似反向代理
                     // 拿不到 Cookie 时会无限刷 404，日志里 80 次连刷就是这个原因。
+                    // v0.1.71：这条注释当年说的场景其实没被修好（readStatus 把非 2xx 当成功），
+                    // 现在才真正生效。
                     if (consecutivePollFailures >= maxConsecutiveFailures) {
                         AppLogger.warn("连续失败 $consecutivePollFailures 次，自动放弃监控任务 $promptId")
                         monitors.remove(promptId)
@@ -266,7 +274,9 @@ class JobMonitorService : Service() {
                                 promptId.hashCode(),
                                 completionNotification(
                                     "任务已超时",
-                                    "${workflowName}（${maxConsecutiveFailures} 次轮询失败，已停止监控）",
+                                    // 用实际失败次数而不是上限：永久性失败按 2 次计，
+                                    // 达到上限时计数可能正好卡在中间值。
+                                    "${workflowName}（连续 ${consecutivePollFailures} 次轮询失败，已停止监控）",
                                     promptId,
                                     baseUrl,
                                     workflowPath,
@@ -296,7 +306,16 @@ class JobMonitorService : Service() {
         if (authCookie.isNotBlank()) builder.header("Cookie", authCookie)
         val request = builder.build()
         client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return PollStatus(false, false)
+            // v0.1.71：以前这里遇到非 2xx 直接返回"未完成"，等于把失败吞掉，
+            // 上面那个连续失败上限永远触发不了——AI Studio 拿不到 Cookie 时会无限刷
+            // 404，日志里 80 次连刷就是这么来的。现在如实抛出，交给上层计数。
+            // 顺带说明：ComfyUI 对"任务还没进历史"返回的是 200 + {}，不是 404，
+            // 所以把 404 当失败处理不会误伤正常排队中的任务。
+            if (!response.isSuccessful) {
+                val code = response.code
+                val permanent = code in 400..499 && code != 408 && code != 429
+                throw PollFailure("轮询任务状态失败：HTTP $code", permanent)
+            }
             val root = JSONObject(response.body?.string().orEmpty())
             val status = root.optJSONObject(promptId)?.optJSONObject("status") ?: return PollStatus(false, false)
             return PollStatus(
@@ -305,6 +324,14 @@ class JobMonitorService : Service() {
             )
         }
     }
+
+    /**
+     * 轮询失败的细分类型。
+     *
+     * @property permanent true 表示"再试也不会好"（401/403/404 这类），上层按 2 次计数快速放弃；
+     *                     false 表示 5xx / 超时这类抖动，值得多试几次。
+     */
+    private class PollFailure(message: String, val permanent: Boolean) : java.io.IOException(message)
 
     private suspend fun saveLocalOutputs(baseUrl: String, promptId: String): SaveReport {
         val resultClient = ComfyClient()
