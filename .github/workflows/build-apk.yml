@@ -102,6 +102,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: 读取版本号并生成校验文件
+        id: version
+        # App 内"检查更新"要求 Release：① 非 draft 非 prerelease；② 标签就是版本号；
+        # ③ 资产里有 <apk 名>.sha256。三条缺一就不会提示更新，所以这里全部准备好。
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 'versionName' app/build.gradle.kts | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          if [ -z "$VERSION" ]; then echo "::error::无法从 build.gradle.kts 解析版本号"; exit 1; fi
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          cd app/build/outputs/apk/release
+          for apk in *.apk; do sha256sum "$apk" > "$apk.sha256"; done
+          ls -l
+
       - name: 上传构建产物
         # artifact 上传失败不应阻塞 Release 发布（Release 直接上传 APK，不依赖此步骤）
         continue-on-error: true
@@ -114,28 +127,49 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      - name: 发布 Release（免登录下载链接）
-        # 仅 PR 跳过；push 与手动触发都发布，确保有免登录的公开下载链接
+      - name: 发布 Release
+        # 仅 PR 跳过；push 与手动触发都发布，确保有免登录的公开下载链接。
+        #
+        # 发布两个标签，各司其职：
+        #  · v<版本号>：正式 Release。App 内"检查更新"只认这种（GitHub 的
+        #    /releases/latest 端点会跳过 draft 与 prerelease，这也是以前标记成
+        #    --prerelease 时检查更新永远返回 404 的原因）。
+        #  · latest：固定下载链接，每次构建覆盖，标为 prerelease 免得抢掉上面的位置。
         if: ${{ github.event_name != 'pull_request' }}
         run: |
-          TAG="latest"
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.value }}"
+
+          awk -v want="# v${VERSION}" 'index($0, want) == 1 { found = 1; print; next } found && /^# / { exit } found { print }' \
+            RELEASE_NOTES.md > /tmp/notes.md
+          if [ ! -s /tmp/notes.md ]; then
+            printf '由 GitHub Actions 自动构建，更新内容见仓库内 RELEASE_NOTES.md。\n' > /tmp/notes.md
+          fi
+
           # --cleanup-tag 让删除 release 时连同标签一起删除，避免残留标签导致重建失败
-          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
-          if gh release create "$TAG" \
-              --title "ComfyUI Mobile 自动构建 · $(date -u +'%Y-%m-%d %H:%M UTC')" \
-              --notes "由 GitHub Actions 自动构建。debug 与 release 包名不同，可共存安装。" \
+          gh release delete "v${VERSION}" --yes --cleanup-tag 2>/dev/null || true
+          if gh release create "v${VERSION}" \
+              --title "ComfyUI Mobile v${VERSION}" \
+              --notes-file /tmp/notes.md \
+              app/build/outputs/apk/debug/*.apk \
+              app/build/outputs/apk/release/*.apk \
+              app/build/outputs/apk/release/*.sha256; then
+            echo "✅ 已发布 v${VERSION}"
+          else
+            echo "::error::版本 Release 发布失败"
+            exit 1
+          fi
+
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          if gh release create latest \
+              --title "ComfyUI Mobile 自动构建（最新）· $(date -u +'%Y-%m-%d %H:%M UTC')" \
+              --notes "固定下载链接，始终指向最近一次构建（当前 v${VERSION}）。App 内检查更新请使用带版本号的 Release。" \
               --prerelease \
               app/build/outputs/apk/debug/*.apk \
               app/build/outputs/apk/release/*.apk; then
-            echo "✅ 已发布 latest"
+            echo "✅ 已更新 latest"
           else
-            FALLBACK="build-$(date -u +'%Y%m%d-%H%M%S')"
-            gh release create "$FALLBACK" \
-              --title "ComfyUI Mobile 自动构建（备用）· $(date -u +'%Y-%m-%d %H:%M UTC')" \
-              --notes "latest 标签发布失败，这是备用构建产物（下载后请选择最新版本号）。" \
-              --prerelease \
-              app/build/outputs/apk/debug/*.apk \
-              app/build/outputs/apk/release/*.apk
+            echo "::warning::latest 标签发布失败，版本 v${VERSION} 仍可正常下载"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

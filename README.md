@@ -2,7 +2,9 @@
 
 ComfyUI Mobile 是一个连接自有 ComfyUI 服务器的原生 Android 客户端。它把 ComfyUI 工作流转换成手机友好的纵向参数表单，不在主界面显示节点画布。
 
-> 当前版本：v0.1.57。首要兼容 ComfyUI 0.30.1、ComfyUI Frontend 1.47.12。
+> 当前版本：v0.1.71。首要兼容 ComfyUI 0.30.1、ComfyUI Frontend 1.47.12。
+>
+> 本仓库是 [7116-byte/ComfyUIMobile](https://github.com/7116-byte/ComfyUIMobile) 的 fork，在上游基础上额外做了云端反向代理平台（百度 AI Studio、CloudStudio 等）的适配。完整版本记录见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
 
 ## 功能
 
@@ -41,7 +43,11 @@ ComfyUI Mobile 是一个连接自有 ComfyUI 服务器的原生 Android 客户�
 
 ## 连接安全
 
-手动连接不再限制 IP 网段，可使用局域网、VPN、共享地址、公网 IP 和域名，但当前仍只支持 HTTP，不支持反向代理登录。ComfyUI 默认没有账号鉴权；放开 App 的地址校验不等于服务器已经安全，请只连接你本人控制且已通过 VPN、防火墙或其他方式保护的服务器，绝不要直接把无认证的 8188 端口暴露到公网。
+手动连接不再限制 IP 网段，可使用局域网、VPN、共享地址、公网 IP、域名，以及百度 AI Studio、CloudStudio 这类把 ComfyUI 藏在反代后面的云平台；可手动填写认证 Cookie 通过平台登录态，也能使用 HTTP Basic 账号密码（IPv6 地址同样支持）。ComfyUI 默认没有账号鉴权；放开 App 的地址校验不等于服务器已经安全，请只连接你本人控制且已通过 VPN、防火墙或其他方式保护的服务器，绝不要直接把无认证的 8188 端口暴露到公网。
+
+**Cookie 等同于账号密码，请妥善保管。** App 已把服务器凭据排除在系统云端备份与新机迁移之外，不会同步到 Google 云端硬盘；换机时需要重新填写。
+
+反代平台不转发 `/userdata` 接口时，云端工作流列表读不到，App 会自动改为显示本机保存过的工作流，并提示从手机导入。
 
 隐藏 WebView 没有注册 Android JavaScript 接口。自定义节点前端脚本只能在 WebView 的普通网页权限内运行，不能直接调用原生对象。
 
