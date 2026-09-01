@@ -149,7 +149,7 @@ class ComfyBridge(private val activity: Activity) {
                         // 只校验 epoch：渲染进程崩溃重建后 webView 会被替换并重新 loadUrl，
                         // pageEpoch 必然 +1，旧延迟回调自然失效，无需再判 view 存活状态。
                         if (pageEpoch == epoch) onPageLoaded?.invoke(view)
-                    }, 800L)
+                    }, 200L)
                 }
                 super.onPageFinished(view, url)
             }
@@ -309,7 +309,7 @@ class ComfyBridge(private val activity: Activity) {
             val json = runCatching { JSONObject(response) }.getOrNull()
             if (json?.optBoolean("ok") == true) return
             lastError = json?.optString("error").takeUnless { it.isNullOrBlank() } ?: lastError
-            delay(500)
+            delay(200)
         }
         throw IllegalStateException("前端桥接超时：$lastError")
     }
@@ -448,17 +448,26 @@ class ComfyBridge(private val activity: Activity) {
             if (current === expected) {
               return JSON.stringify({ok:true, switched:false});
             }
-            const persistedWorkflow = workflowStore.getWorkflowByPath(expected);
-            if (!persistedWorkflow) {
-              return JSON.stringify({ok:false, error:'找不到被编辑的工作流：' + expected});
+            // v0.1.77：服务器分支整体降级。AI Studio 网关对 /userdata"半死不活"——
+            // 列表可能偶发 200 空（开关被误置 true），但按路径加载必败（中文路径 400、
+            // query 被剥）。openWorkflow 一旦失败硬报错，高级编辑退出就会反复"读取失败"
+            // 卡在编辑器里。画布内容本来就是 App 用 loadGraphData 灌进去的，切换标签
+            // 只是锦上添花，失败时直接跳过继续导出当前画布即可，绝不让退出卡死。
+            try {
+              const persistedWorkflow = workflowStore.getWorkflowByPath(expected);
+              if (!persistedWorkflow) {
+                return JSON.stringify({ok:true, switched:false, skipped:true});
+              }
+              await workflowStore.openWorkflow(persistedWorkflow);
+              await new Promise(resolve => setTimeout(resolve, 400));
+              const activePath = workflowStore.activeWorkflow?.path || '';
+              if (activePath !== expected) {
+                return JSON.stringify({ok:true, switched:false, skipped:true});
+              }
+              return JSON.stringify({ok:true, switched:true});
+            } catch (error) {
+              return JSON.stringify({ok:true, switched:false, skipped:true});
             }
-            await workflowStore.openWorkflow(persistedWorkflow);
-            await new Promise(resolve => setTimeout(resolve, 400));
-            const activePath = workflowStore.activeWorkflow?.path || '';
-            if (activePath !== expected) {
-              return JSON.stringify({ok:false, error:'恢复被编辑的工作流失败：期望 ' + expected + '，实际 ' + activePath});
-            }
-            return JSON.stringify({ok:true, switched:true});
           } catch (error) {
             return JSON.stringify({ok:false, error:'恢复被编辑的工作流失败：' + String(error?.stack || error)});
           }
