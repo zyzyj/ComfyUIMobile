@@ -374,7 +374,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 userdataUnsupportedLogged = false
                 // v0.1.69：换服务器等于换平台，前端脚本的降级开关要复位，
                 // 否则从 AI Studio 切回直连服务器后仍会跳过服务器工作流列表。
-                activeBridge.serverWorkflowStoreAvailable = true
+                // v0.1.72：复位的默认值必须是 false 而不是 true——这个开关决定前端脚本
+                // 要不要走"服务器工作流列表/按路径加载"分支，而 AI Studio 一类平台根本不
+                // 开放 /userdata。若复位成 true，从"连接完成"到"refreshWorkflowsInternal
+                // 探测失败"之间的窗口期里，用户一点工作流，前端就会去读服务器上的中文
+                // 路径文件，被百度网关以 400 Invalid char in url path 打回（实测日志
+                // 14:11:37 预读取就是这个死法）。复位成 false 表示"探测完成前先按不支持
+                // 云端存储处理"，反正加载永远有内容直载兜底；直连服务器探测成功后会由
+                // refreshWorkflowsInternal 置回 true，不受影响。
+                activeBridge.serverWorkflowStoreAvailable = false
                 // 反向代理认证 Cookie：用户手动配置的登录态（如 AI Studio api_serving）。
                 val cookie = _state.value.serverCookie
                 client.setAuthCookie(cookie)
@@ -1205,6 +1213,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 // 部分云端平台（如百度 AI Studio 的 api_serving 代理）不开放 /userdata
                 // 工作流管理接口，保存会返回 404/400。此时降级为本地草稿保存，功能不中断。
+                // v0.1.72：探测已知不支持时直接降级，省掉一发必败的写入请求。
+                if (bridge?.serverWorkflowStoreAvailable != true) {
+                    saveWorkflowAsLocalDraft(document, workflowJson)
+                    return@runOperation
+                }
                 val saved = try {
                     client.writeWorkflow(document.entry.path, workflowJson, overwrite = current != null)
                 } catch (error: IllegalStateException) {
@@ -1281,7 +1294,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val fileName = WorkflowPath.fileName(name)
                 val destination = "${WorkflowPath.folder(folder)}/$fileName"
                 require(destination != document.entry.path) { "另存名称不能与当前工作流相同" }
-                require(client.listWorkflows().none { it.path == destination }) { "同名工作流已存在，请换一个名称" }
+                // v0.1.72：AI Studio 这类不开放 /userdata 的服务器上 listWorkflows 必失败，
+                // 别让"另存为"连输入框都过不去——重名检查只对有云端存储的服务器做。
+                val serverStoreAvailable = bridge?.serverWorkflowStoreAvailable == true
+                if (serverStoreAvailable) {
+                    require(client.listWorkflows().none { it.path == destination }) { "同名工作流已存在，请换一个名称" }
+                }
 
                 val workflowJson = bridgeOperationMutex.withLock {
                     ensureSelectedWorkflowLoaded()
@@ -1291,7 +1309,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .put("id", UUID.randomUUID().toString())
                     .put("revision", 0)
                     .toString()
-                val saved = client.writeWorkflow(destination, savedJson, overwrite = false)
+                val saved = if (serverStoreAvailable) {
+                    client.writeWorkflow(destination, savedJson, overwrite = false)
+                } else {
+                    // v0.1.72：不支持云端存储时，"另存为"就是在本机留一份副本——
+                    // 快照 + 草稿，下次打开照常用。
+                    AppLogger.info("此服务器不提供云端工作流存储，另存为已保存在本机")
+                    WorkflowEntry(
+                        name = fileName,
+                        path = "workflows/$fileName",
+                        isDirectory = false,
+                        size = savedJson.toByteArray().size.toLong(),
+                        modified = System.currentTimeMillis() / 1000.0,
+                    )
+                }
                 cacheWorkflowContent(document.serverUrl, saved.path, savedJson)
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(
@@ -1322,7 +1353,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         nodeProblems = emptyMap(),
                         workflowDraftConflictRequired = false,
                         workflowDraftConflictReason = "",
-                        notice = "已另存为 $fileName",
+                        notice = if (serverStoreAvailable) "已另存为 $fileName" else "已另存到本机 $fileName（此服务器不支持云端存储）",
                     )
                 }
                 refreshWorkflowsInternal()
@@ -1583,17 +1614,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 不支持（AI Studio 等返回 404/400）时降级为仅本地加载，不中断导入。
                 val baseName = safeName.substringBeforeLast(".json", safeName)
                 var candidateName = safeName
-                val entry = try {
-                    val existingPaths = client.listWorkflows().mapTo(mutableSetOf()) { it.path }
-                    var copyNumber = 2
-                    while ("workflows/$candidateName" in existingPaths) {
-                        candidateName = "$baseName-$copyNumber.json"
-                        copyNumber += 1
+                val entry = if (bridge?.serverWorkflowStoreAvailable == true) {
+                    // 服务器支持云端工作流管理：先检查重名再写入服务器。
+                    try {
+                        val existingPaths = client.listWorkflows().mapTo(mutableSetOf()) { it.path }
+                        var copyNumber = 2
+                        while ("workflows/$candidateName" in existingPaths) {
+                            candidateName = "$baseName-$copyNumber.json"
+                            copyNumber += 1
+                        }
+                        client.writeWorkflow("workflows/$candidateName", json.toString(), overwrite = false)
+                    } catch (error: IllegalStateException) {
+                        if (!isUserdataUnavailable(error)) throw error
+                        AppLogger.warn("服务器不支持云端工作流，导入降级为仅本地加载", error)
+                        localOnlyEntry(candidateName, json)
                     }
-                    client.writeWorkflow("workflows/$candidateName", json.toString(), overwrite = false)
-                } catch (error: IllegalStateException) {
-                    if (!isUserdataUnavailable(error)) throw error
-                    AppLogger.warn("服务器不支持云端工作流，导入降级为仅本地加载", error)
+                } else {
+                    // v0.1.72：已知这台服务器不开放 /userdata（AI Studio 等反向代理）。
+                    // 以前这里也会先白跑一遍 listWorkflows + writeWorkflow——在代理上这
+                    // 两发请求是必败的，中文文件名还会额外打一条 400 到日志，然后才降级。
+                    // 现在直接本地化，不浪费那两发注定失败的请求。
+                    AppLogger.info("此服务器不提供云端工作流存储，导入直接保存在本机")
                     localOnlyEntry(candidateName, json)
                 }
                 // 内存 + 磁盘各存一份：AI Studio 上服务器那份永远读不回来，
