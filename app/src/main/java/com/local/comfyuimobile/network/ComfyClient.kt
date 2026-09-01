@@ -496,11 +496,38 @@ class ComfyClient {
     fun mediaUrl(filename: String, subfolder: String, type: String): String =
         "$baseUrl/view?filename=${encode(filename)}&subfolder=${encode(subfolder)}&type=${encode(type)}"
 
+    /**
+     * 下载图片/视频到指定输出流。
+     *
+     * v0.1.79 补了两道守卫。这里走的是裸的 `client.newCall`，**不经过**
+     * [executeText]，也就没有 [PlatformResponseGuard] 把关，而反向代理托管的
+     * ComfyUI（百度 AI Studio 一类）恰恰最爱在这条路径上出问题：
+     *  1. 会话过期时 `/view` 返回 **HTTP 200 + 登录页 HTML**（不是 401）。以前原样
+     *     写进文件，用户分享出去、存进相册的是一个打不开的网页，还以为图片坏了。
+     *  2. 401/403 的错误提示只有一句"下载失败：HTTP 403"，看不出是登录失效。
+     *
+     * 现在先看响应开头是不是网页：是网页就按守门的口径报人话（"需要登录或登录
+     * 已失效"），写不出半个 HTML 文件。另外正文为空也直接报错，不再落一个 0 字节文件。
+     *
+     * 说明：请求本身**是带鉴权 Cookie 的**——Cookie 由 OkHttpClient 的拦截器统一
+     * 附加（见 [authCookie]），这条路径和 /prompt、/history 走的是同一个拦截器。
+     */
     suspend fun downloadTo(url: String, output: OutputStream) = withContext(Dispatchers.IO) {
         client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
-            if (!response.isSuccessful) throw IllegalStateException("下载失败：HTTP ${response.code}")
+            // peekBody 只预览前若干字节（okio 的 peek 源，不消耗正文流），
+            // 大图也不会被读进内存，后续 byteStream() 拿到的仍是完整数据。
+            val head = runCatching { response.peekBody(SNIFF_BYTES).string() }.getOrDefault("")
+            if (!response.isSuccessful) {
+                throw IllegalStateException(
+                    "下载失败：" + PlatformResponseGuard.describe(response.code, head),
+                )
+            }
             val body = response.body ?: throw IllegalStateException("下载内容为空")
-            output.use { target -> body.byteStream().use { source -> source.copyTo(target) } }
+            if (PlatformResponseGuard.isHtml(head)) {
+                throw IllegalStateException("下载到的不是图片：" + PlatformResponseGuard.describe(response.code, head))
+            }
+            val written = output.use { target -> body.byteStream().use { source -> source.copyTo(target) } }
+            if (written == 0L) throw IllegalStateException("下载内容为空（服务器返回了 0 字节）")
         }
     }
 
@@ -593,24 +620,12 @@ class ComfyClient {
     private fun workflowName(extraData: JSONObject?): String =
         extraData?.optJSONObject("comfy_mobile")?.optString("workflow_name").orEmpty()
 
-    private fun executionDuration(status: JSONObject?): Long? {
-        if (status == null) return null
-        val messages = status.optJSONArray("messages") ?: return null
-        var start: Long? = null
-        var end: Long? = null
-        repeat(messages.length()) { index ->
-            val message = messages.optJSONArray(index) ?: return@repeat
-            val data = message.optJSONObject(1) ?: return@repeat
-            val timestamp = data.optLong("timestamp", -1L).takeIf { it > 0 } ?: return@repeat
-            when (message.optString(0)) {
-                "execution_start" -> if (start == null) start = timestamp
-                "execution_success", "execution_error", "execution_interrupted" -> if (end == null) end = timestamp
-            }
-        }
-        val startTs = start ?: return null
-        val endTs = end ?: return null
-        return (endTs - startTs).coerceAtLeast(0L)
-    }
+    /**
+     * v0.1.79：解析逻辑搬到 [ExecutionTiming]，和历史列表共用同一条规则（终态优先，
+     * execution_cached 只在一条终态都没有时兜底）。以前这里完全不认 execution_cached，
+     * "整条链路全是缓存命中"的任务（服务端只发 cached、不发 success）耗时一片空白。
+     */
+    private fun executionDuration(status: JSONObject?): Long? = ExecutionTiming.durationMs(status)
 
     private fun workflowPath(extraData: JSONObject?): String =
         extraData?.optJSONObject("comfy_mobile")?.optString("workflow_path").orEmpty()
@@ -659,5 +674,7 @@ class ComfyClient {
         const val PROBE_ATTEMPTS = 3
         /** 两次探测之间的等待，下标 0 对应第 2 次尝试前的等待。 */
         val PROBE_RETRY_DELAYS_MS = longArrayOf(1_500L, 3_000L)
+        /** 下载时嗅探响应开头的字节数：够看清是不是网页，又不会把整张大图读进内存。 */
+        const val SNIFF_BYTES = 2048L
     }
 }
