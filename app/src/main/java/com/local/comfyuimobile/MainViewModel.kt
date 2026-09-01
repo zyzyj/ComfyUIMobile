@@ -62,9 +62,11 @@ import com.local.comfyuimobile.service.JobMonitorService
 import com.local.comfyuimobile.service.JobNotificationNavigation
 import com.local.comfyuimobile.update.UpdateDownloadStatus
 import com.local.comfyuimobile.update.UpdateManager
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.SupervisorJob
 import kotlin.random.Random
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.async
@@ -78,7 +80,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -93,6 +94,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val localResultCache = LocalResultCache(application)
     private val workflowDrafts = WorkflowDraftStore(application)
     private val workflowSnapshots = WorkflowSnapshotStore(application)
+    /**
+     * 进程级作用域，只用于退出前的最后一次草稿保存。
+     *
+     * 这件事两边都不能碰：viewModelScope 会随 ViewModel 销毁一起取消，任务根本跑不起来；
+     * 而 onCleared() 跑在主线程，用 runBlocking 干等磁盘写入完成，存储一慢就是 ANR
+     * （系统回收进程时只给主线程几十毫秒）。所以单独开一个不受 ViewModel 生命周期约束
+     * 的作用域做一次性 fire-and-forget：写不进去大不了丢这次草稿，不能拿主线程响应
+     * 时间去换——何况平时早有防抖保存，这里只是最后一道兜底。
+     */
+    private val exitSaveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val client = ComfyClient()
     private val scanner = LanScanner(application, client)
     private val updates = UpdateManager(application)
@@ -3051,9 +3062,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         workflowDraftSaveJob?.cancel()
         currentDraftSnapshot()?.let { snapshot ->
-            runCatching {
-                runBlocking(Dispatchers.IO) { workflowDrafts.save(snapshot) }
-            }.onFailure { AppLogger.error("退出前保存工作流草稿失败", it) }
+            exitSaveScope.launch {
+                runCatching { workflowDrafts.save(snapshot) }
+                    .onFailure { AppLogger.error("退出前保存工作流草稿失败", it) }
+            }
         }
         client.closeWebSocket()
         super.onCleared()
