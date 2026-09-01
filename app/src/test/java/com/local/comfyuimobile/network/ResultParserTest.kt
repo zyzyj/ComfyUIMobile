@@ -111,4 +111,36 @@ class ResultParserTest {
         assertTrue(media.elapsedMs!! >= 4_700L)
         assertFalse(media.filename.isBlank())
     }
+
+    // v0.1.78：seed 的取名规则从"名字里含 Sampler 就认"改成"inputs 里真有 seed，
+    // 且名字以 Sampler/SamplerAdvanced/Seed 结尾"，兜底才退回旧的宽松匹配。
+
+    @Test fun seedPrefersRealSamplerOverNodeThatMerelyMentionsSampler() {
+        // KSamplerModel 排在前面，但它不是采样器。旧逻辑按子串匹配会选中它，
+        // 展示给用户一个跟这次出图无关的数字。
+        val prompt = JSONObject(
+            """{
+              "3":{"class_type":"KSamplerModel","inputs":{"seed":111,"model":["4",0]}},
+              "10":{"class_type":"KSampler","inputs":{"seed":222,"latent_image":["5",0]}}
+            }""",
+        )
+        assertEquals("222", ResultParser.extractSeed(prompt))
+    }
+
+    @Test fun seedReadsNoiseSeedFromAdvancedSamplers() {
+        val prompt = JSONObject("""{"7":{"class_type":"KSamplerAdvanced","inputs":{"noise_seed":987654}}}""")
+        assertEquals("987654", ResultParser.extractSeed(prompt))
+    }
+
+    @Test fun seedFallsBackToThirdPartySamplerNames() {
+        // 第三方节点命名不在标准集合里，宽松匹配兜住，别让它退化成"显示不出"。
+        val prompt = JSONObject("""{"2":{"class_type":"FooSamplerCustomThing","inputs":{"seed":42}}}""")
+        assertEquals("42", ResultParser.extractSeed(prompt))
+    }
+
+    @Test fun seedIgnoresNodesWithoutSeedInput() {
+        val prompt = JSONObject("""{"1":{"class_type":"KSampler","inputs":{"steps":20}}}""")
+        assertNull(ResultParser.extractSeed(prompt))
+        assertNull(ResultParser.extractSeed(null))
+    }
 }

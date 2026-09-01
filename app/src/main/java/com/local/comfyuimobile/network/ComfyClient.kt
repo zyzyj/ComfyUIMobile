@@ -347,7 +347,19 @@ class ComfyClient {
         val request = Request.Builder().url("$baseUrl/prompt").post(body.toString().toRequestBody(jsonMedia)).build()
         client.newCall(request).execute().use { httpResponse ->
             val responseBody = httpResponse.body?.string().orEmpty()
-            val response = runCatching { JSONObject(responseBody) }.getOrElse { JSONObject() }
+            // v0.1.78：失败响应允许正文不是 JSON（代理经常回整页 HTML），顶个空对象
+            // 只为去取 error 字段；成功响应绝不能这么干。以前 200 + 非 JSON 被静默替换
+            // 成空对象，紧接着 getString("prompt_id") 抛 "No value for prompt_id"，
+            // 用户看到的提示和真实原因没有半点关系（真实原因通常是代理返回了网页）。
+            val response = runCatching { JSONObject(responseBody) }.getOrElse {
+                if (httpResponse.isSuccessful) throw PlatformResponseException(
+                    "生成请求已发出，但服务器返回的不是 JSON：${PlatformResponseGuard.describe(httpResponse.code, responseBody)}",
+                    httpResponse.code,
+                    unsupported = PlatformResponseGuard.isHtml(responseBody),
+                    html = PlatformResponseGuard.isHtml(responseBody),
+                )
+                JSONObject()
+            }
             if (!httpResponse.isSuccessful) {
                 val error = response.optJSONObject("error")
                 val message = when (error?.optString("type")) {
@@ -360,8 +372,15 @@ class ComfyClient {
                 }
                 throw PromptSubmissionException(message, parseNodeProblems(response.optJSONObject("node_errors")))
             }
+            // v0.1.78：同样别让它退化成 "No value for prompt_id"——说清楚服务器回了什么。
+            val promptId = response.optString("prompt_id")
+            if (promptId.isBlank()) {
+                throw IllegalStateException(
+                    "服务器没有返回任务编号，无法跟踪进度（${PlatformResponseGuard.describe(httpResponse.code, responseBody)}）",
+                )
+            }
             QueueResponse(
-                promptId = response.getString("prompt_id"),
+                promptId = promptId,
                 number = response.optInt("number"),
                 nodeErrors = response.optJSONObject("node_errors"),
             )
@@ -404,6 +423,12 @@ class ComfyClient {
      * 1. 先照常发 `/queue` delete。对排队中的任务这就是取消本身；对运行中的任务它不起作用，
      *    但也不会误伤（ComfyUI 的 delete 只作用于排队队列）。
      * 2. 只有确认目标还在 `queue_running` 里，才发 /interrupt。确认不了就干脆不动手。
+     *
+     * v0.1.78：上面第 2 步以前只在 RUNNING 分支做，PENDING 分支删完队列就 return。
+     * 可 `job.state` 来自任务列表轮询（默认 5 秒一次），是**快照**——任务完全可能在
+     * 快照之后就已出队开跑。这时候 delete 打空，/interrupt 又被跳过，用户点了取消，
+     * 任务照样一路跑完，界面还显示已取消。比报错更糟的是它静默失败。
+     * 现在两条路径删完都按服务端实时状态复查一次，复查只认目标 promptId，不会误伤。
      */
     suspend fun cancel(job: JobSummary) = withContext(Dispatchers.IO) {
         val delete = JSONObject().put("delete", JSONArray().put(job.id))
@@ -411,10 +436,10 @@ class ComfyClient {
         if (job.state == JobState.PENDING) {
             // 排队中的任务必须摘掉才算取消，删失败就得如实报错，不能装成功。
             executeText(deleteRequest)
-            return@withContext
+        } else {
+            runCatching { executeText(deleteRequest) }
+                .onFailure { error -> AppLogger.warn("取消任务时清理队列失败：${job.id}", error) }
         }
-        runCatching { executeText(deleteRequest) }
-            .onFailure { error -> AppLogger.warn("取消任务时清理队列失败：${job.id}", error) }
         if (!isJobRunning(job.id)) {
             AppLogger.info("任务 ${job.id} 已不在执行队列中，跳过中断以免误伤其他任务")
             return@withContext
@@ -481,8 +506,39 @@ class ComfyClient {
 
     private fun getJson(path: String): JSONObject = executeJson(Request.Builder().url(baseUrl + path).get().build())
 
-    private fun executeJson(request: Request): JSONObject = JSONObject(executeText(request))
-    private fun executeArray(request: Request): JSONArray = JSONArray(executeText(request))
+    /**
+     * v0.1.78：HTTP 200 只说明守门没拦下（非网页、状态码合法），**不说明正文是我们
+     * 要的那种 JSON**。反向代理特别爱用 200 + 另一种形状的响应糊弄人：列表接口返回
+     * JSON 对象、详情接口返回数组、甚至一行纯文本。以前直接丢给 JSONObject/JSONArray
+     * 构造方法，抛出来的是 "Value [...] of type org.json.JSONArray cannot be converted
+     * to JSONObject" 这种只有程序员才看得懂的话，还被 userdataCall 当成普通失败记进
+     * 能力表。先按首字符判定，给出人话，并标成平台不支持（成功一次即自动恢复）。
+     */
+    private fun executeJson(request: Request): JSONObject {
+        val body = executeText(request)
+        requireJsonShape(body, '{', "服务器返回的不是 JSON 对象")
+        return JSONObject(body)
+    }
+
+    private fun executeArray(request: Request): JSONArray {
+        val body = executeText(request)
+        requireJsonShape(body, '[', "服务器返回的不是 JSON 数组")
+        return JSONArray(body)
+    }
+
+    private fun requireJsonShape(body: String, expected: Char, what: String) {
+        val first = body.trimStart().firstOrNull()
+        if (first == expected) return
+        val html = PlatformResponseGuard.isHtml(body)
+        val head = body.trim().replace(Regex("\\s+"), " ").take(PlatformResponseGuard.MAX_BODY_CHARS)
+            .ifBlank { "空内容" }
+        throw PlatformResponseException(
+            "$what（HTTP 200，正文开头是「$head」）",
+            200,
+            unsupported = true,
+            html = html,
+        )
+    }
 
     private fun executeText(request: Request, allowedCodes: Set<Int> = setOf(200)): String {
         client.newCall(request).execute().use { response ->
