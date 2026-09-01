@@ -137,6 +137,10 @@ data class ResultMedia(
     val workflowPath: String = "",
     val workflowName: String = "",
     val elapsedMs: Long? = null,
+    // v0.1.76：总耗时（含排队），来自 App 本地"提交时刻→任务完成时刻"。
+    // 服务器 /history 的 elapsedMs 只算 execution_start→execution_success 的执行时间，
+    // 在 AI Studio 这类排队时间长的平台上用户体感严重偏短，补上排队部分。
+    val totalElapsedMs: Long? = null,
     val seed: String? = null,
     val positivePrompt: String? = null,
     val source: ResultSource = ResultSource.CLOUD,
