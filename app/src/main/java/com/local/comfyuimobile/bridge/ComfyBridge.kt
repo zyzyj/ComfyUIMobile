@@ -3,6 +3,8 @@ package com.local.comfyuimobile.bridge
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import android.graphics.Bitmap
 import android.net.Uri
 import android.webkit.WebResourceError
@@ -60,6 +62,18 @@ class ComfyBridge(private val activity: Activity) {
     var webView: WebView by mutableStateOf(WebView(activity))
         private set
     var onWebViewRecreated: ((WebView) -> Unit)? = null
+
+    /**
+     * 页面完成一次加载后回调（每轮页面 epoch 只触发一次，延迟 1.5 秒让前端完成初始化）。
+     *
+     * 百度 AI Studio 这类平台会**每十几秒自动重载一轮页面**（平台行为，App 无法阻止），
+     * 而且页面过大导致渲染进程频繁崩溃重建。以前只在"渲染进程崩溃重建"（onWebViewRecreated）
+     * 时才恢复桥接，页面单纯重载不触发——重载后前端 JS 上下文已重置，READY_SCRIPT 重新
+     * 执行，App 侧 bridgeReady 却还停留在 true，用户点生成时 buildPrompt 会执行失败。
+     * 现在页面每完成一次加载都主动走一遍"快速恢复"：bridgeReady 先降级，桥接重新就绪后
+     * 再恢复工作副本并置回 true，把平台重载造成的"灰色窗口"从几十秒压缩到几秒。
+     */
+    @Volatile var onPageLoaded: ((WebView) -> Unit)? = null
     @Volatile private var allowedOrigin: String = ""
     // 反向代理登录凭据：WebView 不会沿用地址里的 user:pass@，需要在鉴权回调里补上。
     @Volatile private var httpCredentials: Pair<String, String>? = null
@@ -127,6 +141,13 @@ class ComfyBridge(private val activity: Activity) {
                         "ComfyUI 网页完成加载：轮次=$pageEpoch，进度=${view.progress}%，" +
                             "已挂载=${view.isAttachedToWindow}，地址=${url.orEmpty()}",
                     )
+                    // 页面重载完成后延迟触发桥接快速恢复（AI Studio 平台每十几秒自动
+                    // 重载一轮，必须在每次重载后重新建立桥接，而不是等渲染进程崩溃）。
+                    // epoch 校验避免重载风暴里旧延迟回调误触发新页面。
+                    val epoch = pageEpoch
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        if (pageEpoch == epoch && !webView.isDestroyed) onPageLoaded?.invoke(view)
+                    }, 1_500L)
                 }
                 super.onPageFinished(view, url)
             }
@@ -1842,6 +1863,16 @@ class ComfyBridge(private val activity: Activity) {
                   delete window.__comfyMobileReadyKey;
                   return JSON.stringify({ok:false,error:'正在等待经典节点画布接管'});
                 }
+                // AI Studio 平台每十几秒自动重载页面，重载后工作流列表重新同步期间
+                // readyKey 会反复变化（syncWorkflows 在该平台还会挂住不返回）。参数页
+                // 生成依赖的是"画布上已有工作流内容 + App 侧工作副本"，跟工作流列表
+                // 是否稳定无关——画布上有节点就直接放行，避免在平台重载循环里永远
+                // 等不到"稳定 750ms"导致 bridgeReady 长期 false、生图按钮全灰。
+                const readyGraph = app.rootGraph || app.graph;
+                if (readyGraph && (readyGraph._nodes || []).length > 0) {
+                  window.__comfyMobileApp = app;
+                  return JSON.stringify({ok:true});
+                }
                 const workflowStore = workspace.workflow;
                 if (!workflowStore?.getWorkflowByPath || !workflowStore?.syncWorkflows) {
                   return JSON.stringify({ok:false,error:'ComfyUI 工作流仓库尚未就绪'});
@@ -1853,7 +1884,7 @@ class ComfyBridge(private val activity: Activity) {
                   window.__comfyMobileReadySince = Date.now();
                   return JSON.stringify({ok:false,error:'正在等待 ComfyUI 工作流状态稳定'});
                 }
-                if (Date.now() - Number(window.__comfyMobileReadySince || 0) < 750) {
+                if (Date.now() - Number(window.__comfyMobileReadySince || 0) < 200) {
                   return JSON.stringify({ok:false,error:'正在等待 ComfyUI 工作流状态稳定'});
                 }
                 window.__comfyMobileApp = app;
