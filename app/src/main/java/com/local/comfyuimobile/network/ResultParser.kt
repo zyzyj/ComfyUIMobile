@@ -133,26 +133,17 @@ object ResultParser {
         }
     }
 
-    private fun executionStart(job: JSONObject): Long {
-        val messages = job.optJSONObject("status")?.optJSONArray("messages") ?: return 0L
-        repeat(messages.length()) { index ->
-            val message = messages.optJSONArray(index) ?: return@repeat
-            if (message.optString(0) == "execution_start") return message.optJSONObject(1)?.optLong("timestamp") ?: 0L
-        }
-        return 0L
-    }
+    /**
+     * v0.1.79：改用 [ExecutionTiming]。以前这里把 `execution_cached` 当成终态——
+     * 部分节点命中缓存时消息顺序是 start → cached → success，而 cached 只比 start
+     * 晚几十毫秒，"真实跑了 8 秒"于是被显示成 0.1 秒。这正是 v0.1.76 之后"耗时不准"
+     * 残留的那一半：当时只补上了本地记录的排队时间，服务器执行时间仍被缓存事件截断。
+     * 现在终态（success/error/interrupted）优先，只有一条终态都没有（整条链路全缓存
+     * 命中）才用 cached 收尾。
+     */
+    private fun executionStart(job: JSONObject): Long = ExecutionTiming.start(job.optJSONObject("status"))
 
-    private fun executionEnd(job: JSONObject): Long {
-        val messages = job.optJSONObject("status")?.optJSONArray("messages") ?: return 0L
-        repeat(messages.length()) { index ->
-            val message = messages.optJSONArray(index) ?: return@repeat
-            when (message.optString(0)) {
-                "execution_success", "execution_cached" ->
-                    return message.optJSONObject(1)?.optLong("timestamp") ?: 0L
-            }
-        }
-        return 0L
-    }
+    private fun executionEnd(job: JSONObject): Long = ExecutionTiming.end(job.optJSONObject("status"))
 
     /**
      * 从提交的 prompt 里取第一个种子值。
