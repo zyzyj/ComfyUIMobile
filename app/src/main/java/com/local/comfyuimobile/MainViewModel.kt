@@ -2422,13 +2422,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // 看到空白列表。同时给 UI 一个柔和的 notice，提示云端工作流不可用。
             // v0.1.68：这种失败每 11 秒就来一次（AI Studio 实测 17 分钟 56 次），
             // 只在第一次记日志，后面静默跳过，不然诊断日志还是会被同一句话占满。
-            val unsupported = error is PlatformResponseException && error.unsupported
-            // v0.1.69：告诉前端脚本别再查服务器工作流列表——AI Studio 上那句
-            // syncWorkflows() 会一直挂住不返回，是导入卡死的直接原因。
-            if (unsupported) bridge?.serverWorkflowStoreAvailable = false
-            if (!unsupported || !userdataUnsupportedLogged) {
+            // v0.1.74：无论什么原因列表读不到，一律把前端开关置 false，不再只认
+            // "unsupported" 标记。百度 AI Studio 的网关对 /userdata 是"半死不活"的：
+            // 列表可能返回 200 空（被误判为支持）、也可能 403 空 body（旧逻辑里 403
+            // 不在 unsupported 判定范围，开关就停在 true）——但不管哪种，单文件读写
+            // 都是必败的（query 被网关剥掉、中文路径 400）。只要列表这次读不到，
+            // 就按"不支持云端存储"处理，让前端走内容直载，绝不在加载时去读服务器文件。
+            bridge?.serverWorkflowStoreAvailable = false
+            if (!userdataUnsupportedLogged) {
                 AppLogger.warn("工作流刷新失败，保留本地最近浏览路径作为占位", error)
-                if (unsupported) userdataUnsupportedLogged = true
+                userdataUnsupportedLogged = true
             }
             _state.update { ui ->
                 val serverKey = ui.activeServer?.baseUrl.orEmpty()

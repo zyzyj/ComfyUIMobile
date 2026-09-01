@@ -1002,7 +1002,8 @@ class ComfyBridge(private val activity: Activity) {
               // 每次加载工作流就不会再白等一轮（即便有下面的超时闸门也要等满 8 秒）。
               const skipServerWorkflow = ${!serverWorkflowStoreAvailable};
               if (serverWorkflowPath && !skipServerWorkflow) {
-              // Follow the same path as ComfyUI's workflow sidebar: resolve the
+                try {
+                // Follow the same path as ComfyUI's workflow sidebar: resolve the
               // persisted ComfyWorkflow first and pass that object to loadGraphData.
               const workflowStore = app.extensionManager?.workflow;
               if (workflowStore?.getWorkflowByPath && workflowStore?.syncWorkflows) {
@@ -1026,7 +1027,7 @@ class ComfyBridge(private val activity: Activity) {
                 if (!alreadyActive) {
                   if (loadFromRemote) await persistedWorkflow.load();
                   if (!persistedWorkflow.activeState) {
-                    return JSON.stringify({ok:false, error:'服务器工作流内容尚未加载：' + serverWorkflowPath});
+                    throw new Error('服务器工作流内容尚未加载：' + serverWorkflowPath);
                   }
                   sourceWorkflow = cloneValue(persistedWorkflow.activeState);
                   sourceWorkflow = await convertApiIfNeeded(sourceWorkflow);
@@ -1045,7 +1046,7 @@ class ComfyBridge(private val activity: Activity) {
               } else {
                 if (loadFromRemote) await persistedWorkflow.load();
                 if (!persistedWorkflow.activeState) {
-                  return JSON.stringify({ok:false, error:'服务器工作流内容尚未加载：' + serverWorkflowPath});
+                  throw new Error('服务器工作流内容尚未加载：' + serverWorkflowPath);
                 }
                 // The parameter bridge keeps the App's current working copy.
                 await app.loadGraphData(
@@ -1063,11 +1064,10 @@ class ComfyBridge(private val activity: Activity) {
               await new Promise(resolve => setTimeout(resolve, 250));
               const activeWorkflowPath = workflowStore.activeWorkflow?.path || '';
               if (activeWorkflowPath !== serverWorkflowPath) {
-                return JSON.stringify({
-                  ok:false,
-                  error:'ComfyUI 打开的工作流标签不匹配：期望 ' + serverWorkflowPath +
+                throw new Error(
+                  'ComfyUI 打开的工作流标签不匹配：期望 ' + serverWorkflowPath +
                     '，实际 ' + (activeWorkflowPath || '未命名工作流')
-                });
+                );
               }
 
               if (!$nativeWorkflowOpen) {
@@ -1107,6 +1107,15 @@ class ComfyBridge(private val activity: Activity) {
                 } // 结束 if (persistedWorkflow)
               } // 结束 if (!$nativeWorkflowOpen)
               } // 结束 if (workflowStore?.getWorkflowByPath && ...)
+                } catch (err) {
+                  // v0.1.74：百度 AI Studio 的网关对 /userdata 是"半死不活"的——列表
+                  // 偶尔能返回 200 空（把探测骗成"支持云端存储"），但单文件读写必败：
+                  // query 参数被网关剥掉（前端按路径读直接 400 Directory not provided）、
+                  // 中文路径 400 Invalid char in url path。无论前面探测怎么漏网，这里
+                  // 兜底：服务器分支任何一步失败，都退回用传进来的内容直接加载，
+                  // 绝不把整个加载搞死。
+                  console.log('[ComfyMobile] 服务器工作流读取失败，回退内容直载', err);
+                }
               } // 结束 if (serverWorkflowPath)
               if (!openedFromServer) {
                 // 服务器工作流列表不可用（或本次根本没给路径）：直接用传入的内容加载。
