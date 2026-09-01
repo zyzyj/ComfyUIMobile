@@ -132,6 +132,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // 平台排队时间长，用户体感严重偏短。
     private val submittedAt = ConcurrentHashMap<String, Long>()
     private val completedAt = ConcurrentHashMap<String, Long>()
+    // v0.1.77：listWorkflows 连续成功计数。AI Studio 网关偶发 200 空列表假阳性，
+    // 连续两次成功才把前端"云端工作流"开关置 true，避免 200/404 交替时开关乱翻。
+    private var serverStoreSuccessStreak = 0
     @Volatile private var pendingReconnectNodeId: String? = null
     @Volatile private var pendingNotificationWorkflowPath: String? = null
     private var visibleNodeChangedAt = 0L
@@ -2414,9 +2417,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 失败时不重置 workflows 列表，保留旧工作流展示给用户；如果旧列表为空，再用
         // RecentWorkflows 按当前 serverKey 恢复最近浏览过的路径作为兜底。
         runCatching { client.listWorkflows() }.onSuccess { entries ->
-            // v0.1.69：前端脚本也要跟着"能查服务器列表"。恢复可用时（比如从 AI Studio
-            // 切回直连服务器）必须置回 true，否则之后永远走降级路径。
-            bridge?.serverWorkflowStoreAvailable = true
+            // v0.1.77：AI Studio 网关对 /userdata 偶发"200 空列表"假阳性——之前一成功
+            // 就把前端开关置 true，前端就去服务器按路径加载（中文路径 400，高级编辑
+            // 退出直接卡死）。改成连续两次成功才置 true：直连服务器稳定 200 两次无感
+            // 恢复；AI Studio 200/404 交替时永远到不了 2 次，开关保持 false 走内容直载。
+            serverStoreSuccessStreak += 1
+            if (serverStoreSuccessStreak >= 2) {
+                bridge?.serverWorkflowStoreAvailable = true
+            }
             _state.update { ui ->
                 val document = ui.selectedWorkflow
                 val current = document?.let { selected -> entries.firstOrNull { it.path == selected.entry.path } }
@@ -2445,6 +2453,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // 不在 unsupported 判定范围，开关就停在 true）——但不管哪种，单文件读写
             // 都是必败的（query 被网关剥掉、中文路径 400）。只要列表这次读不到，
             // 就按"不支持云端存储"处理，让前端走内容直载，绝不在加载时去读服务器文件。
+            serverStoreSuccessStreak = 0
             bridge?.serverWorkflowStoreAvailable = false
             if (!userdataUnsupportedLogged) {
                 AppLogger.warn("工作流刷新失败，保留本地最近浏览路径作为占位", error)
@@ -3000,32 +3009,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     connectionMessage = if (quick) "ComfyUI 网页已重载，正在恢复本地工作副本" else "ComfyUI 网页已重建，正在恢复本地工作副本",
                 )
             }
-            val outcome = runCatching {
-                val activeBridge = bridge ?: error("前端桥接不可用")
-                bridgeOperationMutex.withLock {
-                    activeBridge.awaitReady(timeoutMillis = if (quick) 15_000L else 90_000L)
-                    restoreWorkingCopyAfterReconnect(activeBridge, server.baseUrl, bridgeLocked = true)
+            // v0.1.77：AI Studio 平台每 11-12 秒自动重载一轮页面，恢复动作经常被
+            // 下一次重载打断。以前失败就等下一次 onPageLoaded（可能 10 秒+），
+            // 按钮灰色窗口被拉满。现在改为 40 秒窗口内每秒重试——前端初始化完成
+            // 的瞬间（通常 2-5 秒）就恢复成功并保持到下一次重载，灰色窗口最短。
+            // 渲染进程崩溃路径超时也从 90 秒砍到 30 秒，不再让用户干等。
+            val deadline = System.currentTimeMillis() + if (quick) 40_000L else 30_000L
+            var attempt = 0
+            while (System.currentTimeMillis() < deadline && isActive) {
+                val outcome = runCatching {
+                    val activeBridge = bridge ?: error("前端桥接不可用")
+                    bridgeOperationMutex.withLock {
+                        activeBridge.awaitReady(timeoutMillis = if (quick) 8_000L else 30_000L)
+                        restoreWorkingCopyAfterReconnect(activeBridge, server.baseUrl, bridgeLocked = true)
+                    }
                 }
-            }
-            if (outcome.isSuccess) {
-                rendererRecoveryFailures = 0
-                _state.update {
-                    it.copy(
-                        bridgeReady = true,
-                        connectionMessage = "已恢复本地工作副本",
-                    )
+                if (outcome.isSuccess) {
+                    rendererRecoveryFailures = 0
+                    _state.update {
+                        it.copy(
+                            bridgeReady = true,
+                            connectionMessage = "已恢复本地工作副本",
+                        )
+                    }
+                    return@launch
                 }
-            } else {
+                attempt += 1
                 rendererRecoveryFailures += 1
                 AppLogger.error(
-                    if (quick) "页面重载后恢复工作副本失败（第 ${rendererRecoveryFailures} 次）" else "WebView 重建后恢复工作副本失败",
+                    if (quick) "页面重载后恢复工作副本失败（第 $attempt 次）" else "WebView 重建后恢复工作副本失败（第 $attempt 次）",
                     outcome.exceptionOrNull(),
                 )
                 if (!quick && rendererRecoveryFailures >= 3) {
                     rendererRecoveryFailures = 0
                     scheduleReconnect()
+                    return@launch
                 }
+                delay(1_000L)
             }
+            if (quick) AppLogger.warn("页面重载后桥接未能在 40 秒内恢复，等待下一次页面加载重试")
         }.also { job ->
             job.invokeOnCompletion {
                 if (rendererRecoveryJob === job) rendererRecoveryJob = null
