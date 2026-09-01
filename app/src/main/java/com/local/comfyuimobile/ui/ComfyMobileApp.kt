@@ -1033,7 +1033,7 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
             viewModel::dismissWorkflowOverwrite,
         ) { viewModel.saveWorkflow(force = true) }
     }
-    if (historyField != null) PromptHistoryDialog(historyField!!, state, viewModel) { historyField = null }
+    historyField?.let { field -> PromptHistoryDialog(field, state, viewModel) { historyField = null } }
     if (layoutDialog) LayoutDialog(state.fields, viewModel) { layoutDialog = false }
     if (saveAsDialog) {
         SaveWorkflowAsDialog(
