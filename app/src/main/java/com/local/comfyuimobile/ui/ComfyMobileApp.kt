@@ -893,7 +893,7 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
                 Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            Icons.Default.Sync,
+                            Icons.Default.Refresh,
                             null,
                             Modifier.size(16.dp),
                             tint = MaterialTheme.colorScheme.primary,
