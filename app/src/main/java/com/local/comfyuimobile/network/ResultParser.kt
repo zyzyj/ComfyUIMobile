@@ -154,17 +154,52 @@ object ResultParser {
         return 0L
     }
 
-    /** 从提交的 prompt 里取第一个种子值（KSampler / Seed 节点）。 */
-    private fun extractSeed(prompt: JSONObject?): String? {
-        prompt?.keys()?.forEach { key ->
-            val node = prompt.optJSONObject(key) ?: return@forEach
-            val classType = node.optString("class_type")
-            if (classType.contains("Sampler", ignoreCase = true) || classType.contains("Seed", ignoreCase = true)) {
-                val seed = node.optJSONObject("inputs")?.opt("seed")?.toString()
-                if (!seed.isNullOrBlank()) return seed
+    /**
+     * 从提交的 prompt 里取第一个种子值。
+     *
+     * v0.1.78：以前照抄的是 `classType.contains("Sampler")` 子串匹配——和 PromptBatch
+     * 在 v0.1.72 修掉的是同一个毛病。名字里带 Sampler 的节点不一定是采样器
+     * （KSamplerModel、各种第三方模型选择节点），它们被优先选中时，展示给用户的是
+     * 一个跟这次出图毫无关系的数字（节点顺序靠前就算赢）。
+     *
+     * 现在的判定：节点 inputs 里**真的有** seed / noise_seed 才算候选，再看命名
+     * （以 Sampler / SamplerAdvanced / Seed 结尾的才是采样器）。严格规则一条都没命中时
+     * 退回旧的宽松匹配兜底，免得第三方采样器节点从"能显示"退化成"显示不出"。
+     */
+    internal fun extractSeed(prompt: JSONObject?): String? {
+        val nodes = prompt?.let { obj ->
+            val keys = obj.keys()
+            buildList {
+                while (keys.hasNext()) {
+                    val node = obj.optJSONObject(keys.next()) ?: continue
+                    add(node)
+                }
             }
+        }.orEmpty()
+        return firstSeed(nodes, strict = true) ?: firstSeed(nodes, strict = false)
+    }
+
+    private fun firstSeed(nodes: List<JSONObject>, strict: Boolean): String? {
+        for (node in nodes) {
+            val classType = node.optString("class_type")
+            val inputs = node.optJSONObject("inputs") ?: continue
+            val value = inputs.opt("seed") ?: inputs.opt("noise_seed")
+            val seed = value?.toString().takeUnless { it.isNullOrBlank() } ?: continue
+            if (isSeedNode(classType, strict)) return seed
         }
         return null
+    }
+
+    private fun isSeedNode(classType: String, strict: Boolean): Boolean {
+        if (classType.isBlank()) return false
+        return if (strict) {
+            classType.endsWith("Sampler", ignoreCase = true) ||
+                classType.endsWith("SamplerAdvanced", ignoreCase = true) ||
+                classType.endsWith("Seed", ignoreCase = true)
+        } else {
+            classType.contains("Sampler", ignoreCase = true) ||
+                classType.contains("Seed", ignoreCase = true)
+        }
     }
 
     /** 从提交的 prompt 里取第一个正向提示词（CLIPTextEncode 等文本节点）。 */

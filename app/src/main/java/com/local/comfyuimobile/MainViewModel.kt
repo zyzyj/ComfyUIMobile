@@ -441,7 +441,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 if (_state.value.selectedWorkflow != null) {
-                    restoreWorkingCopyAfterReconnect(activeBridge, profile.baseUrl)
+                    // v0.1.78：恢复工作副本只是连接成功后的附加动作，任何失败都不该把
+                    // 已经连上的服务器判成连接失败——服务器探测（/system_stats）明明过了。
+                    // v0.1.77 及以前，/userdata 一次抖动就能让整条连接回滚，用户还得重连。
+                    runCatching { restoreWorkingCopyAfterReconnect(activeBridge, profile.baseUrl) }
+                        .onFailure { error -> AppLogger.error("恢复工作副本失败，已按本机草稿继续", error) }
                 }
                 openSocket()
                 refreshAll()
@@ -2224,11 +2228,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val stats = runCatching { client.systemStats() }.getOrNull() ?: continue
                 val restored = runCatching {
                     val activeBridge = bridge ?: error("前端桥接不可用")
+                    // v0.1.78：锁里只留纯前端操作（loadServer / awaitReady），
+                    // 工作流列表和正文的 HTTP 请求挪到锁外——它们是秒级耗时，
+                    // 压在互斥锁里会把用户随后的所有操作一起堵住。
                     bridgeOperationMutex.withLock {
                         activeBridge.loadServer(server.baseUrl, timeoutMillis = 20_000L)
                         activeBridge.awaitReady(timeoutMillis = 45_000L)
-                        restoreWorkingCopyAfterReconnect(activeBridge, server.baseUrl, bridgeLocked = true)
                     }
+                    restoreWorkingCopyAfterReconnect(activeBridge, server.baseUrl)
                 }.onFailure { error ->
                     if (error !is CancellationException) AppLogger.error("重连后恢复本地工作副本失败", error)
                 }.isSuccess
@@ -3019,10 +3026,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             while (System.currentTimeMillis() < deadline && isActive) {
                 val outcome = runCatching {
                     val activeBridge = bridge ?: error("前端桥接不可用")
+                    // v0.1.78：等前端就绪要持锁（它在跑 JS 注入），但读工作流列表和
+                    // 正文的 HTTP 请求必须挪到锁外，否则网络一慢，锁就被占住，
+                    // 用户同一时间的生图/改参数/高级编辑全被堵在后面。
                     bridgeOperationMutex.withLock {
                         activeBridge.awaitReady(timeoutMillis = if (quick) 8_000L else 30_000L)
-                        restoreWorkingCopyAfterReconnect(activeBridge, server.baseUrl, bridgeLocked = true)
                     }
+                    restoreWorkingCopyAfterReconnect(activeBridge, server.baseUrl)
                 }
                 if (outcome.isSuccess) {
                     rendererRecoveryFailures = 0
@@ -3055,37 +3065,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun restoreWorkingCopyAfterReconnect(
-        activeBridge: ComfyBridge,
-        serverUrl: String,
-        bridgeLocked: Boolean = false,
-    ) {
-        val document = _state.value.selectedWorkflow ?: return
-        if (WorkflowDraftStore.normalizeServer(document.serverUrl) != WorkflowDraftStore.normalizeServer(serverUrl)) return
-
-        // v0.1.68：这个函数在"连接"流程里被调用，listWorkflows 一旦抛异常，整个连接
-        // 就会被判失败。不支持云端工作流的服务器上它必然失败，这里容忍掉，退回本地内容。
-        val current = runCatching { client.listWorkflows().firstOrNull { it.path == document.entry.path } }
-            .getOrElse { error ->
-                if (!isUserdataUnavailable(error)) throw error
-                null
-            }
-        val serverChanged = current == null || WorkflowPolicy.hasModifiedConflict(document.baseModified, current.modified)
-        val loadServerVersion = !document.hasUnsavedChanges && current != null && serverChanged
-        val raw = if (loadServerVersion) client.readWorkflow(current.path) else document.rawJson
-        val manifest = if (bridgeLocked) {
-            activeBridge.loadWorkflow(
-                rawJson = raw,
-                workflowPath = current?.path,
-            )
-        } else {
-            bridgeOperationMutex.withLock {
-                activeBridge.loadWorkflow(
-                    rawJson = raw,
-                    workflowPath = current?.path,
-                )
-            }
+    /**
+     * 重连/页面重载后把工作副本重新灌回前端。
+     *
+     * v0.1.78 拆成两段：**网络在锁外，桥接在锁内**。以前整段（含
+     * listWorkflows / readWorkflow 两个 HTTP 请求）都压在 bridgeOperationMutex 里，
+     * AI Studio 上 /userdata 卡上几秒，锁就被占死，用户这期间的生图、改参数、
+     * 进高级编辑全部排队干等——这正是 v0.1.77 现场"按钮灰一段"的另一半原因。
+     */
+    private suspend fun restoreWorkingCopyAfterReconnect(activeBridge: ComfyBridge, serverUrl: String) {
+        val lookup = resolveServerWorkflowCopy(serverUrl) ?: return
+        bridgeOperationMutex.withLock {
+            applyWorkingCopyAfterReconnect(activeBridge, lookup)
         }
+    }
+
+    /**
+     * 服务器上的同名工作流查找结果。
+     *
+     * @param entry 找到的条目；null 表示服务器上没有这个工作流。
+     * @param reachable false 表示**这次根本没读到列表**（网络抖动、接口被代理拦了），
+     *   不等于"文件不存在"——两者的提示文案必须分开，否则 AI Studio 上 /userdata
+     *   抖一下就会把用户吓一跳，以为自己在服务器上存的工作流没了。
+     */
+    private data class ServerWorkflowLookup(val entry: WorkflowEntry?, val reachable: Boolean)
+
+    private suspend fun resolveServerWorkflowCopy(serverUrl: String): ServerWorkflowLookup? {
+        val document = _state.value.selectedWorkflow ?: return null
+        if (WorkflowDraftStore.normalizeServer(document.serverUrl) != WorkflowDraftStore.normalizeServer(serverUrl)) return null
+        // v0.1.68：不支持云端工作流的服务器上它必然失败，容忍掉，退回本地内容。
+        // v0.1.78：以前只容忍"平台不支持"这一类，剩下的（JSONException、超时、502、
+        // 两次重试都失败的 IllegalStateException）统统往外抛，最后把整条连接判成失败
+        // ——/system_stats 探测明明已经通过，说明服务器活得好好的。现在一律降级：
+        // 读不到就当服务器上没有，用本机草稿继续，最多把差异提示交给下面的冲突逻辑。
+        return runCatching { client.listWorkflows().firstOrNull { it.path == document.entry.path } }
+            .onFailure { error -> AppLogger.warn("读取服务器工作流列表失败，改用本机草稿", error) }
+            .fold(
+                onSuccess = { entry -> ServerWorkflowLookup(entry, reachable = true) },
+                onFailure = { ServerWorkflowLookup(null, reachable = false) },
+            )
+    }
+
+    private suspend fun applyWorkingCopyAfterReconnect(activeBridge: ComfyBridge, lookup: ServerWorkflowLookup) {
+        val document = _state.value.selectedWorkflow ?: return
+        val current = lookup.entry
+        val serverChanged = current == null || WorkflowPolicy.hasModifiedConflict(document.baseModified, current.modified)
+        val needServerVersion = !document.hasUnsavedChanges && serverChanged
+        // v0.1.78：读正文一样不能让流程崩。失败就当没读到，退回本机草稿——
+        // 关键是 loadServerVersion 要跟着变 false，否则会把本机草稿当成服务器
+        // 最新内容记账，用户的"未保存改动"就被悄悄抹掉了。
+        val serverRaw = if (needServerVersion && current != null) {
+            runCatching { client.readWorkflow(current.path) }
+                .onFailure { error -> AppLogger.warn("读取服务器工作流正文失败，改用本机草稿", error) }
+                .getOrNull()
+        } else {
+            null
+        }
+        val loadServerVersion = serverRaw != null
+        val raw = serverRaw ?: document.rawJson
+        val manifest = activeBridge.loadWorkflow(
+            rawJson = raw,
+            workflowPath = current?.path,
+        )
         val fields = if (document.hasUnsavedChanges && !loadServerVersion) {
             WorkflowDraftFields.restore(manifest.fields, WorkflowDraftFields.capture(_state.value.fields))
         } else {
@@ -3097,7 +3138,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             rawJson = raw,
             fields = fields,
             nodes = manifest.nodes,
-            baseModified = if (loadServerVersion) current.modified else document.baseModified,
+            baseModified = if (loadServerVersion && current != null) current.modified else document.baseModified,
             hasUnsavedChanges = if (loadServerVersion) false else document.hasUnsavedChanges,
         )
         val conflict = updated.hasUnsavedChanges && serverChanged
@@ -3108,10 +3149,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 nodeProblems = emptyMap(),
                 workflowDraftConflictRequired = conflict,
                 workflowDraftConflictReason = if (conflict) {
-                    if (current == null) {
-                        "手机草稿仍然保留，但服务器上的原工作流已经不存在。请另存为新工作流。"
-                    } else {
-                        "手机草稿仍然保留，但服务器版本在断线期间发生了变化。请选择继续手机草稿、读取服务器版本，或者另存。"
+                    when {
+                        !lookup.reachable ->
+                            "手机草稿仍然保留，但这次没能读到服务器上的工作流列表（网络或接口不稳定）。" +
+                                "可以稍后手动刷新，确认服务器版本。"
+                        current == null ->
+                            "手机草稿仍然保留，但服务器上的原工作流已经不存在。请另存为新工作流。"
+                        else ->
+                            "手机草稿仍然保留，但服务器版本在断线期间发生了变化。请选择继续手机草稿、读取服务器版本，或者另存。"
                     }
                 } else {
                     ""
