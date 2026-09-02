@@ -1,3 +1,8 @@
+# v0.1.80
+
+- 下载加了一道长度校验兜底：服务器声明了 `Content-Length` 却没写够字节数时直接报错并放弃保存（调用方本来就会删掉半成品文件），不再把半张图悄悄存进相册。分块传输没有长度声明时无从比对，跳过。
+- **澄清一条误报**：有审查意见认为 v0.1.79 里 `response.peekBody(2048).string()` 会吃掉响应体前 2048 字节，导致保存的图片 100% 打不开。实测不成立——用项目锁定的 OkHttp 4.12.0 走完整下载流程保存一张 42399 字节的 PNG，落盘文件 MD5 与源文件一致、PIL 正常解码；另外 javap 显示 `peekBody` 定义在 `okhttp3.Response` 上（审查意见引用的 `RealResponseBody.peekBody` 在 4.12.0 里并不存在），它内部走的是 okio 的 `PeekSource`：共享底层 Buffer 但读游标独立，是复制而非消耗。这条路径的行为已用实验钉死，本次只加保险、不改功能。
+
 # v0.1.79
 
 - 修复"生图耗时显示得离谱地短"：ComfyUI 在**部分节点命中缓存**时，消息顺序是 `execution_start → execution_cached → execution_success`，而 `execution_cached` 只比开始晚几十毫秒。旧逻辑把缓存事件当成结束，真实跑了 8 秒的图会显示成 0.1 秒——这正是 v0.1.76 之后"耗时不准"残留的那一半（当时只补上了本地记录的排队时间）。现在统一规则：**终态（success/error/interrupted）优先，只有一条终态都没有时才用 `execution_cached` 收尾**。

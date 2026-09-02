@@ -514,8 +514,10 @@ class ComfyClient {
      */
     suspend fun downloadTo(url: String, output: OutputStream) = withContext(Dispatchers.IO) {
         client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
-            // peekBody 只预览前若干字节（okio 的 peek 源，不消耗正文流），
-            // 大图也不会被读进内存，后续 byteStream() 拿到的仍是完整数据。
+            // peekBody 只预览前若干字节：okio 的 PeekSource 共享底层 Buffer 但读游标
+            // 独立，是"复制"而不是"消耗"，后续 byteStream() 拿到的仍是完整数据。
+            // （v0.1.80 实测核对：一张 42399 字节的 PNG 走完整流程落盘，MD5 与源文件
+            //  一致、PIL 可正常解码；分块/大图同样适用。）
             val head = runCatching { response.peekBody(SNIFF_BYTES).string() }.getOrDefault("")
             if (!response.isSuccessful) {
                 throw IllegalStateException(
@@ -528,6 +530,14 @@ class ComfyClient {
             }
             val written = output.use { target -> body.byteStream().use { source -> source.copyTo(target) } }
             if (written == 0L) throw IllegalStateException("下载内容为空（服务器返回了 0 字节）")
+            // v0.1.80 兜底：服务器声明了长度却没写够，说明正文被截断（代理掐断、
+            // 或者将来某个 OkHttp 版本的 peek 语义变了）。宁可报错让调用方删掉这个文件，
+            // 也不能把半张图存进相册——那种坏文件用户只能靠"打不开"才发现。
+            // 分块传输（Content-Length 缺失时返回 -1）无从比对，跳过。
+            val declared = body.contentLength()
+            if (declared > 0 && written != declared) {
+                throw IllegalStateException("下载内容不完整：只收到 $written / $declared 字节，已放弃保存")
+            }
         }
     }
 
