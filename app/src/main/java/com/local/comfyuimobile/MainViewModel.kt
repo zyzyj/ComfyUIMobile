@@ -2219,7 +2219,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             for (seconds in listOf(1L, 2L, 5L, 10L, 30L)) {
                 delay(seconds * 1_000)
-                val server = _state.value.activeServer ?: return@launch
+                // v0.1.81：这里以前是 `return@launch`——用户主动断开时 activeServer
+                // 变 null，重连任务直接退出，状态却永远停在 RECONNECTING /
+                // bridgeReady=false（因为下面那句"服务器离线"被跳过了），界面就卡在
+                // "连接中断，正在重连"。改成 break 走统一的收尾，再按"还有没有服务器"
+                // 决定该报离线还是保持已断开。
+                val server = _state.value.activeServer ?: break
                 if (!isActive) return@launch
                 // 重连时恢复该服务器保存的认证 Cookie。
                 client.setAuthCookie(server.cookie)
@@ -2252,7 +2257,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 refreshAll()
                 return@launch
             }
-            _state.update { it.copy(status = ConnectionStatus.ERROR, connectionMessage = "服务器离线") }
+            // v0.1.81：能走到这里有两种情况——重连轮次用尽（真的离线），或者
+            // 期间 activeServer 被清空（用户主动断开 / 换了服务器）。后者不该
+            // 报"服务器离线"，否则界面上会出现一个明明已断开却在喊重连的僵尸状态。
+            if (_state.value.activeServer != null) {
+                _state.update { it.copy(status = ConnectionStatus.ERROR, connectionMessage = "服务器离线") }
+            }
         }
     }
 
