@@ -483,13 +483,22 @@ class ComfyClient {
             }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = onFailure(t)
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                // v0.1.81：自己关的连接不能当成掉线。closeWebSocket() 是异步的——
+                // 它发出关闭帧后由 OkHttp 在读取线程回调 onClosed——而调用它的两处
+                // （openWebSocket 开头换连接、MainViewModel.disconnect 断开）都在
+                // "我正要换/关" 的语境里。以前不区分，主动关闭也会回调 onFailure，
+                // 于是：① 用户点断开，界面闪一下"连接中断，正在重连"；
+                // ② 重连成功后 openSocket 会先关旧连接，那个回调又启动一轮重连，
+                // 和刚建立的连接抢状态。用我们自己传的 1000 + "switch server"
+                // 认出主动关闭，直接吞掉。
+                if (code == NORMAL_CLOSURE && reason == CLOSE_REASON) return
                 onFailure(IllegalStateException("WebSocket 已关闭：$code $reason"))
             }
         })
     }
 
     fun closeWebSocket() {
-        socket?.close(1000, "switch server")
+        socket?.close(NORMAL_CLOSURE, CLOSE_REASON)
         socket = null
     }
 
@@ -563,16 +572,32 @@ class ComfyClient {
         return JSONArray(body)
     }
 
+    /**
+     * v0.1.81：形状不对**不等于**平台不支持，这里区分三种情况，别一刀切。
+     *
+     * 以前一律 `unsupported = true`，一个 writeWorkflow 拿到数组就会把
+     * `Capability.USERDATA` 整个标记成"不支持"并退避 30 秒——连坐了 listWorkflows、
+     * readWorkflow、deleteWorkflow，用户看到的是"该服务器不支持云端工作流"，
+     * 而真实原因可能只是一次响应抖动。
+     *
+     * 现在按正文内容判定，与 [PlatformResponseGuard.guard] 对齐：
+     *  - **网页**（HTML）：平台真不支持（或登录墙），退避；
+     *  - **空内容**：百度 AI Studio 网关的固定表现（实测 200 + 空 body），
+     *    同样是"这条路走不通"，退避，免得每 11 秒刷一次；
+     *  - **有内容但形状不对**：可能是服务器一次性的错误响应（比如返回了
+     *    `{"error": ...}` 而不是列表），按普通失败记一笔，下次照常请求。
+     */
     private fun requireJsonShape(body: String, expected: Char, what: String) {
         val first = body.trimStart().firstOrNull()
         if (first == expected) return
         val html = PlatformResponseGuard.isHtml(body)
+        val blank = body.isBlank()
         val head = body.trim().replace(Regex("\\s+"), " ").take(PlatformResponseGuard.MAX_BODY_CHARS)
             .ifBlank { "空内容" }
         throw PlatformResponseException(
             "$what（HTTP 200，正文开头是「$head」）",
             200,
-            unsupported = true,
+            unsupported = html || blank,
             html = html,
         )
     }
@@ -686,5 +711,8 @@ class ComfyClient {
         val PROBE_RETRY_DELAYS_MS = longArrayOf(1_500L, 3_000L)
         /** 下载时嗅探响应开头的字节数：够看清是不是网页，又不会把整张大图读进内存。 */
         const val SNIFF_BYTES = 2048L
+        /** 主动关闭 WebSocket 用的状态码与原因，onClosed 靠它认出"这是自己关的"。 */
+        const val NORMAL_CLOSURE = 1000
+        const val CLOSE_REASON = "switch server"
     }
 }
