@@ -3006,6 +3006,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var rendererRecoveryFailures = 0
 
     /**
+     * v0.1.82：从后台回到前台。
+     *
+     * App 挂后台时 Android 会冻结 WebView 的 JS 定时器，而云端平台（AI Studio /
+     * CloudStudio）的自动页面重载恰恰是靠页面自己的定时器驱动的——日志里能看到
+     * 后台期间连续 5~8 分钟一次网页加载都没有。偏偏 bridgeReady 只认
+     * onPageLoaded / onWebViewRecreated 这两个信号，页面不重载就永远没人来触发
+     * 恢复，生图按钮一直黑着。2026-09-03 的现场：11:44:01 回到前台，直到
+     * 11:50:41 才恢复，整整 6 分 40 秒。
+     *
+     * 以前这里完全没有生命周期处理，只能干等平台自己重载（每 2~3 分钟才来一趟）。
+     * 现在回到前台主动催一次：连接还在、桥接却挂了，就立刻进入恢复流程，恢复
+     * 窗口里还会自己重载页面（见 [restoreBridgeAfterRendererRecreated]），把
+     * "等别人推一把"变成"自己推一把"。
+     */
+    fun onReturnedToForeground() {
+        val state = _state.value
+        // 没连上、或正在连接的都不打扰，交给连接流程自己走完；桥接本来就是好的
+        // 也什么都不用做。函数内部还有防重入，重复调用是安全的。
+        if (state.status != ConnectionStatus.CONNECTED) return
+        if (state.bridgeReady) return
+        restoreBridgeAfterRendererRecreated(quick = true)
+    }
+
+    /**
      * 桥接恢复（页面重载完成或渲染进程崩溃重建后调用）。
      *
      * quick=true：页面每完成一次加载都会触发（AI Studio 平台每十几秒自动重载一轮），
@@ -3064,6 +3088,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     rendererRecoveryFailures = 0
                     scheduleReconnect()
                     return@launch
+                }
+                // v0.1.82：连续几次都等不到前端就绪，说明页面自己已经不刷新了，
+                // 光靠 awaitReady 干等到窗口结束也不会有人来触发下一次 onPageLoaded
+                // ——正是"刚从后台回来"的局面：后台期间 WebView 定时器被系统冻结，
+                // 云端平台的自动重载停摆，页面就这么僵着。这时自己重载一次，
+                // 把恢复往前推一把。
+                //
+                // 不在第一次失败就 reload：正常情况下页面可能正加载到一半，
+                // 频繁 reload 会不停打断它，反而比等着更慢。
+                if (attempt % RELOAD_EVERY_ATTEMPTS == 0) {
+                    runCatching {
+                        bridgeOperationMutex.withLock {
+                            bridge?.loadServer(server.baseUrl, timeoutMillis = RELOAD_TIMEOUT_MS)
+                        }
+                    }.onFailure { AppLogger.warn("恢复期间主动重载页面失败", it) }
                 }
                 delay(1_000L)
             }
@@ -3243,5 +3282,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
         const val MIN_VISIBLE_NODE_MILLIS = 450L
         const val DRAFT_SAVE_DEBOUNCE_MILLIS = 250L
+        /** v0.1.82：恢复窗口里每失败这么多次，就自己重载一次页面推进恢复。 */
+        const val RELOAD_EVERY_ATTEMPTS = 2
+        /** v0.1.82：恢复期间主动重载的单次超时。给 15 秒——比平台的自动重载周期长，
+         *  又不至于吃掉整个 40 秒恢复窗口，失败还能再试一轮。 */
+        const val RELOAD_TIMEOUT_MS = 15_000L
     }
 }

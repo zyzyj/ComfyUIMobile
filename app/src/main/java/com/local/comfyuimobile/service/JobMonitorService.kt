@@ -16,6 +16,7 @@ import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.data.CachePolicy
 import com.local.comfyuimobile.data.LocalResultCache
 import com.local.comfyuimobile.network.ComfyClient
+import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.network.ResultParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -341,9 +342,13 @@ class JobMonitorService : Service() {
         check(history.optJSONObject(promptId) != null) { "任务结果尚未写入历史" }
         val settings = preferences.settings.first()
         val localSaveRequested = settings.cacheOutputRules.any { rule ->
-            rule.enabled && rule.serverUrl == baseUrl
+            // v0.1.82：以前用 == 比地址，而 LanAddress.normalize 会补上默认端口
+            // （https 补 443），规则里存的却常常是不带端口的原样地址。同一台服务器
+            // 被判成两台，"已启用"永远算成 false，后台任务跑完一张图都不存。
+            rule.enabled && LanAddress.sameServer(rule.serverUrl, baseUrl)
         }
-        val eligible = ResultParser.parse(baseUrl, history).filter { media ->
+        val parsed = ResultParser.parse(baseUrl, history)
+        val eligible = parsed.filter { media ->
             media.jobId == promptId && CachePolicy.shouldCache(
                 media,
                 settings.submittedJobs,
@@ -352,6 +357,17 @@ class JobMonitorService : Service() {
                 settings.cacheClearedAt,
             )
         }
+        // v0.1.82：以前"总输出=0，失败=0"这一行看不出任何原因——没配规则、输出还没
+        // 写进历史、节点类型对不上，三种情况长得一模一样，只能靠猜。现在把判定过程中
+        // 的每个中间量都记下来，下次一眼就能定位是哪一环断了。
+        AppLogger.info(
+            "后台保存诊断：任务=$promptId，服务器=$baseUrl，" +
+                "规则已启用=$localSaveRequested，" +
+                "历史里解析到=${parsed.size} 项，" +
+                "节点类型=[${parsed.map { it.nodeType }.distinct().joinToString().ifBlank { "无" }}]，" +
+                "符合规则=${eligible.size} 项，" +
+                "已提交任务记录=${if (promptId in settings.submittedJobs) "有" else "缺"}",
+        )
         if (localSaveRequested && eligible.isEmpty()) {
             return SaveReport(
                 total = 0,

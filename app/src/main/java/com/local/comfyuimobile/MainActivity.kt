@@ -72,6 +72,15 @@ class MainActivity : ComponentActivity() {
         handleJobNotification(intent)
     }
 
+    // v0.1.82：App 挂后台时 Android 会冻结 WebView 的 JS 定时器，云端平台
+    // （AI Studio / CloudStudio）靠定时器做的自动页面重载就停了。而桥接就绪
+    // 只认"页面加载完成"这一个信号，页面不重载就永远恢复不了，生图按钮一直
+    // 黑着——实测回前台后还要干等 6 分 40 秒。现在回到前台主动催一次恢复。
+    override fun onResume() {
+        super.onResume()
+        viewModel.onReturnedToForeground()
+    }
+
     override fun onStop() {
         viewModel.persistCurrentWorkflowDraft()
         super.onStop()

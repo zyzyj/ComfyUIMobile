@@ -112,6 +112,35 @@ object LanAddress {
         return portA == portB
     }
 
+    /**
+     * 判断两个服务器地址是否指向同一台服务器（scheme + host + port + path 全一致），
+     * **只用于按服务器归属做匹配，不用于安全校验**（安全校验用 [isSameOrigin]，
+     * 它的语义更严、只认 scheme + host + port）。
+     *
+     * 关键在**默认端口**：[normalize] 会给没写端口的地址补上 443 / 8188，但用户手输的、
+     * 旧版本存下来的、或者别处拼出来的地址常常不带端口。直接用 `==` 比，同一台服务器
+     * 会被判成两台，后果是"缓存输出规则"这类按服务器地址匹配的功能**静默失效**——
+     * 后台任务跑完一张图都不存，日志里只留下一句看不出所以然的"总输出=0，失败=0"
+     * （v0.1.82 修的就是这个）。
+     *
+     * 必须带上 path：AI Studio 把每个实例挂在 `/bj-cpu-01/user/<id>/.../8188` 这样的
+     * 子路径下，只比 host + port 会把别人的实例认成自己的。
+     */
+    fun sameServer(a: String, b: String): Boolean {
+        val ua = runCatching { URI(a.trim()) }.getOrNull() ?: return false
+        val ub = runCatching { URI(b.trim()) }.getOrNull() ?: return false
+        val schemeA = ua.scheme?.lowercase() ?: return false
+        val schemeB = ub.scheme?.lowercase() ?: return false
+        if (schemeA != schemeB) return false
+        val hostA = ua.host?.lowercase() ?: return false
+        val hostB = ub.host?.lowercase() ?: return false
+        if (hostA != hostB) return false
+        val portA = if (ua.port != -1) ua.port else defaultPortFor(schemeA)
+        val portB = if (ub.port != -1) ub.port else defaultPortFor(schemeB)
+        if (portA != portB) return false
+        return ua.rawPath.orEmpty().trimEnd('/') == ub.rawPath.orEmpty().trimEnd('/')
+    }
+
     private fun defaultPortFor(scheme: String): Int =
         if (scheme == "https") DEFAULT_HTTPS_PORT else DEFAULT_HTTP_PORT
 
