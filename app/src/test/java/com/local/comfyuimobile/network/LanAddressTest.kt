@@ -125,4 +125,50 @@ class LanAddressTest {
         // 空输入不能崩。
         assertEquals("", LanAddress.bareHost(""))
     }
+
+    // v0.1.82：缓存输出规则是按服务器地址匹配的，以前用 == 直接比——而 normalize
+    // 会给没写端口的地址补上默认端口（https 补 443），规则里存的却常常是不带端口的
+    // 原样地址。同一台服务器被判成两台，规则永远匹配不上，后台任务跑完一张图都不存，
+    // 日志里只留一句看不出所以然的"总输出=0，失败=0"。
+    @Test fun treatsMissingDefaultPortAsSameServer() {
+        assertTrue(LanAddress.sameServer("https://x.club", "https://x.club:443"))
+        assertTrue(LanAddress.sameServer("https://x.club:443", "https://x.club"))
+        assertTrue(LanAddress.sameServer("https://x.club/", "https://x.club:443"))
+        // 主机名大小写不敏感。
+        assertTrue(LanAddress.sameServer("HTTPS://X.CLUB", "https://x.club"))
+        // http 沿用项目约定的默认端口 8188，不是标准 80。
+        assertTrue(LanAddress.sameServer("http://192.168.1.5", "http://192.168.1.5:8188"))
+        assertFalse(LanAddress.sameServer("http://192.168.1.5", "http://192.168.1.5:80"))
+    }
+
+    @Test fun distinguishesServersByHostPortAndScheme() {
+        assertFalse(LanAddress.sameServer("https://x.club", "https://y.club"))
+        assertFalse(LanAddress.sameServer("https://x.club:8188", "https://x.club:443"))
+        assertFalse(LanAddress.sameServer("http://x.club", "https://x.club"))
+    }
+
+    @Test fun distinguishesAiStudioInstancesBySubPath() {
+        // AI Studio 把每个实例挂在带用户 ID 的子路径下，只比 host + port 会把
+        // 别人的实例认成自己的，所以 path 必须参与比较。
+        val a = "https://aistudio.baidu.com:443/bj-cpu-01/user/111/api_serving/8188"
+        val b = "https://aistudio.baidu.com:443/bj-cpu-01/user/222/api_serving/8188"
+        assertFalse(LanAddress.sameServer(a, b))
+        assertTrue(LanAddress.sameServer(a, a))
+        assertTrue(LanAddress.sameServer(a, "$a/"))
+    }
+
+    @Test fun sameServerSurvivesMalformedInput() {
+        assertFalse(LanAddress.sameServer("", "https://x.club"))
+        assertFalse(LanAddress.sameServer("not a url", "https://x.club"))
+        assertFalse(LanAddress.sameServer("随便写点什么", "随便写点什么"))
+    }
+
+    @Test fun matchesTheTwoAddressFormsSeenInLogs() {
+        // 2026-09-03 的现场日志里，同一个 CloudStudio 实例出现过带 :443、带尾部
+        // 斜杠、以及光秃秃三种写法，它们必须被认成同一台。
+        val cloud = "https://52e4812a33304229ab6ddc1d50865c1e--8188.ap-shanghai2.cloudstudio.club"
+        assertTrue(LanAddress.sameServer("$cloud:443", "$cloud/"))
+        assertTrue(LanAddress.sameServer("$cloud:443", cloud))
+        assertTrue(LanAddress.sameServer("$cloud/", cloud))
+    }
 }
