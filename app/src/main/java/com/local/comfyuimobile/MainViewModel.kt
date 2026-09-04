@@ -1351,7 +1351,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val deadline = System.currentTimeMillis() + BATCH_ITEM_TIMEOUT_MS
         while (System.currentTimeMillis() < deadline) {
             delay(BATCH_POLL_INTERVAL_MS)
-            val history = runCatching { client.history(promptId) }.getOrElse { continue } // 网络抖动继续轮
+            // 网络抖动继续轮：getOrNull 把异常折叠成空值，continue 留在循环体里
+            //（inline lambda 里写 continue 是实验特性，CI 编译会直接报错）
+            val history = runCatching { client.history(promptId) }.getOrNull() ?: continue
             val item = history.optJSONObject(promptId) ?: continue
             val status = item.optJSONObject("status")
             val statusString = status?.optString("status_str").orEmpty()
