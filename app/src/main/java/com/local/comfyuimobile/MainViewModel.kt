@@ -1182,6 +1182,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             pending = queue,
             phase = BatchPhase.RUNNING,
             startedAt = System.currentTimeMillis(),
+            plannedTotal = queue.size,
         )
         batchJob = viewModelScope.launch { runBatchLoop() }
     }
@@ -1236,19 +1237,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     AppLogger.info("批量对比结束：成功 ${run.successCount}，失败 ${run.failedCount}")
                     break
                 }
+                // v0.1.84 防呆：完成数达到计划总数就强制收工。正常流转时 pending 会先变空，
+                // 这条拦的是任何"队列永不减少"的回归——v0.1.83 现场就因为漏了出队，
+                // 同一个 LoRA 无限重跑到 20/25 还在涨，服务器队列被塞满。
+                if (BatchCompareLogic.reachedPlannedCap(run)) {
+                    _batchRun.update {
+                        it?.copy(
+                            phase = BatchPhase.DONE,
+                            current = null,
+                            message = "已达到计划张数 ${it.plannedTotal}，批量强制结束（成功 ${it.successCount}，失败 ${it.failedCount}）。" +
+                                "这个提示不该出现——如果看到了请把日志发回给开发者",
+                        )
+                    }
+                    AppLogger.error("批量对比触达计划张数上限强制结束：items=${run.items.size}，plannedTotal=${run.plannedTotal}")
+                    break
+                }
                 // 暂停闸门：暂停中（或自动暂停后等待用户恢复）在这里挂起。
                 batchPauseGate.first { !it }
                 if (batchCancelRequested) {
                     _batchRun.update { it?.copy(phase = BatchPhase.CANCELLED, current = null) }
                     break
                 }
-                val candidate = run.pending.first()
-                _batchRun.update { it?.copy(current = candidate, message = "") }
-                val result = submitBatchItem(run, candidate)
+                // v0.1.84 修复：候选必须"取出即出队"。advanceQueue 一次完成
+                // pending.first → current 转移并 drop 首项（纯函数，有单测锁死）。
+                val advanced = BatchCompareLogic.advanceQueue(run) ?: continue
+                _batchRun.value = advanced
+                val candidate = advanced.current ?: continue
+                val result = submitBatchItem(advanced, candidate)
                 consecutiveFailures = if (result.success) 0 else consecutiveFailures + 1
-                _batchRun.update { it?.copy(items = it.items + result, current = null) }
+                _batchRun.update { BatchCompareLogic.completeItem(it ?: advanced, result) }
                 AppLogger.info(
-                    "批量对比进度：${_batchRun.value?.finished ?: 0}/${run.total}，LoRA=$candidate，" +
+                    "批量对比进度：${_batchRun.value?.finished ?: 0}/${_batchRun.value?.total ?: 0}，LoRA=$candidate，" +
                         "成功=${result.success}${result.message.takeIf { m -> m.isNotBlank() }?.let { m -> "，原因=$m" }.orEmpty()}",
                 )
                 if (BatchCompareLogic.shouldAutoPause(consecutiveFailures)) {

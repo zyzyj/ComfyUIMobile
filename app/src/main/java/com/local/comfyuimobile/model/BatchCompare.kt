@@ -40,6 +40,9 @@ data class BatchRun(
     val phase: BatchPhase = BatchPhase.RUNNING,
     val startedAt: Long = 0L,
     val message: String = "",
+    /** v0.1.84：开始时定格的候选总数。防呆上限——完成数达到它就强制收工，
+     *  拦住任何"pending 永不减少"的回归（v0.1.83 现场无限刷图 20/25 还在涨）。 */
+    val plannedTotal: Int = 0,
 ) {
     /** 总张数（已跑 + 正在跑 + 待跑）。 */
     val total: Int get() = pending.size + items.size + (if (current != null) 1 else 0)
@@ -58,6 +61,27 @@ object BatchCompareLogic {
 
     /** 连续失败达到该次数自动暂停。 */
     const val AUTO_PAUSE_AFTER_FAILURES = 3
+
+    // ===== v0.1.84：状态转移纯函数 =====
+    //
+    // v0.1.83 的事故：引擎循环里 pending.first() 取了候选却从没把它移出队列，
+    // 同一个 LoRA 被无限重跑（现场日志 1/6 → 20/25 还在涨，全是同一张图）。
+    // 根因是把状态机藏在协程里、纯逻辑又只测了计数属性。现在把"队列推进 /
+    // 单张完成 / 防呆上限"抽成纯函数并用单测锁死不变量。
+
+    /** 取下一个候选：pending 首项 → current，并从 pending 移除。队列空返回 null。 */
+    fun advanceQueue(run: BatchRun): BatchRun? {
+        if (run.pending.isEmpty()) return null
+        return run.copy(current = run.pending.first(), pending = run.pending.drop(1))
+    }
+
+    /** 单张完成：current 归档进 items。 */
+    fun completeItem(run: BatchRun, result: BatchItemResult): BatchRun =
+        run.copy(items = run.items + result, current = null)
+
+    /** 防呆：完成数达到计划总数（plannedTotal > 0 时启用）。 */
+    fun reachedPlannedCap(run: BatchRun): Boolean =
+        run.plannedTotal in 1..run.items.size
 
     /**
      * 基模型家族关键词 → 归一家族名。
