@@ -58,6 +58,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -107,6 +108,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.DropdownMenu
@@ -188,6 +190,9 @@ import com.local.comfyuimobile.data.WorkflowBrowser
 import com.local.comfyuimobile.data.WorkflowPath
 import com.local.comfyuimobile.model.AppDestination
 import com.local.comfyuimobile.model.AppUiState
+import com.local.comfyuimobile.model.BatchCompareLogic
+import com.local.comfyuimobile.model.BatchPhase
+import com.local.comfyuimobile.model.BatchRun
 import com.local.comfyuimobile.model.ConnectionStatus
 import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.JobSummary
@@ -2279,6 +2284,14 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
     val enabledKeys = state.quickEnabledParams.toSet()
     val enabledFields = quickFields.filter { it.key in enabledKeys }
     val addableFields = quickFields.filter { it.kind != ParameterKind.MULTILINE && it.key !in enabledKeys }
+    // v0.1.83 批量 LoRA 对比：候选来自 LoRA 下拉参数自带的 options（服务器枚举）。
+    val batchRunState by viewModel.batchRun.collectAsStateWithLifecycle()
+    val loraFields = quickFields.filter {
+        it.kind == ParameterKind.COMBO && it.nodeType.contains("LoraLoader", ignoreCase = true)
+    }
+    var showBatchConfig by remember { mutableStateOf(false) }
+    var showBatchResult by remember { mutableStateOf(false) }
+    val batchActive = batchRunState?.phase == BatchPhase.RUNNING || batchRunState?.phase == BatchPhase.PAUSED
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
@@ -2409,9 +2422,31 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
             )
         }
 
+        // ===== v0.1.83 批量 LoRA 对比 =====
+        if (loraFields.isNotEmpty() && quickFields.isNotEmpty()) {
+            val batch = batchRunState
+            if (batch == null) {
+                OutlinedButton(
+                    onClick = { showBatchConfig = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !state.generating && !state.loading,
+                ) {
+                    Icon(Icons.Default.Tune, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("批量对比：固定种子换 LoRA 逐张出图")
+                }
+            } else {
+                BatchRunCard(
+                    batch = batch,
+                    viewModel = viewModel,
+                    onShowResult = { showBatchResult = true },
+                )
+            }
+        }
+
         Button(
             onClick = viewModel::quickGenerate,
-            enabled = !state.generating && !state.loading && state.bridgeReady,
+            enabled = !state.generating && !state.loading && state.bridgeReady && !batchActive,
             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
         ) {
             Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text(if (state.generating) "生成中…" else "快捷生成")
@@ -2427,7 +2462,285 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
             Text(state.generationMessage, style = MaterialTheme.typography.bodySmall)
         }
     }
+
+    // v0.1.83：批量配置与批量结果对话框挂在 Column 外，避免被页面滚动裁剪。
+    if (showBatchConfig && loraFields.isNotEmpty()) {
+        BatchConfigDialog(
+            state = state,
+            loraFields = loraFields,
+            viewModel = viewModel,
+            onDismiss = { showBatchConfig = false },
+        )
+    }
+    if (showBatchResult) {
+        batchRunState?.let { batch ->
+            BatchResultDialog(
+                batch = batch,
+                viewModel = viewModel,
+                onDismiss = { showBatchResult = false },
+            )
+        }
+    }
 }
+
+/**
+ * v0.1.83 批量 LoRA 对比：进行中/已结束的批次卡片。
+ */
+@Composable
+private fun BatchRunCard(batch: BatchRun, viewModel: MainViewModel, onShowResult: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "批量对比 · ${batch.workflowName}",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                )
+                if (batch.phase == BatchPhase.DONE || batch.phase == BatchPhase.CANCELLED) {
+                    IconButton(onClick = viewModel::dismissBatch) { Icon(Icons.Default.Close, "收起批量卡片") }
+                }
+            }
+            val running = batch.phase == BatchPhase.RUNNING || batch.phase == BatchPhase.PAUSED
+            if (running) {
+                LinearProgressIndicator(
+                    progress = { batch.finished.toFloat() / batch.total.coerceAtLeast(1) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                val currentLabel = batch.current?.let { "正在跑 ${shortLoraName(it)}" } ?: "等待提交…"
+                Text(
+                    "${batch.finished}/${batch.total} · $currentLabel · 种子=${batch.seed.take(12)}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row {
+                    if (batch.phase == BatchPhase.RUNNING) {
+                        TextButton(onClick = viewModel::pauseBatch) { Text("暂停") }
+                    } else {
+                        TextButton(onClick = viewModel::resumeBatch) { Text("继续") }
+                    }
+                    TextButton(onClick = viewModel::cancelBatch) { Text("取消") }
+                }
+            } else {
+                Text(
+                    batch.message.ifBlank { if (batch.phase == BatchPhase.CANCELLED) "批量已取消" else "批量结束" },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                val mediaCount = batch.items.sumOf { it.media.size }
+                Row {
+                    if (mediaCount > 0) {
+                        TextButton(onClick = onShowResult) { Text("查看 $mediaCount 张图") }
+                    }
+                    TextButton(onClick = viewModel::dismissBatch) { Text("收起") }
+                }
+            }
+            // 最近完成的几张（含失败原因），一眼看到跑挂了哪个 LoRA。
+            batch.items.takeLast(6).forEach { item ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        if (item.success) Icons.Default.CheckCircle else Icons.Default.Close,
+                        null,
+                        Modifier.size(16.dp),
+                        tint = if (item.success) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        shortLoraName(item.loraName) +
+                            (item.message.takeIf { m -> !item.success && m.isNotBlank() }?.let { " · $it" } ?: ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 批量配置：选变量槽（多 LoRA 工作流时）、勾选候选 LoRA、看预估耗时。
+ * 疑似与 checkpoint 基模型不匹配的候选默认不勾选（黄色提示，可强制勾选）。
+ */
+@Composable
+private fun BatchConfigDialog(
+    state: AppUiState,
+    loraFields: List<ParameterField>,
+    viewModel: MainViewModel,
+    onDismiss: () -> Unit,
+) {
+    var slotIndex by remember { mutableIntStateOf(0) }
+    val slot = loraFields[slotIndex.coerceIn(loraFields.indices)]
+    val checkpointName = state.quickFields.firstOrNull {
+        it.kind == ParameterKind.COMBO &&
+            (it.nodeType.contains("CheckpointLoader", ignoreCase = true) ||
+                it.name.equals("ckpt_name", ignoreCase = true) ||
+                it.name.equals("unet_name", ignoreCase = true))
+    }?.displayValue
+    val candidates = slot.options.ifEmpty { listOf(slot.displayValue) }
+    var selected by remember(slot.key) {
+        mutableStateOf(candidates.filterNot { BatchCompareLogic.suspectIncompatible(checkpointName, it) }.toSet())
+    }
+    val durations = state.jobs.filter { it.submittedByApp && it.state == JobState.SUCCESS }.mapNotNull { it.durationMillis }
+    val avgMillis = if (durations.isEmpty()) null else durations.average().toLong()
+    val estimate = BatchCompareLogic.estimateMinutes(selected.size, avgMillis)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("批量 LoRA 对比") },
+        text = {
+            Column {
+                if (loraFields.size > 1) {
+                    Text(
+                        "工作流有 ${loraFields.size} 个 LoRA 节点，先选本轮要轮换的（其余保持当前值）：",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    var slotExpanded by remember { mutableStateOf(false) }
+                    Box {
+                        OutlinedButton(onClick = { slotExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                "${slot.nodeTitle.ifBlank { slot.nodeType }} · ${slot.label}",
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                            )
+                            Icon(Icons.Default.ArrowDropDown, null)
+                        }
+                        DropdownMenu(expanded = slotExpanded, onDismissRequest = { slotExpanded = false }) {
+                            loraFields.forEachIndexed { index, field ->
+                                DropdownMenuItem(
+                                    text = { Text("${field.nodeTitle.ifBlank { field.nodeType }} · ${field.label}", maxLines = 1) },
+                                    onClick = { slotIndex = index; slotExpanded = false },
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+                Text(
+                    "固定当前种子与提示词，只轮换 LoRA 逐张提交。黄色为疑似基模型不匹配（默认不勾，可强制勾选）。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row {
+                    TextButton(onClick = { selected = candidates.filterNot { BatchCompareLogic.suspectIncompatible(checkpointName, it) }.toSet() }) {
+                        Text("选推荐的")
+                    }
+                    TextButton(onClick = { selected = candidates.toSet() }) { Text("全选") }
+                    TextButton(onClick = { selected = emptySet() }) { Text("清空") }
+                }
+                LazyColumn(Modifier.heightIn(max = 380.dp)) {
+                    items(candidates) { name ->
+                        val suspect = BatchCompareLogic.suspectIncompatible(checkpointName, name)
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = name in selected,
+                                onCheckedChange = { on ->
+                                    selected = if (on) selected + name else selected - name
+                                },
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text(shortLoraName(name), maxLines = 1)
+                                if (suspect) {
+                                    Text(
+                                        "⚠ 疑似与 ${checkpointName?.let(::shortLoraName) ?: "当前模型"} 不匹配",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.error,
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                Text(
+                    "已选 ${selected.size}/${BatchCompareLogic.MAX_CANDIDATES} 张" +
+                        (estimate?.let { " · 预计约 $it 分钟" } ?: " · 暂无历史耗时，无法预估"),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = selected.isNotEmpty(),
+                onClick = {
+                    // 按 candidates 的顺序提交，保持与列表展示一致
+                    viewModel.startBatchCompare(slot.key, candidates.filter { it in selected })
+                    onDismiss()
+                },
+            ) { Text("开始批量") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+/**
+ * 批量结果网格：同一种子不同 LoRA 并排对比，每张标注 LoRA 名。
+ * 点开任意一张进入全屏画廊（复用结果页查看器）。
+ */
+@Composable
+private fun BatchResultDialog(batch: BatchRun, viewModel: MainViewModel, onDismiss: () -> Unit) {
+    val media = batch.items.flatMap { it.media }
+    val loraByStableKey = buildMap {
+        batch.items.forEach { item ->
+            item.media.forEach { m -> put(m.stableKey(), item.loraName) }
+        }
+    }
+    var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("批量对比结果（${media.size} 张）") },
+        text = {
+            if (media.isEmpty()) {
+                Text("这批没有可展示的图片", style = MaterialTheme.typography.bodySmall)
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(96.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 460.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    gridItemsIndexed(media, key = { _, item -> item.stableKey() }) { index, item ->
+                        Column(
+                            Modifier.fillMaxWidth().clickable { viewerIndex = index },
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            AsyncImage(
+                                item.url,
+                                loraByStableKey[item.stableKey()] ?: item.filename,
+                                Modifier.fillMaxWidth().aspectRatio(1f),
+                                contentScale = ContentScale.Crop,
+                            )
+                            Text(
+                                loraByStableKey[item.stableKey()]?.let(::shortLoraName) ?: item.filename,
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
+    viewerIndex?.let { index ->
+        ImageGalleryViewer(
+            items = media,
+            initialIndex = index,
+            onDismiss = { viewerIndex = null },
+            onSave = viewModel::saveResultWithFeedback,
+            onShare = viewModel::shareResult,
+            onOpen = viewModel::openResult,
+            favoriteKeys = emptySet(),
+            onFavorite = {},
+            onDelete = {},
+        )
+    }
+}
+
+/** LoRA 文件名展示：去目录与扩展名。 */
+private fun shortLoraName(name: String): String =
+    name.substringAfterLast('/').substringAfterLast('\\')
+        .removeSuffix(".safetensors").removeSuffix(".sft").removeSuffix(".ckpt").removeSuffix(".pt")
 
 @Composable
 private fun SeedModeChip(label: String, mode: SeedMode, current: SeedMode, viewModel: MainViewModel) {

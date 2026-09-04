@@ -34,6 +34,10 @@ import com.local.comfyuimobile.data.WorkflowSnapshotStore
 import com.local.comfyuimobile.model.AppUiState
 import com.local.comfyuimobile.model.AppDestination
 import com.local.comfyuimobile.model.AppNavigationRequest
+import com.local.comfyuimobile.model.BatchCompareLogic
+import com.local.comfyuimobile.model.BatchItemResult
+import com.local.comfyuimobile.model.BatchPhase
+import com.local.comfyuimobile.model.BatchRun
 import com.local.comfyuimobile.model.CacheOutputRule
 import com.local.comfyuimobile.model.ConnectionStatus
 import com.local.comfyuimobile.model.JobState
@@ -119,6 +123,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var reconnectJob: Job? = null
     private var parameterRefreshJob: Job? = null
     private var generationJob: Job? = null
+    // ===== v0.1.83 批量 LoRA 对比 =====
+    // 内存态：进程被杀批次即中断（v1 已知限制），已完成的服务器任务不受影响。
+    private val _batchRun = MutableStateFlow<BatchRun?>(null)
+    val batchRun: StateFlow<BatchRun?> = _batchRun.asStateFlow()
+    private var batchJob: Job? = null
+    // 暂停闸门：false = 放行下一张，true = 在"下一张开始前"挂起。
+    private val batchPauseGate = MutableStateFlow(false)
+    @Volatile private var batchCancelRequested = false
     private var workflowSaveJob: Job? = null
     private var workflowDraftSaveJob: Job? = null
     private var visibleNodeJob: Job? = null
@@ -1057,6 +1069,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 快捷生图页：按用户改过的参数 + 批量数量直接提交生成。 */
     fun quickGenerate() {
+        if (batchJob?.isActive == true) {
+            _state.update { it.copy(notice = "批量对比进行中，已暂停手动生图；可等批量结束或先取消批量") }
+            return
+        }
         if (
             _state.value.generating || _state.value.loading ||
             generationJob?.isActive == true || workflowSaveJob?.isActive == true
@@ -1127,6 +1143,226 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             (bridge ?: error("前端桥接不可用")).loadWorkflow(rawJson = raw, workflowPath = path)
             bridgeLoadedPath = path
         }
+    }
+
+    // ===== v0.1.83 批量 LoRA 对比 =====
+
+    /**
+     * 开始一次批量对比：固定种子与其他参数，只轮换 LoRA 字段的值，逐张提交。
+     *
+     * 候选来自快捷参数面板里 LoRA 下拉的 options（服务器 /object_info 枚举），
+     * 已在 UI 层做过启发式标黄，这里只做截断与兜底校验。
+     */
+    fun startBatchCompare(fieldKey: String, candidates: List<String>) {
+        if (batchJob?.isActive == true) return
+        val st = _state.value
+        val workflowPath = st.quickWorkflowPath ?: return
+        val workflowName = st.quickWorkflowName ?: return
+        if (st.status != ConnectionStatus.CONNECTED || !st.bridgeReady) {
+            _state.update { it.copy(notice = "尚未连接服务器或页面未就绪，无法开始批量") }
+            return
+        }
+        val field = st.quickFields.firstOrNull { it.key == fieldKey } ?: return
+        val queue = BatchCompareLogic.truncate(candidates)
+        if (queue.isEmpty()) return
+        val seed = st.quickFields
+            .firstOrNull { it.kind == ParameterKind.INTEGER && it.name.contains("seed", ignoreCase = true) }
+            ?.displayValue.orEmpty()
+        AppLogger.info("批量对比开始：$workflowPath，LoRA 字段=${field.key}，候选 ${queue.size} 项，种子=$seed")
+        batchCancelRequested = false
+        batchPauseGate.value = false
+        _batchRun.value = BatchRun(
+            id = UUID.randomUUID().toString().take(8),
+            workflowPath = workflowPath,
+            workflowName = workflowName,
+            loraFieldKey = fieldKey,
+            loraNodeTitle = field.nodeTitle.ifBlank { field.nodeType },
+            seed = seed,
+            originalLoraValue = field.displayValue,
+            pending = queue,
+            phase = BatchPhase.RUNNING,
+            startedAt = System.currentTimeMillis(),
+        )
+        batchJob = viewModelScope.launch { runBatchLoop() }
+    }
+
+    fun pauseBatch() {
+        batchPauseGate.value = true
+        _batchRun.update { it?.copy(phase = BatchPhase.PAUSED) }
+    }
+
+    fun resumeBatch() {
+        val run = _batchRun.value ?: return
+        if (run.phase != BatchPhase.PAUSED) return
+        _batchRun.update { it?.copy(phase = BatchPhase.RUNNING, message = "") }
+        batchPauseGate.value = false
+    }
+
+    /**
+     * 取消批量：不再提交剩余候选；正在跑的一张让它在服务器跑完并记录结果，
+     * 跑完（或提交失败）后循环自然退出。已在队列里的任务不受影响。
+     */
+    fun cancelBatch() {
+        batchCancelRequested = true
+        batchPauseGate.value = false
+        _batchRun.update { it?.takeIf { r -> r.phase == BatchPhase.RUNNING }?.copy(message = "正在取消：等待当前一张结束…") }
+    }
+
+    /** 关闭批量卡片（批量已结束/取消后），回到可再次配置的状态。 */
+    fun dismissBatch() {
+        if (batchJob?.isActive == true) return
+        _batchRun.value = null
+    }
+
+    private suspend fun runBatchLoop() {
+        val previousSeedMode = _state.value.seedMode
+        val restoreLoraKey = _batchRun.value?.loraFieldKey
+        val restoreLoraValue = _batchRun.value?.originalLoraValue
+        // 批量对比的核心前提：所有任务用同一个种子。临时切到 FIXED，结束（含取消/异常）恢复。
+        _state.update { it.copy(seedMode = SeedMode.FIXED) }
+        var consecutiveFailures = 0
+        try {
+            while (true) {
+                val run = _batchRun.value ?: break
+                if (run.phase == BatchPhase.CANCELLED) break
+                if (run.pending.isEmpty()) {
+                    _batchRun.update {
+                        it?.copy(
+                            phase = BatchPhase.DONE,
+                            current = null,
+                            message = "批量结束：成功 ${it.successCount} 张，失败 ${it.failedCount} 张",
+                        )
+                    }
+                    AppLogger.info("批量对比结束：成功 ${run.successCount}，失败 ${run.failedCount}")
+                    break
+                }
+                // 暂停闸门：暂停中（或自动暂停后等待用户恢复）在这里挂起。
+                batchPauseGate.first { !it }
+                if (batchCancelRequested) {
+                    _batchRun.update { it?.copy(phase = BatchPhase.CANCELLED, current = null) }
+                    break
+                }
+                val candidate = run.pending.first()
+                _batchRun.update { it?.copy(current = candidate, message = "") }
+                val result = submitBatchItem(run, candidate)
+                consecutiveFailures = if (result.success) 0 else consecutiveFailures + 1
+                _batchRun.update { it?.copy(items = it.items + result, current = null) }
+                AppLogger.info(
+                    "批量对比进度：${_batchRun.value?.finished ?: 0}/${run.total}，LoRA=$candidate，" +
+                        "成功=${result.success}${result.message.takeIf { m -> m.isNotBlank() }?.let { m -> "，原因=$m" }.orEmpty()}",
+                )
+                if (BatchCompareLogic.shouldAutoPause(consecutiveFailures)) {
+                    _batchRun.update {
+                        it?.copy(
+                            phase = BatchPhase.PAUSED,
+                            message = "连续 $consecutiveFailures 张失败已自动暂停（常见原因：登录过期、断线）。处理后点「继续」",
+                        )
+                    }
+                    batchPauseGate.value = true
+                    consecutiveFailures = 0
+                }
+            }
+        } catch (error: CancellationException) {
+            _batchRun.update { it?.copy(phase = BatchPhase.CANCELLED, current = null) }
+            throw error
+        } finally {
+            _state.update { it.copy(seedMode = previousSeedMode) }
+            // LoRA 字段恢复批量前的值，用户回参数页看到的是自己原来选的。
+            if (restoreLoraKey != null && restoreLoraValue != null) {
+                quickUpdateField(restoreLoraKey, restoreLoraValue)
+            }
+        }
+    }
+
+    /** 提交单张并等待完成：失败（提交被拒或执行失败）重试一次，仍失败返回失败结果。 */
+    private suspend fun submitBatchItem(run: BatchRun, loraName: String): BatchItemResult {
+        val startedAt = System.currentTimeMillis()
+        var firstFailure: String? = null
+        repeat(2) { attempt ->
+            if (attempt == 1) delay(2_000L) // 重试前缓一缓，给断线恢复留个窗口
+            val outcome = runCatching { submitBatchItemOnce(run, loraName, startedAt) }
+                .getOrElse { error ->
+                    if (error is CancellationException) throw error
+                    BatchItemResult(
+                        loraName = loraName,
+                        success = false,
+                        message = error.message ?: "提交失败",
+                        elapsedMs = System.currentTimeMillis() - startedAt,
+                    )
+                }
+            if (outcome.success) return outcome
+            if (firstFailure == null) firstFailure = outcome.message
+        }
+        return BatchItemResult(
+            loraName = loraName,
+            success = false,
+            message = "重试后仍失败：${firstFailure.orEmpty()}",
+            elapsedMs = System.currentTimeMillis() - startedAt,
+        )
+    }
+
+    private suspend fun submitBatchItemOnce(run: BatchRun, loraName: String, startedAt: Long): BatchItemResult {
+        // 1. 只改 LoRA 字段（复用快捷页参数 diff 机制，实测每次只应用 1~3 项，成本极低）
+        quickUpdateField(run.loraFieldKey, loraName)
+        val fields = _state.value.quickFields
+        // 2. 桥接构造 prompt（种子已由全局 FIXED 模式锁定）
+        val generated = bridgeOperationMutex.withLock {
+            ensureBridgeReadyForQuick()
+            (bridge ?: error("前端桥接不可用")).buildPrompt(fields, 1)
+        }
+        // 3. 提交
+        val response = client.queuePrompt(
+            generated.promptJson,
+            generated.workflowJson,
+            clientId,
+            run.workflowPath,
+            run.workflowName,
+        )
+        awaitingQueueJobIds.add(response.promptId)
+        submittedAt[response.promptId] = System.currentTimeMillis()
+        val submitted = _state.value.submittedJobIds + response.promptId
+        preferences.saveSubmittedJobs(submitted)
+        _state.update {
+            it.copy(
+                submittedJobIds = submitted,
+                activeJobId = response.promptId,
+                currentExecutingNodeId = null,
+                generationProgress = null,
+                generationMessage = "批量 ${_batchRun.value?.let { r -> "${r.finished + 1}/${r.total}" }.orEmpty()}：$loraName",
+            )
+        }
+        startMonitor(response.promptId, run.workflowName, run.workflowPath)
+        // 4. 轮询 /history 等待完成（不依赖 WebSocket，断线重连期间照样能判定）
+        val (completed, message) = awaitBatchCompletion(response.promptId)
+        val finalHistory = runCatching { client.history(response.promptId) }.getOrNull()
+        val media = finalHistory?.let { runCatching { ResultParser.parse(client.serverUrl(), it) }.getOrNull() }.orEmpty()
+        return BatchItemResult(
+            loraName = loraName,
+            promptId = response.promptId,
+            success = completed,
+            message = message,
+            media = media,
+            elapsedMs = System.currentTimeMillis() - startedAt,
+        )
+    }
+
+    /** 轮询单张任务历史直到完成/失败/超时。返回 (是否成功, 失败原因)。 */
+    private suspend fun awaitBatchCompletion(promptId: String): Pair<Boolean, String> {
+        val deadline = System.currentTimeMillis() + BATCH_ITEM_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            delay(BATCH_POLL_INTERVAL_MS)
+            val history = runCatching { client.history(promptId) }.getOrElse { continue } // 网络抖动继续轮
+            val item = history.optJSONObject(promptId) ?: continue
+            val status = item.optJSONObject("status")
+            val statusString = status?.optString("status_str").orEmpty()
+            if (statusString.equals("error", ignoreCase = true)) {
+                return Pair(false, "服务器执行失败（LoRA 与模型不匹配或参数无效）")
+            }
+            if (status?.optBoolean("completed") == true) {
+                return Pair(true, "")
+            }
+        }
+        return Pair(false, "等待超时（${BATCH_ITEM_TIMEOUT_MS / 60_000} 分钟）")
     }
 
     fun generate() {
@@ -3287,5 +3523,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         /** v0.1.82：恢复期间主动重载的单次超时。给 15 秒——比平台的自动重载周期长，
          *  又不至于吃掉整个 40 秒恢复窗口，失败还能再试一轮。 */
         const val RELOAD_TIMEOUT_MS = 15_000L
+        /** v0.1.83：批量对比单张轮询间隔与超时。20 分钟上限给云端平台排队留足余量。 */
+        const val BATCH_POLL_INTERVAL_MS = 3_000L
+        const val BATCH_ITEM_TIMEOUT_MS = 20 * 60_000L
     }
 }
