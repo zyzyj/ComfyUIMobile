@@ -138,4 +138,68 @@ class BatchCompareLogicTest {
         assertEquals(1, run.successCount)
         assertEquals(1, run.failedCount)
     }
+
+    // ===== v0.1.84 状态转移（v0.1.83 现场事故的回归锁） =====
+
+    private fun newRun(pending: List<String>, planned: Int = pending.size) = BatchRun(
+        id = "t", workflowPath = "w.json", workflowName = "w",
+        loraFieldKey = "k", loraNodeTitle = "加载LoRA",
+        seed = "1", originalLoraValue = "orig.safetensors",
+        pending = pending, plannedTotal = planned,
+    )
+
+    @Test
+    fun advanceQueueShiftsPendingIntoCurrent() {
+        val run = BatchCompareLogic.advanceQueue(newRun(listOf("a.safetensors", "b.safetensors")))!!
+        assertEquals("a.safetensors", run.current)
+        assertEquals(listOf("b.safetensors"), run.pending)
+        assertEquals(2, run.total) // total 守恒：pending 2 → current 1 + pending 1
+    }
+
+    @Test
+    fun advanceQueueReturnsNullWhenDrained() {
+        assertNull(BatchCompareLogic.advanceQueue(newRun(emptyList())))
+    }
+
+    @Test
+    fun fullCycleRunsEachCandidateExactlyOnce() {
+        // v0.1.83 的现场 bug：取了 first() 却从不 drop → 同一个 LoRA 无限重跑。
+        // 这里锁死"每个候选恰好跑一次、跑完队列即空"的不变量。
+        var run = newRun(listOf("a.safetensors", "b.safetensors", "c.safetensors"))
+        val executed = mutableListOf<String>()
+        var rounds = 0
+        while (true) {
+            val advanced = BatchCompareLogic.advanceQueue(run) ?: break
+            executed.add(advanced.current!!)
+            run = BatchCompareLogic.completeItem(advanced, BatchItemResult(advanced.current!!, success = true))
+            rounds++
+            assertTrue("队列未减少，疑似 pending 泄漏", rounds <= 5)
+        }
+        assertEquals(listOf("a.safetensors", "b.safetensors", "c.safetensors"), executed)
+        assertEquals(3, run.items.size)
+        assertTrue(run.pending.isEmpty())
+        assertNull(run.current)
+        assertEquals(3, run.total)
+    }
+
+    @Test
+    fun reachedPlannedCapStopsRunawayQueue() {
+        // 防呆上限：即使 pending 永不减少（bug 行为），完成数达到计划总数也要停。
+        var run = newRun(listOf("a", "b", "c"), planned = 3)
+        var guard = 0
+        while (!BatchCompareLogic.reachedPlannedCap(run)) {
+            // 模拟 v0.1.83 的泄漏行为：只加 items，pending 原封不动
+            run = run.copy(items = run.items + BatchItemResult("a", success = true))
+            guard++
+            assertTrue("防呆上限失效，仍在无限跑", guard <= 5)
+        }
+        assertEquals(3, run.items.size)
+    }
+
+    @Test
+    fun plannedCapDisabledWhenZero() {
+        // plannedTotal=0（旧数据/未设置）不触发防呆，走正常队列空判定
+        val run = newRun(listOf("a")).copy(plannedTotal = 0)
+        assertFalse(BatchCompareLogic.reachedPlannedCap(run))
+    }
 }
