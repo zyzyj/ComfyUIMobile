@@ -21,6 +21,7 @@ import com.local.comfyuimobile.service.JobMonitorService
 import com.local.comfyuimobile.ui.ComfyMobileApp
 import com.local.comfyuimobile.ui.ComfyMobileTheme
 import com.local.comfyuimobile.update.UpdateManager
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -63,7 +64,16 @@ class MainActivity : ComponentActivity() {
             }
         }
         handleJobNotification(intent)
-        viewModel.checkUpdate(manual = false)
+        // v0.1.85：更新检查不再抢在启动最前面。它要并发打 GitHub 和国内镜像做
+        // DNS/TLS 握手，实测吃掉 3.7 秒（日志 23:34:47.672 → 23:34:51.244），正好和
+        // 连接抢网络；它还会在连接初期写一次 DataStore，触发一轮全局状态刷新。
+        // 现在改成：连接成功后立刻查一次（见 MainViewModel.connect），这里只留一个
+        // 20 秒的兜底，免得用户一直不连就永远收不到更新提示。24 小时节流仍在，
+        // 两边不会重复跑。
+        lifecycleScope.launch {
+            delay(UPDATE_CHECK_FALLBACK_DELAY_MS)
+            viewModel.checkUpdate(manual = false)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -121,5 +131,10 @@ class MainActivity : ComponentActivity() {
             if (Build.VERSION.SDK_INT <= 28) add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }.filter { ActivityCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (permissions.isNotEmpty()) ActivityCompat.requestPermissions(this, permissions.toTypedArray(), 8100)
+    }
+
+    private companion object {
+        /** v0.1.85：启动后延迟多久兜底查一次更新（正常情况下连接成功时就查过了）。 */
+        const val UPDATE_CHECK_FALLBACK_DELAY_MS = 20_000L
     }
 }

@@ -61,6 +61,7 @@ import com.local.comfyuimobile.network.LanScanner
 import com.local.comfyuimobile.network.ResultParser
 import com.local.comfyuimobile.network.PromptSubmissionException
 import com.local.comfyuimobile.network.PlatformResponseException
+import com.local.comfyuimobile.network.isAuthExpired
 import com.local.comfyuimobile.network.ProgressStateParser
 import com.local.comfyuimobile.service.JobMonitorService
 import com.local.comfyuimobile.service.JobNotificationNavigation
@@ -387,6 +388,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         activeServer = null,
                         bridgeReady = false,
                         error = null,
+                        // 重新连接就把"登录已失效"清掉——用户多半已经换好 Cookie 了，
+                        // 留着旧标记会让界面一直提示过期。
+                        cookieExpired = false,
                     )
                 }
                 val normalized = LanAddress.normalize(address)
@@ -426,11 +430,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     activeBridge.awaitReady()
                 }
 
-                setConnectionStep(5, "前端已经就绪，正在读取节点定义")
-                client.features()
-                require(client.objectInfo().length() > 0) { "服务器没有返回节点定义" }
-
-                setConnectionStep(6, "节点定义正常，正在保存连接并同步数据")
+                // v0.1.85：这里以前是 client.features() + client.objectInfo()，而后者是
+                // 数 MB 的 /object_info——在 AI Studio 这类云端反代上单是这一个请求就要
+                // 15~30 秒（实测 23:37:57 网页加载完 → 23:38:30 才"连接完成"，32 秒全花在
+                // 这里）。更尴尬的是它的返回值只用来判一句 length()>0，probe 的
+                // /system_stats 早已经证明服务器活着了。所以这一步直接去掉；校验挪到
+                // 连接成功后的后台做，失败只记日志、不回滚连接。
+                setConnectionStep(5, "前端已经就绪，正在保存连接并同步数据")
                 val savedProfile = profile.copy(cookie = cookie)
                 preferences.saveServer(savedProfile)
                 _state.update {
@@ -462,7 +468,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 openSocket()
                 refreshAll()
                 restoreNotificationWorkflow()
+                // v0.1.85：连上了再查更新。以前它在 onCreate 里和连接同时开跑，抢走
+                // 3.7 秒的网络握手时间；启动阶段用户只在乎"快点连上"，更新晚点知道没关系。
+                checkUpdate(manual = false)
+                // v0.1.85：节点定义改成后台校验——连都连上了，没必要再让用户等一个
+                // 几 MB 的请求。万一真的读不到，记一条日志给排查用，不打断用户。
+                verifyObjectInfoInBackground()
             }
+        }
+    }
+
+    /**
+     * 后台校验节点定义（/object_info）。
+     *
+     * v0.1.85：以前这一步卡在连接流程里，云端反代上要 15~30 秒。它唯一的实际作用
+     * 是"确认对面真是 ComfyUI"，而 probe 已经验过了，所以降级成后台的软校验。
+     */
+    private fun verifyObjectInfoInBackground() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client.objectInfo() }
+                .onSuccess { info ->
+                    if (info.length() <= 0) {
+                        AppLogger.warn("服务器返回的节点定义为空（不影响已建立的连接）")
+                    }
+                }
+                .onFailure { error ->
+                    if (error !is CancellationException) {
+                        AppLogger.warn("节点定义后台校验失败（不影响已建立的连接）", error)
+                    }
+                }
         }
     }
 
@@ -566,8 +600,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 服务器读成功时两边一起刷新，直连 ComfyUI 的行为跟以前完全一样。
      */
     private suspend fun readWorkflowWithFallback(serverUrl: String, path: String): String {
-        val cached = WorkflowContentCache[serverUrl, path]
-            ?: runCatching { workflowSnapshots.read(serverUrl, path) }.getOrNull()
+        // v0.1.85：进程内缓存命中就直接返回。工作流正文在一次会话里不会自己变
+        // （重新导入时走 put 覆盖），以前命中了还照发一次 HTTP，等于每次点开工作流都
+        // 要多付一个往返——在 AI Studio 上还会因为中文路径被网关 400 打回、再双重编码
+        // 重试一次，白白多花时间。
+        WorkflowContentCache[serverUrl, path]?.let { return it }
+        val cached = runCatching { workflowSnapshots.read(serverUrl, path) }.getOrNull()
+        // v0.1.85：已经确认这台服务器不提供云端工作流存储（AI Studio 这类反代对
+        // /userdata 永远 404/400，日志里"服务器上读不到 xxx"反复出现就是这么来的），
+        // 就别再发一次注定失败的请求了，直接用本机快照。
+        if (cached != null && bridge?.serverWorkflowStoreAvailable == false) {
+            return cached
+        }
         // 不能写成 runCatching{}.onSuccess{ cacheWorkflowContent(...) }：
         // onSuccess 的 lambda 不是 suspend 上下文，里面调不了挂起函数。
         val fetched = try {
@@ -2474,51 +2518,70 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     bridgeReady = false,
                 )
             }
+            var reconnected = false
             for (seconds in listOf(1L, 2L, 5L, 10L, 30L)) {
                 delay(seconds * 1_000)
-                // v0.1.81：这里以前是 `return@launch`——用户主动断开时 activeServer
-                // 变 null，重连任务直接退出，状态却永远停在 RECONNECTING /
-                // bridgeReady=false（因为下面那句"服务器离线"被跳过了），界面就卡在
-                // "连接中断，正在重连"。改成 break 走统一的收尾，再按"还有没有服务器"
-                // 决定该报离线还是保持已断开。
                 val server = _state.value.activeServer ?: break
-                if (!isActive) return@launch
+                if (!isActive) break
+                val activeBridge = bridge ?: continue
                 // 重连时恢复该服务器保存的认证 Cookie。
                 client.setAuthCookie(server.cookie)
-                bridge?.setAuthCookie(server.cookie)
+                activeBridge.setAuthCookie(server.cookie)
                 AuthCookieProvider.current = server.cookie
                 val stats = runCatching { client.systemStats() }.getOrNull() ?: continue
-                val restored = runCatching {
-                    val activeBridge = bridge ?: error("前端桥接不可用")
-                    // v0.1.78：锁里只留纯前端操作（loadServer / awaitReady），
-                    // 工作流列表和正文的 HTTP 请求挪到锁外——它们是秒级耗时，
+                // v0.1.85：桥接恢复和工作副本恢复以前被合成一个布尔，于是"HTTP 通了、
+                // 前端也好了，只是工作副本没读到"也会被判成整轮失败，下一轮又去重刷页面。
+                // 按 connect() 里早就用过的策略拆开：桥接回来就算重连成功。
+                val bridgeBack = runCatching {
+                    // v0.1.78：锁里只留纯前端操作，HTTP 请求挪到锁外——它们是秒级耗时，
                     // 压在互斥锁里会把用户随后的所有操作一起堵住。
                     bridgeOperationMutex.withLock {
-                        activeBridge.loadServer(server.baseUrl, timeoutMillis = 20_000L)
-                        activeBridge.awaitReady(timeoutMillis = 45_000L)
+                        // v0.1.85：先给页面一个自己加载完的机会，实在不行才主动 reload。
+                        // 以前每轮无条件 loadServer（内部就是 reload），20 秒超时根本等不到
+                        // 页面加载完（AI Studio 一轮要 15~20 秒+），于是每轮都把上一轮正在
+                        // 加载的页面打断——日志里"恢复工作副本失败"连刷 25 次就是这么来的。
+                        val ready = runCatching { activeBridge.awaitReady(timeoutMillis = 15_000L) }.isSuccess
+                        if (!ready) {
+                            activeBridge.loadServer(server.baseUrl, timeoutMillis = 45_000L)
+                            activeBridge.awaitReady(timeoutMillis = 45_000L)
+                        }
                     }
-                    restoreWorkingCopyAfterReconnect(activeBridge, server.baseUrl)
                 }.onFailure { error ->
-                    if (error !is CancellationException) AppLogger.error("重连后恢复本地工作副本失败", error)
+                    if (error !is CancellationException) AppLogger.error("重连后恢复前端桥接失败", error)
                 }.isSuccess
-                if (!restored) continue
+                if (!bridgeBack) continue
+                runCatching { restoreWorkingCopyAfterReconnect(activeBridge, server.baseUrl) }
+                    .onFailure { error ->
+                        if (error !is CancellationException) {
+                            AppLogger.error("重连后恢复本地工作副本失败", error)
+                        }
+                    }
                 _state.update {
                     it.copy(
                         status = ConnectionStatus.CONNECTED,
-                        connectionMessage = "已重新连接并恢复工作副本",
+                        connectionMessage = "已重新连接",
                         systemStats = stats,
                         bridgeReady = true,
                     )
                 }
                 openSocket()
                 refreshAll()
-                return@launch
+                reconnected = true
+                break
             }
-            // v0.1.81：能走到这里有两种情况——重连轮次用尽（真的离线），或者
-            // 期间 activeServer 被清空（用户主动断开 / 换了服务器）。后者不该
-            // 报"服务器离线"，否则界面上会出现一个明明已断开却在喊重连的僵尸状态。
-            if (_state.value.activeServer != null) {
-                _state.update { it.copy(status = ConnectionStatus.ERROR, connectionMessage = "服务器离线") }
+            // v0.1.85：走到这里只有三种情况——重连成功（上面已置 reconnected）、轮次用尽
+            // （真的离线）、或者期间 activeServer 被清空（用户主动断开/换服务器）。以前
+            // break 和 return@launch 两条逃逸路径都不写状态，左上角那个"正在重连"能一直
+            // 挂到用户重启 App。现在统一收尾：状态必须有落脚点。
+            if (!reconnected) {
+                val stillHasServer = _state.value.activeServer != null
+                _state.update {
+                    it.copy(
+                        status = if (stillHasServer) ConnectionStatus.ERROR else ConnectionStatus.DISCONNECTED,
+                        connectionMessage = if (stillHasServer) "服务器离线，点「重试」再连一次" else "已断开连接",
+                        bridgeReady = false,
+                    )
+                }
             }
         }
     }
@@ -3261,6 +3324,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var rendererRecoveryJob: kotlinx.coroutines.Job? = null
     private var rendererRecoveryFailures = 0
+    /** v0.1.85：下一次允许主动重载页面的时间点（跨恢复轮次生效，见 RELOAD_COOLDOWN_MS）。 */
+    @Volatile private var nextReloadAllowedAt = 0L
 
     /**
      * v0.1.82：从后台回到前台。
@@ -3279,11 +3344,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun onReturnedToForeground() {
         val state = _state.value
-        // 没连上、或正在连接的都不打扰，交给连接流程自己走完；桥接本来就是好的
-        // 也什么都不用做。函数内部还有防重入，重复调用是安全的。
-        if (state.status != ConnectionStatus.CONNECTED) return
+        // v0.1.85：以前这里要求 status == CONNECTED 才肯恢复，而 AI Studio 上 status
+        // 经常卡在 RECONNECTING（quick 恢复路径从不写 status）——结果就是"状态卡重连 →
+        // 回前台不干活 → 桥接回不来 → 状态继续卡重连"的死结，三个按钮一直灰着。
+        // 判据改成"还连着服务器"（activeServer 非空）：只要服务器还在，桥接就该试着救。
+        // 正在主动连接的过程中不打扰，交给连接流程自己走完；桥接本来就是好的也什么都不
+        // 用做。函数内部还有防重入，重复调用是安全的。
+        if (state.status == ConnectionStatus.CONNECTING) return
+        if (state.activeServer == null) return
         if (state.bridgeReady) return
+        // v0.1.85：状态若卡在重连中，回到前台就是个天然的重试时机——先把状态摆正，
+        // 免得恢复成功了界面上还挂着"正在重连"。
+        if (state.status != ConnectionStatus.CONNECTED) {
+            _state.update { it.copy(status = ConnectionStatus.CONNECTED, connectionMessage = "已连接 ${it.activeServer?.name.orEmpty()}") }
+        }
         restoreBridgeAfterRendererRecreated(quick = true)
+    }
+
+    /**
+     * v0.1.85：界面上「重试」按钮的入口——立刻重新加载 ComfyUI 网页并恢复桥接。
+     *
+     * 背景：AI Studio 上页面每 11~12 秒自己重载一轮，恢复窗口又自带 30 秒冷却，
+     * 万一两边都卡住，用户只能干等下一次页面加载。按钮灰着、没有任何出口，是最难受的
+     * 局面。这个方法给用户一个"我自己来推一把"的开关：取消在飞的恢复任务（否则会被
+     * 防重入直接忽略），主动 reload 一次页面，再兜一次恢复流程。
+     */
+    fun retryBridgeRecovery() {
+        val server = _state.value.activeServer ?: return
+        rendererRecoveryJob?.cancel()
+        rendererRecoveryJob = null
+        _state.update {
+            it.copy(
+                status = ConnectionStatus.CONNECTED,
+                connectionMessage = "正在重新加载 ComfyUI 网页…",
+                bridgeReady = false,
+            )
+        }
+        viewModelScope.launch {
+            runCatching {
+                bridgeOperationMutex.withLock {
+                    bridge?.loadServer(server.baseUrl, timeoutMillis = 30_000L)
+                }
+            }.onFailure { error -> AppLogger.warn("手动重试时重载页面失败", error) }
+            // 页面加载完成时 onPageLoaded 会自动触发一轮恢复；这里再兜一次底，
+            // 免得页面其实已经加载好了、不会再有下一次 onPageLoaded。
+            restoreBridgeAfterRendererRecreated(quick = true)
+        }
     }
 
     /**
@@ -3354,7 +3460,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 //
                 // 不在第一次失败就 reload：正常情况下页面可能正加载到一半，
                 // 频繁 reload 会不停打断它，反而比等着更慢。
-                if (attempt % RELOAD_EVERY_ATTEMPTS == 0) {
+                //
+                // v0.1.85：再加一层跨轮次的冷却。AI Studio 每 11~12 秒自己重载一轮，
+                // 恢复窗口每秒重试一次、每 2 次失败又主动 reload，两边叠加的结果是页面
+                // 永远加载不完（日志里轮次 6/7/8 的进度都只有 10%）。冷却到 30 秒一次，
+                // 把主动权交还给平台自己的重载。
+                val now = System.currentTimeMillis()
+                if (attempt % RELOAD_EVERY_ATTEMPTS == 0 && now >= nextReloadAllowedAt) {
+                    nextReloadAllowedAt = now + RELOAD_COOLDOWN_MS
                     runCatching {
                         bridgeOperationMutex.withLock {
                             bridge?.loadServer(server.baseUrl, timeoutMillis = RELOAD_TIMEOUT_MS)
@@ -3363,7 +3476,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 delay(1_000L)
             }
-            if (quick) AppLogger.warn("页面重载后桥接未能在 40 秒内恢复，等待下一次页面加载重试")
+            // v0.1.85：窗口耗尽必须给状态一个落脚点。以前这里只打一行日志就结束，
+            // 于是"正在重连"能一直挂在左上角——AI Studio 上真正持续跑的就是这条 quick
+            // 路径，而它从头到尾只写 bridgeReady，从不碰 status，状态机里根本没人负责
+            // 把它清掉。现在按"还有没有服务器"收敛到确定状态，并给出可操作的提示。
+            val stillHasServer = _state.value.activeServer != null
+            _state.update {
+                it.copy(
+                    status = when {
+                        !stillHasServer -> ConnectionStatus.DISCONNECTED
+                        it.status == ConnectionStatus.RECONNECTING -> ConnectionStatus.ERROR
+                        else -> it.status
+                    },
+                    connectionMessage = if (stillHasServer) {
+                        "ComfyUI 网页还没恢复，等下一次页面加载会自动重试（也可以点「重试」立刻重连）"
+                    } else {
+                        "已断开连接"
+                    },
+                )
+            }
+            AppLogger.warn("桥接恢复窗口结束仍未就绪：quick=$quick，尝试 $attempt 次")
         }.also { job ->
             job.invokeOnCompletion {
                 if (rendererRecoveryJob === job) rendererRecoveryJob = null
@@ -3496,7 +3628,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .onSuccess { AppLogger.info("$operation 完成") }
             .onFailure { error ->
                 if (error is CancellationException) throw error
-                AppLogger.error(prefix, error)
+                // v0.1.85：登录失效必须单独认出来。以前它和真·网络故障一起被塞进笼统的
+                // "连接失败"——日志里那 19 条"连接失败"，异常体其实清一色是"需要登录或
+                // 登录已失效"。用户看到的只有一句连接失败，得自己猜是不是 Cookie 过期了。
+                val authExpired = isAuthExpired(error)
+                val title = if (authExpired) "登录已失效" else prefix
+                AppLogger.error(title, error)
                 _state.update {
                     val detail = error.message ?: error.javaClass.simpleName
                     val connecting = prefix.startsWith("连接")
@@ -3504,10 +3641,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         loading = false,
                         generating = false,
                         scanning = false,
-                        error = "$prefix：$detail",
+                        error = "$title：$detail",
+                        cookieExpired = authExpired,
                         status = if (connecting) ConnectionStatus.ERROR else it.status,
-                        connectionMessage = if (connecting) "第 ${it.connectionStep} 步失败：$detail" else it.connectionMessage,
-                        activeServer = if (connecting) null else it.activeServer,
+                        connectionMessage = when {
+                            !connecting -> it.connectionMessage
+                            authExpired -> "登录已失效，请重新获取 Cookie 后再连接"
+                            else -> "第 ${it.connectionStep} 步失败：$detail"
+                        },
+                        // v0.1.85：Cookie 过期不等于服务器没了。以前一律清空 activeServer，
+                        // 用户补完 Cookie 还得重新输一遍地址；现在保留服务器，补好 Cookie
+                        // 直接点连接即可（重连流程也还能用它）。
+                        activeServer = if (connecting && !authExpired) null else it.activeServer,
                         bridgeReady = if (connecting) false else it.bridgeReady,
                     )
                 }
@@ -3541,6 +3686,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val DRAFT_SAVE_DEBOUNCE_MILLIS = 250L
         /** v0.1.82：恢复窗口里每失败这么多次，就自己重载一次页面推进恢复。 */
         const val RELOAD_EVERY_ATTEMPTS = 2
+        /** v0.1.85：两次主动重载之间的冷却时间。quick 恢复每轮页面加载都会跑一次，
+         *  没有冷却的话它和平台的自动重载会叠成"重载风暴"——每次刚加载到 10% 就被
+         *  下一次 reload 打断，日志里"恢复工作副本失败"能连刷二十几条。 */
+        const val RELOAD_COOLDOWN_MS = 30_000L
         /** v0.1.82：恢复期间主动重载的单次超时。给 15 秒——比平台的自动重载周期长，
          *  又不至于吃掉整个 40 秒恢复窗口，失败还能再试一轮。 */
         const val RELOAD_TIMEOUT_MS = 15_000L

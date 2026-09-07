@@ -238,7 +238,14 @@ fun ComfyMobileApp(viewModel: MainViewModel, bridge: ComfyBridge) {
     LaunchedEffect(state.error, state.notice) {
         val message = state.error ?: state.notice
         if (!message.isNullOrBlank()) {
-            snackbar.showSnackbar(message)
+            // v0.1.85：登录失效时给一句能照着做的指引。以前只报"连接失败"，
+            // 用户压根不知道下一步该怎么办（其实是 Cookie 过期了，得重新获取）。
+            val shown = if (state.cookieExpired) {
+                "$message\n请在「设置」里重新获取并粘贴 Cookie，然后直接点连接。"
+            } else {
+                message
+            }
+            snackbar.showSnackbar(shown)
             viewModel.clearMessage()
         }
     }
@@ -926,13 +933,24 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
         }
         // v0.1.76：页面自动重载（AI Studio 平台每十几秒一次）期间桥接在恢复，
         // 生图/高级编辑按钮会短暂灰掉。在这里给出可见解释，不再"莫名其妙"。
-        if (!state.bridgeReady && state.activeServer != null && state.status == ConnectionStatus.CONNECTED) {
-            Text(
-                "网页正在重载，正在恢复连接…（几秒内恢复）",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.tertiary,
+        // v0.1.85：① 去掉 status == CONNECTED 的限制——状态卡在"正在重连"时恰恰最需要
+        // 这条提示（以前那种情况下连提示都不显示，用户只看到三个灰按钮）；
+        // ② 显示真实的恢复状态文案；③ 给一个「重试」出口，别让人只能干等下一次页面加载。
+        if (!state.bridgeReady && state.activeServer != null) {
+            Row(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
-            )
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    state.connectionMessage.ifBlank { "网页正在重载，正在恢复连接…（几秒内恢复）" },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { viewModel.retryBridgeRecovery() }) {
+                    Text("重试", style = MaterialTheme.typography.labelSmall)
+                }
+            }
         }
         CompositionLocalProvider(
             LocalBringIntoViewSpec provides parameterBringIntoViewSpec,

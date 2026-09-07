@@ -144,3 +144,30 @@ class PlatformResponseException(
     val retriable: Boolean
         get() = !loginPage && (html || httpCode >= 500)
 }
+
+/**
+ * 判断一次失败到底是不是"登录态过期"，而不是网络或服务器故障。
+ *
+ * v0.1.85：日志里连着 19 条「连接失败」，异常体其实清一色是"需要登录或登录已失效"——
+ * 笼统的标题把真正的病因吞掉了，用户只能自己猜是不是 Cookie 过期。界面需要据此给出
+ * "请重新获取 Cookie"而不是"连接失败"，所以判定必须准。
+ *
+ * 沿 cause 链往上找：OkHttp 抛出的异常常被包一层，真正的 [PlatformResponseException]
+ * 往往躺在 cause 里。限制跳数是为了防止异常链成环时死循环。
+ *
+ * 纯 Kotlin，可单测。
+ */
+fun isAuthExpired(error: Throwable?): Boolean {
+    var current: Throwable? = error ?: return false
+    var hops = 0
+    while (current != null && hops < 8) {
+        if (current is PlatformResponseException && current.loginPage) return true
+        val message = current.message.orEmpty()
+        if (message.contains("登录已失效") || message.contains("需要登录") || message.contains("登录失效")) {
+            return true
+        }
+        current = current.cause
+        hops += 1
+    }
+    return false
+}

@@ -191,7 +191,9 @@ data class AppUiState(
     val status: ConnectionStatus = ConnectionStatus.DISCONNECTED,
     val connectionMessage: String = "尚未连接",
     val connectionStep: Int = 0,
-    val connectionTotalSteps: Int = 6,
+    // v0.1.85：连接流程从 6 步精简到 5 步——原来第 5 步是拉 /object_info（数 MB，
+    // 云端反代上 15~30 秒），它只用于判 length()>0，已改为后台校验。
+    val connectionTotalSteps: Int = 5,
     // 留空以便显示输入框的提示语；这里原先硬编码了开发者的内网地址，属于无谓的信息泄漏。
     val serverInput: String = "",
     val serverCookie: String = "",
@@ -240,6 +242,14 @@ data class AppUiState(
     val workflowDraftConflictRequired: Boolean = false,
     val workflowDraftConflictReason: String = "",
     val error: String? = null,
+    /**
+     * v0.1.85：最近一次失败是不是"登录态过期"（Cookie 失效）。
+     *
+     * 云端平台（AI Studio / CloudStudio）的 Cookie 几小时就过期，过期后接口返回
+     * 登录页而不是报错。以前这种失败被笼统报成"连接失败"，用户根本不知道要去换
+     * Cookie。有了这个标记，界面可以直接给出"登录已失效，请重新获取 Cookie"。
+     */
+    val cookieExpired: Boolean = false,
     val notice: String? = null,
     val updateInfo: UpdateInfo? = null,
     val updateDownloading: Boolean = false,

@@ -356,7 +356,11 @@ class ComfyBridge(private val activity: Activity) {
         repeat(3) { attempt ->
             if (response != null) return@repeat
             response = try {
-                awaitReady()
+                // v0.1.85：以前这里是默认 90 秒。页面真在重载时等一会儿是对的，
+                // 但外面还有 repeat(3) 重试，90×3=270 秒的最坏情况足以让用户以为
+                // App 卡死。砍到 20 秒：正常情况（已就绪）照样立刻返回，重载中也能
+                // 靠重试接住，最坏 60 秒就给出明确失败。
+                awaitReady(timeoutMillis = 20_000L)
                 evaluate(script)
             } catch (error: PageTransitionException) {
                 lastError = error

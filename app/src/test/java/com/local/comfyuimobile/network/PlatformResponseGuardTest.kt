@@ -190,4 +190,39 @@ class PlatformResponseGuardTest {
         assertTrue(error.loginPage)
         assertTrue(error.message!!.contains("需要登录"))
     }
+
+    // ---------- v0.1.85：登录失效判定 ----------
+
+    @Test
+    fun authExpiredRecognisesLoginPageException() {
+        // 登录墙在反代上以 403 + 错误页出现（HTTP 200 的同款页面只算普通错误页，
+        // 见 nonAuthHtml404IsUnsupportedButRetriable，不能混为一谈）。
+        val error = runCatching { PlatformResponseGuard.guard(403, aistudioErrorPage) }.exceptionOrNull()
+            as PlatformResponseException
+        assertTrue(error.loginPage)
+        assertTrue(isAuthExpired(error))
+    }
+
+    @Test
+    fun authExpiredLooksThroughCauseChain() {
+        // OkHttp 抛出的异常常被包一层，真正的病因躺在 cause 里。
+        val root = PlatformResponseException("需要登录或登录已失效（HTTP 403）", 403, loginPage = true)
+        val wrapped = IllegalStateException("连接中断", root)
+        val wrappedTwice = RuntimeException("请求失败", wrapped)
+        assertTrue(isAuthExpired(wrappedTwice))
+    }
+
+    @Test
+    fun authExpiredFalseForOrdinaryNetworkFailure() {
+        assertFalse(isAuthExpired(java.net.SocketTimeoutException("timeout")))
+        assertFalse(isAuthExpired(IllegalStateException("服务器没有返回节点定义")))
+        assertFalse(isAuthExpired(null))
+    }
+
+    @Test
+    fun authExpiredFalseForNonAuthPlatformException() {
+        // 平台不支持该接口（unsupported）属于另一类问题，不该被当成 Cookie 过期。
+        val error = PlatformResponseException("服务器不支持该接口（HTTP 404）", 404, unsupported = true)
+        assertFalse(isAuthExpired(error))
+    }
 }
