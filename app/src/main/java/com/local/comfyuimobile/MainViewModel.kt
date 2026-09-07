@@ -15,6 +15,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.local.comfyuimobile.bridge.ComfyBridge
+import com.local.comfyuimobile.bridge.CookieParser
 import com.local.comfyuimobile.bridge.AdvancedEditorSession
 import com.local.comfyuimobile.bridge.WorkflowImageReader
 import com.local.comfyuimobile.data.AppPreferences
@@ -213,12 +214,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     refreshTasksInternal()
                 }
                 if (!stored.localDraftsEnabled) {
-                    // Local drafts are off: make sure stale draft files (including
-                    // corrupted ones from earlier versions) can never come back.
-                    cancelPendingDraftSave()
-                    runCatching { workflowDrafts.clearAll() }
-                    _state.update { it.copy(localDraftCount = 0) }
+                    // v0.1.86：只在"用户主动把开关关掉"的那一刻清一次。
+                    //
+                    // 以前这里是每次 DataStore 推送都清——而开关默认就是 false，于是
+                    // AI Studio 上那条降级保存路径（服务器不提供 /userdata 时把工作流
+                    // 存到本机，saveWorkflowAsLocalDraft，它不受这个开关约束）刚写完就被
+                    // 清掉。界面还提示"下次打开自动恢复"，实际下次打开什么都没有。
+                    // 用"上一次观察到的状态"来识别 true→false 这一刻：首次启动时
+                    // lastLocalDraftsEnabled 还是 null，不会误清历史草稿。
+                    if (lastLocalDraftsEnabled == true) {
+                        cancelPendingDraftSave()
+                        runCatching { workflowDrafts.clearAll() }
+                        _state.update { it.copy(localDraftCount = 0) }
+                    }
                 }
+                lastLocalDraftsEnabled = stored.localDraftsEnabled
             }
         }
         viewModelScope.launch {
@@ -235,7 +245,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // AI Studio 平台每十几秒自动重载一轮页面：每次加载完成都快速恢复桥接，
         // 把"灰色窗口"压缩到几秒，而不是等渲染进程崩溃（那可能好几分钟才来一次）。
         value.onPageLoaded = {
+            // v0.1.86：页面每次加载完成都顺手把 WebView 侧的最新 Cookie 回写到 HTTP 侧
+            // ——平台常常在这时候下发续期后的登录态，以前它被白白丢掉了。
+            syncCookieFromWebView()
             restoreBridgeAfterRendererRecreated(quick = true)
+        }
+    }
+
+    /**
+     * v0.1.86：把 WebView 侧的最新 Cookie 回写到 HTTP 侧（自动续期，免手动重取）。
+     *
+     * 以前只有 HTTP → WebView 这一个方向：连接时把用户手贴的 Cookie 注入 WebView。
+     * 反向没有通路，于是平台每次页面重载下发的 Set-Cookie 只进 CookieManager，OkHttp
+     * 那边始终用旧值——几小时后必然 403，用户只能再去平台复制一次粘贴进来。
+     */
+    private fun syncCookieFromWebView() {
+        val activeBridge = bridge ?: return
+        val server = _state.value.activeServer ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val fresh = runCatching { activeBridge.currentAuthCookie(server.baseUrl) }
+                .getOrNull()
+                .orEmpty()
+                .trim()
+            if (fresh.isBlank()) return@launch
+            if (!CookieParser.hasNewPairs(fresh, server.cookie)) return@launch
+            AppLogger.info("检测到平台下发了新的登录 Cookie，已自动同步（本次无需手动重取）")
+            client.setAuthCookie(fresh)
+            activeBridge.setAuthCookie(fresh)
+            AuthCookieProvider.current = fresh
+            _state.update {
+                it.copy(
+                    serverCookie = fresh,
+                    activeServer = it.activeServer?.copy(cookie = fresh),
+                    // 之前若因为 Cookie 过期报过错，现在自动续上了，把提示收掉。
+                    cookieExpired = false,
+                )
+            }
+            runCatching { preferences.saveServer(server.copy(cookie = fresh)) }
+                .onFailure { error -> AppLogger.warn("新 Cookie 落盘失败（本次会话仍有效）", error) }
         }
     }
 
@@ -468,6 +515,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 openSocket()
                 refreshAll()
                 restoreNotificationWorkflow()
+                // v0.1.86：连上后常驻一条前台通知（"已连接 xxx"），让进程不再是无保护的
+                // 普通后台进程——AI Studio 上被杀一次要重走 65 秒的连接流程，代价太大。
+                startKeepAlive(savedProfile.name)
                 // v0.1.85：连上了再查更新。以前它在 onCreate 里和连接同时开跑，抢走
                 // 3.7 秒的网络握手时间；启动阶段用户只在乎"快点连上"，更新晚点知道没关系。
                 checkUpdate(manual = false)
@@ -476,6 +526,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 verifyObjectInfoInBackground()
             }
         }
+    }
+
+    /**
+     * v0.1.86：连上之后常驻一个前台服务，让 App 像音乐播放器一样在通知栏留一条
+     * "已连接 xxx"。
+     *
+     * 这是 Android 上唯一正规且有效的保活手段：系统会优先保留带前台服务的进程。
+     * 它挡不住用户主动划掉 App（FORCE STOP 之后任何服务都不会被拉起，这是系统设计的），
+     * 但能显著降低"切个后台回来要重连"的概率。
+     */
+    private fun startKeepAlive(serverName: String) {
+        val intent = Intent(app, JobMonitorService::class.java)
+            .setAction(JobMonitorService.ACTION_KEEP_ALIVE)
+            .putExtra(JobMonitorService.EXTRA_BASE_URL, client.serverUrl())
+            .putExtra(JobMonitorService.EXTRA_SERVER_NAME, serverName)
+        runCatching { ContextCompat.startForegroundService(app, intent) }
+            .onFailure { error -> AppLogger.warn("连接保活启动失败（不影响使用）: ${error.message.orEmpty()}") }
+    }
+
+    /** v0.1.86：断开连接时撤掉保活通知。 */
+    private fun stopKeepAlive() {
+        val intent = Intent(app, JobMonitorService::class.java)
+            .setAction(JobMonitorService.ACTION_KEEP_ALIVE)
+        runCatching { app.startService(intent) }
+            .onFailure { error -> AppLogger.warn("连接保活撤销失败: ${error.message.orEmpty()}") }
     }
 
     /**
@@ -504,6 +579,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         persistCurrentWorkflowDraft()
         reconnectJob?.cancel()
         client.closeWebSocket()
+        // v0.1.86：断开连接时把常驻的保活通知一起撤掉，别在通知栏留个孤儿。
+        stopKeepAlive()
         awaitingQueueJobIds.clear()
         pendingReconnectNodeId = null
         pendingNotificationWorkflowPath = null
@@ -679,6 +756,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 这个失败是周期性的（每轮刷新都来一次），全量记录会把诊断日志淹掉。
      */
     private var userdataUnsupportedLogged = false
+    /** v0.1.86：上一次观察到的本地草稿开关状态，用于识别"用户主动关掉"这一刻（见设置收集处）。 */
+    private var lastLocalDraftsEnabled: Boolean? = null
 
     /**
      * v0.1.68：判断这次 /userdata 失败是不是"这台服务器根本没有云端工作流接口"。
@@ -2004,9 +2083,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(localResults = local) }
     }
 
-    fun onLocalResultsSaved(count: Int, failed: Boolean, localSaveRequested: Boolean) = viewModelScope.launch {
+    fun onLocalResultsSaved(
+        count: Int,
+        failed: Boolean,
+        localSaveRequested: Boolean,
+        jobId: String = "",
+    ) = viewModelScope.launch {
         val local = localResultCache.load()
-        // 自动保存：只处理"最近一次任务"新增的结果（按 createdAt 识别）。
+        // 自动保存：只处理本次任务新增的结果。
         // 按用户偏好写入"图片保存位置"（自定义文件夹）；未设置自定义文件夹时
         // 不写入系统相册（避免相册被生成图刷屏），仅保留在本地作品缓存里。
         var autoSaved = 0
@@ -2016,12 +2100,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (saveFolderUri.isNullOrBlank()) {
                 autoSkipped = true
             } else {
-                val latestCreatedAt = local.maxOf { it.createdAt }
-                local.filter { it.source == ResultSource.LOCAL && it.createdAt == latestCreatedAt }
-                    .forEach { media ->
-                        runCatching { saveToMediaStore(media) }
-                            .onSuccess { autoSaved += 1 }
-                    }
+                // v0.1.86：以前取"全库最大的 createdAt"——那是上一次任务的时间戳，
+                // 于是本次任务一张都没缓存时（比如输出类型不在白名单里），会把上一次
+                // 任务的图原样再存一遍，用户看到"已自动保存 N 张"却是旧图。
+                // 现在广播带了任务号，直接按 jobId 精确取；拿不到任务号（旧版本广播）
+                // 才退回按时间过滤。
+                val fresh = if (jobId.isNotBlank()) {
+                    local.filter { it.source == ResultSource.LOCAL && it.jobId == jobId }
+                } else {
+                    val latestCreatedAt = local.maxOf { it.createdAt }
+                    local.filter { it.source == ResultSource.LOCAL && it.createdAt == latestCreatedAt }
+                }
+                fresh.forEach { media ->
+                    runCatching { saveToMediaStore(media) }
+                        .onSuccess { autoSaved += 1 }
+                }
             }
         }
         val autoSavedNote = when {
@@ -3678,6 +3771,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         client.closeWebSocket()
+        // v0.1.86：App 真正退出时把"已连接"常驻通知一起撤掉，别在通知栏留孤儿。
+        // 注意这只清保活标记：如果还有生图任务在后台跑，服务自己的 stopIfIdle 会
+        // 保留前台通知，任务不受影响。
+        stopKeepAlive()
         super.onCleared()
     }
 

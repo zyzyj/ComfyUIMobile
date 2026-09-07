@@ -47,6 +47,9 @@ class JobMonitorService : Service() {
     private val workflowPaths = ConcurrentHashMap<String, String>()
     private val serverUrls = ConcurrentHashMap<String, String>()
     private val authCookies = ConcurrentHashMap<String, String>()
+    // v0.1.86：连接保活状态。非空表示"用户还连着这台服务器"，没有任务时前台服务也要留着。
+    @Volatile private var keepAliveServer: String = ""
+    @Volatile private var keepAliveName: String = ""
     private val localResultCache by lazy { LocalResultCache(applicationContext) }
     private val preferences by lazy { AppPreferences(applicationContext) }
     private val wakeLock by lazy {
@@ -63,6 +66,19 @@ class JobMonitorService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // v0.1.86：保活指令走轻量路径。下面那条常规路径会先挂一条"正在准备后台任务"
+        // 的占位通知再交给 handleStartCommand——保活不该闪这一下错误状态，直接由
+        // KEEP_ALIVE 分支自己建立"已连接"通知（满足 5 秒内 startForeground 的要求）。
+        if (intent?.action == ACTION_KEEP_ALIVE) {
+            return try {
+                handleStartCommand(intent, startId)
+            } catch (error: Throwable) {
+                AppLogger.error("连接保活处理失败", error)
+                runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+                stopSelf(startId)
+                START_NOT_STICKY
+            }
+        }
         val promptId = intent?.getStringExtra(EXTRA_PROMPT_ID).orEmpty()
         val workflowName = intent?.getStringExtra(EXTRA_WORKFLOW_NAME).orEmpty().ifBlank {
             workflowNames[promptId].orEmpty().ifBlank { "ComfyUI 工作流" }
@@ -104,6 +120,25 @@ class JobMonitorService : Service() {
 
     private fun handleStartCommand(intent: Intent?, startId: Int): Int {
         val promptId = intent?.getStringExtra(EXTRA_PROMPT_ID).orEmpty()
+        // v0.1.86：连接保活。用户要的是"像音乐播放器那样"——连上服务器后常驻一条前台
+        // 通知，让进程不再是普通后台进程。以前前台服务只在提交任务时才起，空闲就退出，
+        // 于是没在生图时 App 毫无保护，被系统一杀就得重走 65 秒的连接流程。
+        if (intent?.action == ACTION_KEEP_ALIVE) {
+            val keepServer = intent.getStringExtra(EXTRA_BASE_URL).orEmpty().trimEnd('/')
+            val keepName = intent.getStringExtra(EXTRA_SERVER_NAME).orEmpty()
+            if (keepServer.isBlank()) {
+                // 空地址即"断开连接"，撤掉保活；还有任务在跑的话 stopIfIdle 会保留前台。
+                keepAliveServer = ""
+                keepAliveName = ""
+                stopIfIdle()
+                return START_NOT_STICKY
+            }
+            keepAliveServer = keepServer
+            keepAliveName = keepName
+            startForeground(FOREGROUND_ID, keepAliveNotification(keepName, keepServer))
+            AppLogger.info("连接保活已建立：${keepName.ifBlank { keepServer }}")
+            return START_STICKY
+        }
         if (intent?.action == ACTION_STOP) {
             monitors.remove(promptId)?.cancel()
             workflowNames.remove(promptId)
@@ -240,7 +275,12 @@ class JobMonitorService : Service() {
                                     .setPackage(packageName)
                                     .putExtra(EXTRA_SAVED_COUNT, savedCount)
                                     .putExtra(EXTRA_SAVE_FAILED, report.failed > 0)
-                                    .putExtra(EXTRA_LOCAL_SAVE_REQUESTED, report.localSaveRequested),
+                                    .putExtra(EXTRA_LOCAL_SAVE_REQUESTED, report.localSaveRequested)
+                                    // v0.1.86：带上任务号。以前界面层只能拿"全库最新的
+                                    // createdAt"去猜这次存了哪些图——万一这次任务一张都没
+                                    // 缓存（比如输出类型不在白名单里），它就会把上一次任务的
+                                    // 图重新存一遍。
+                                    .putExtra(EXTRA_PROMPT_ID, promptId),
                             )
                         }
                         monitors.remove(promptId)
@@ -341,12 +381,14 @@ class JobMonitorService : Service() {
         val history = resultClient.history(promptId)
         check(history.optJSONObject(promptId) != null) { "任务结果尚未写入历史" }
         val settings = preferences.settings.first()
-        val localSaveRequested = settings.cacheOutputRules.any { rule ->
-            // v0.1.82：以前用 == 比地址，而 LanAddress.normalize 会补上默认端口
-            // （https 补 443），规则里存的却常常是不带端口的原样地址。同一台服务器
-            // 被判成两台，"已启用"永远算成 false，后台任务跑完一张图都不存。
-            rule.enabled && LanAddress.sameServer(rule.serverUrl, baseUrl)
-        }
+        // v0.1.86：与 CachePolicy.shouldCache 的判定保持一致——用户从未配过任何规则时
+        // 默认全存（localSaveRequested=true）；只要配过，就严格按规则走。
+        // 以前只看"有没有启用的规则"，没配过白名单的用户永远拿到 false——日志里每一条
+        // "后台任务完成"都是"总输出=0，失败=0"，开关开了却一张都存不下来。
+        val localSaveRequested = !CachePolicy.hasAnyRule(settings.cacheOutputRules) ||
+            settings.cacheOutputRules.any { rule ->
+                rule.enabled && LanAddress.sameServer(rule.serverUrl, baseUrl)
+            }
         val parsed = ResultParser.parse(baseUrl, history)
         val eligible = parsed.filter { media ->
             media.jobId == promptId && CachePolicy.shouldCache(
@@ -423,6 +465,13 @@ class JobMonitorService : Service() {
             )
             return
         }
+        // v0.1.86：还连着服务器就保持前台服务常驻，只是把通知降级回"已连接"。
+        // 以前没有任务就彻底退出前台，进程随即变成普通后台进程——AI Studio 上重连一次
+        // 要 65 秒，被杀一次的代价太大了。
+        if (keepAliveServer.isNotBlank()) {
+            startForeground(FOREGROUND_ID, keepAliveNotification(keepAliveName, keepAliveServer))
+            return
+        }
         releaseBackgroundLocks()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -458,6 +507,25 @@ class JobMonitorService : Service() {
             .apply { if (ongoing) setProgress(100, progress.coerceIn(0, 100), progress < 0) }
             .build()
     }
+
+    /**
+     * v0.1.86：连接保活的常驻通知。
+     *
+     * 没有任务在跑时也要有一条——前台服务是 Android 上唯一能显著降低"进程被杀"概率的
+     * 正规手段，而系统要求前台服务必须配一条用户看得见的通知。这就是音乐播放器、导航
+     * 类 App 的做法，不是什么黑魔法：它不能阻止用户主动划掉 App（FORCE STOP 后任何
+     * 服务都不会被拉起，这是系统设计），但能让系统内存回收时优先保留本进程。
+     */
+    private fun keepAliveNotification(name: String, baseUrl: String): Notification =
+        Notification.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle("已连接 ${name.ifBlank { "ComfyUI" }}")
+            .setContentText("保持连接中，点按返回 App")
+            .setContentIntent(contentIntent("", baseUrl, "", completed = false))
+            .setCategory(Notification.CATEGORY_STATUS)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .build()
 
     private suspend fun hasLocalSaveRequested(baseUrl: String): Boolean =
         preferences.settings.first().cacheOutputRules.any { rule ->
@@ -529,6 +597,11 @@ class JobMonitorService : Service() {
         const val EXTRA_SAVED_COUNT = "saved_count"
         const val EXTRA_SAVE_FAILED = "save_failed"
         const val EXTRA_LOCAL_SAVE_REQUESTED = "local_save_requested"
+        /** v0.1.86：结果广播里带上任务号，界面层才能精确知道这次存了哪些图。 */
+        const val EXTRA_PROMPT_ID = "prompt_id"
+        /** v0.1.86：连接保活（常驻前台服务，降低被系统回收的概率）。带地址=建立，空地址=撤销。 */
+        const val ACTION_KEEP_ALIVE = "com.local.comfyuimobile.action.KEEP_ALIVE"
+        const val EXTRA_SERVER_NAME = "server_name"
         const val EXTRA_OPEN_COMPLETED = "open_completed"
         private const val FOREGROUND_ID = 8188
     }

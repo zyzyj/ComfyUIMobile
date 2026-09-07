@@ -47,6 +47,8 @@ class MainActivity : ComponentActivity() {
                 count = intent.getIntExtra(JobMonitorService.EXTRA_SAVED_COUNT, 0),
                 failed = intent.getBooleanExtra(JobMonitorService.EXTRA_SAVE_FAILED, false),
                 localSaveRequested = intent.getBooleanExtra(JobMonitorService.EXTRA_LOCAL_SAVE_REQUESTED, false),
+                // v0.1.86：旧版本广播里没有这个字段，拿到空串时界面层退回按时间过滤。
+                jobId = intent.getStringExtra(JobMonitorService.EXTRA_PROMPT_ID).orEmpty(),
             )
         }
     }
