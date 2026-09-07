@@ -597,8 +597,8 @@ class JobMonitorService : Service() {
         const val EXTRA_SAVED_COUNT = "saved_count"
         const val EXTRA_SAVE_FAILED = "save_failed"
         const val EXTRA_LOCAL_SAVE_REQUESTED = "local_save_requested"
-        /** v0.1.86：结果广播里带上任务号，界面层才能精确知道这次存了哪些图。 */
-        const val EXTRA_PROMPT_ID = "prompt_id"
+        // v0.1.86：结果广播也带上 EXTRA_PROMPT_ID（常量本来就有，:585），界面层才能
+        // 精确知道这次存了哪些图。
         /** v0.1.86：连接保活（常驻前台服务，降低被系统回收的概率）。带地址=建立，空地址=撤销。 */
         const val ACTION_KEEP_ALIVE = "com.local.comfyuimobile.action.KEEP_ALIVE"
         const val EXTRA_SERVER_NAME = "server_name"

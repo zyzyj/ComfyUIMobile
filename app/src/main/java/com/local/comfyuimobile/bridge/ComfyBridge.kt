@@ -111,8 +111,14 @@ class ComfyBridge(private val activity: Activity) {
         val target = url.ifBlank { allowedOrigin }
         if (target.isBlank()) return ""
         return withContext(Dispatchers.Main.immediate) {
-            runCatching { android.webkit.CookieManager.getInstance().getCookie(target).orEmpty() }
-                .getOrEmpty()
+            // 不用 Result.getOrEmpty()（个别工具链版本解析不了它），try-catch 直白稳妥；
+            // CookieManager.getInstance() 在部分进程状态下会抛异常，这里一律兜底为空串。
+            try {
+                android.webkit.CookieManager.getInstance().getCookie(target).orEmpty()
+            } catch (error: Throwable) {
+                AppLogger.warn("读取 WebView Cookie 失败（跳过本次自动同步）: ${error.message.orEmpty()}")
+                ""
+            }
         }
     }
     @Volatile private var rendererEpoch: Int = 0
