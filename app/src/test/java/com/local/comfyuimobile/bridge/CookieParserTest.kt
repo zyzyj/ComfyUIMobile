@@ -1,6 +1,7 @@
 package com.local.comfyuimobile.bridge
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -66,5 +67,44 @@ class CookieParserTest {
     fun handlesWhitespaceAndSemicolons() {
         val segments = CookieParser.parse("  a = 1  ;  b  = 2 ;c=3  ")
         assertEquals(listOf("a=1", "b=2", "c=3"), segments)
+    }
+
+    // ---------- v0.1.86：Cookie 自动同步的"是否真的更新了"判定 ----------
+
+    @Test
+    fun hasNewPairsDetectsRefreshedValue() {
+        val current = "JSESSIONID=old; BDUSS=aaa"
+        val fresh = "JSESSIONID=new; BDUSS=aaa"
+        assertTrue(CookieParser.hasNewPairs(fresh, current))
+    }
+
+    @Test
+    fun hasNewPairsDetectsBrandNewKey() {
+        val current = "BDUSS=aaa"
+        val fresh = "BDUSS=aaa; ide-proxy=zzz"
+        assertTrue(CookieParser.hasNewPairs(fresh, current))
+    }
+
+    @Test
+    fun hasNewPairsFalseWhenIdentical() {
+        val cookie = "BDUSS=aaa; JSESSIONID=bbb"
+        assertFalse(CookieParser.hasNewPairs(cookie, cookie))
+    }
+
+    @Test
+    fun hasNewPairsFalseWhenFreshIsOnlyASubset() {
+        // 关键：CookieManager 常常只返回当前域下的部分 Cookie。这种"残缺的新值"
+        // 不能算更新，否则会把用户精心配置的完整 Cookie 冲成一个残缺版本。
+        val current = "BDUSS=aaa; JSESSIONID=bbb; ide-proxy=ccc"
+        val fresh = "BDUSS=aaa"
+        assertFalse(CookieParser.hasNewPairs(fresh, current))
+    }
+
+    @Test
+    fun hasNewPairsHandlesEmptyInputs() {
+        assertFalse(CookieParser.hasNewPairs("", "BDUSS=aaa"))
+        assertFalse(CookieParser.hasNewPairs("   ", "BDUSS=aaa"))
+        assertFalse(CookieParser.hasNewPairs("undefined", "BDUSS=aaa"))
+        assertTrue(CookieParser.hasNewPairs("BDUSS=aaa", ""))
     }
 }

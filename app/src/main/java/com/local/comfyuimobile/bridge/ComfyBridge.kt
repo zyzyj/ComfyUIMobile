@@ -98,6 +98,23 @@ class ComfyBridge(private val activity: Activity) {
     fun setAuthCookie(cookie: String) {
         authCookie = cookie.trim()
     }
+
+    /**
+     * v0.1.86：读取 WebView 侧当前的 Cookie。
+     *
+     * 反向代理平台（AI Studio 之类）会在页面重载时下发新的 Set-Cookie 给登录态续期，
+     * 而这份新 Cookie 只进 WebView 的 CookieManager——HTTP 侧（OkHttp）永远拿着用户当初
+     * 手贴的那一份，于是"Cookie 过期"隔三差五就来一次，用户被迫反复去平台重新复制。
+     * 有了这个读取口，ViewModel 就能在每次页面加载后把新 Cookie 回写到 HTTP 侧。
+     */
+    suspend fun currentAuthCookie(url: String = ""): String {
+        val target = url.ifBlank { allowedOrigin }
+        if (target.isBlank()) return ""
+        return withContext(Dispatchers.Main.immediate) {
+            runCatching { android.webkit.CookieManager.getInstance().getCookie(target).orEmpty() }
+                .getOrEmpty()
+        }
+    }
     @Volatile private var rendererEpoch: Int = 0
     @Volatile private var pageEpoch: Int = 0
     @Volatile private var finishedPageEpoch: Int = -1
