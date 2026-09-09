@@ -193,12 +193,18 @@ class AppPreferences(private val context: Context) {
         val array = JSONArray(raw.ifBlank { "[]" })
         buildList {
             repeat(array.length()) { index ->
-                val item = array.getJSONObject(index)
+                val item = array.optJSONObject(index) ?: return@repeat
+                // v0.1.87：以前这里用 getString（同函数里其他字段都是 optString），
+                // 任意一条记录缺 baseUrl 就抛异常，runCatching 的 getOrDefault 会把
+                // **全部**已保存服务器地址一次性清空。改成逐条跳过坏数据：
+                // 丢一条比丢全部好得多。
+                val baseUrl = item.optString("baseUrl")
+                if (baseUrl.isBlank()) return@repeat
                 add(
                     ServerProfile(
                         id = item.optString("id"),
                         name = item.optString("name"),
-                        baseUrl = item.getString("baseUrl"),
+                        baseUrl = baseUrl,
                         lastSeen = item.optLong("lastSeen"),
                         comfyVersion = item.optString("comfyVersion"),
                         cookie = item.optString("cookie"),

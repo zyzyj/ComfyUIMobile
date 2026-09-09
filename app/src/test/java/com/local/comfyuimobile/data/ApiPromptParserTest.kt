@@ -4,6 +4,7 @@ import com.local.comfyuimobile.model.ParameterKind
 import com.local.comfyuimobile.model.ParameterSection
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -205,5 +206,28 @@ class ApiPromptParserTest {
         assertEquals(1, result.nodes.size)
         assertTrue("没有输出节点时执行链应为空", result.executionChain.isEmpty())
         assertNull(result.fields.firstOrNull { it.nodeId == "1" && it.name == "unet_name" })
+    }
+
+    @Test
+    fun twoElementNumberArraysStayWidgetsInsteadOfBecomingLinks() {
+        // v0.1.87：以前只判"长度 2 且第二个是数字"，于是任何 [数字, 数字] 的 widget
+        // 都会被当成连线，从 widgetValues 里消失（参数页看不到、也改不了）。
+        val prompt = JSONObject(
+            """
+            {
+              "1": {"class_type": "Dummy", "inputs": {"note": "hello"}},
+              "3": {"class_type": "Dummy",
+                    "inputs": {"weights": [1024, 1024], "levels": [0.5, 1.0], "upstream": ["1", 0]}},
+              "2": {"class_type": "SaveImage", "inputs": {"images": ["3", 0]}}
+            }
+            """.trimIndent(),
+        )
+        val node3 = ApiPromptParser.parse(prompt, null).nodes.first { it.id == "3" }
+        assertTrue("resolution 这类数字数组必须留在 widgetValues 里", node3.widgetValues.containsKey("weights"))
+        assertTrue(node3.widgetValues.containsKey("levels"))
+        assertFalse("不能把它塞进 links", node3.links.containsKey("weights"))
+        // 真正的连线仍然要被识别
+        assertEquals("1", node3.links["upstream"]?.nodeId)
+        assertEquals(listOf("2"), ApiPromptParser.parse(prompt, null).outputNodeIds)
     }
 }

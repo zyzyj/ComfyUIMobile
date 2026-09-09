@@ -83,6 +83,10 @@ object ApiPromptParser {
 
     private fun readNodes(prompt: JSONObject): List<ApiNode> {
         val result = mutableListOf<ApiNode>()
+        // v0.1.87：先把图里真实存在的节点 id 收齐。判定连线时要拿它做校验——
+        // 光看"长度 2 的数组"会把 resolution=[1024,1024]、weights=[1,1] 这类
+        // 数字数组型 widget 误认成连线。
+        val nodeIds = prompt.keys().asSequence().toSet()
         val keys = prompt.keys()
         while (keys.hasNext()) {
             val id = keys.next()
@@ -98,7 +102,7 @@ object ApiPromptParser {
             while (names.hasNext()) {
                 val name = names.next()
                 val value = inputs.opt(name)
-                val ref = asLink(value)
+                val ref = asLink(value, nodeIds)
                 if (ref != null) links[name] = ref else widgets[name] = unwrap(value)
             }
             result += ApiNode(id, classType, title, widgets, links)
@@ -107,12 +111,21 @@ object ApiPromptParser {
         return result.sortedWith(compareBy({ it.id.toLongOrNull() ?: Long.MAX_VALUE }, { it.id }))
     }
 
-    /** ComfyUI 用 ["节点id", 输出槽位] 表示连线。 */
-    private fun asLink(value: Any?): LinkRef? {
+    /**
+     * ComfyUI 用 `["节点id", 输出槽位]` 表示连线。
+     *
+     * v0.1.87：增加了"首元素必须是图里真实存在的节点 id"这条校验。以前只看长度和
+     * 槽位是不是数字，于是任何"恰好两个数字元素"的 widget 值都会被当成连线——
+     * `resolution: [1024,1024]`、`noise_levels: [0.5,1.0]` 之类。后果是该 widget
+     * 从参数页消失（改不了），而且万一图里真有 id 为 "1024" 的节点，还会被
+     * collectAncestors 当成上游整条拉进执行链。
+     * 判定不成连线时返回 null，调用方会把它放回 widgets，值不会丢。
+     */
+    private fun asLink(value: Any?, nodeIds: Set<String>): LinkRef? {
         val array = value as? org.json.JSONArray ?: return null
         if (array.length() != 2) return null
         val nodeId = array.optString(0)
-        if (nodeId.isBlank()) return null
+        if (nodeId.isBlank() || nodeId !in nodeIds) return null
         val slot = array.optInt(1, -1)
         return if (slot >= 0) LinkRef(nodeId, slot) else null
     }

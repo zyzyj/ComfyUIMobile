@@ -107,4 +107,31 @@ class CookieParserTest {
         assertFalse(CookieParser.hasNewPairs("undefined", "BDUSS=aaa"))
         assertTrue(CookieParser.hasNewPairs("BDUSS=aaa", ""))
     }
+
+    // v0.1.87：RFC 6265 的 cookie-value 允许 quoted-string，值里可以带分号。
+    @Test
+    fun keepsSemicolonInsideQuotedValue() {
+        // 以前 split(';') 会切成 RT="z=1&v=3 和 abc" 两段，
+        // 前者残留不配对的引号，后者被当成名叫 abc 的新 Cookie。
+        assertEquals(
+            listOf("RT=z=1&v=3;abc", "JSESSIONID=bbb"),
+            CookieParser.parse("RT=\"z=1&v=3;abc\"; JSESSIONID=bbb"),
+        )
+    }
+
+    @Test
+    fun keepsSemicolonInsideQuotedValueWhenNotLastSegment() {
+        assertEquals(
+            listOf("RT=z=1;x=2", "A=1"),
+            CookieParser.parse("RT=\"z=1;x=2\"; A=1"),
+        )
+    }
+
+    @Test
+    fun stillSplitsOnPlainSemicolons() {
+        assertEquals(
+            listOf("a=1", "b=2", "c=3"),
+            CookieParser.parse("a=1; b=2; c=3"),
+        )
+    }
 }

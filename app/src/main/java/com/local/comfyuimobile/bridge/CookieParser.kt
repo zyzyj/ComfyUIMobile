@@ -12,7 +12,7 @@ object CookieParser {
 
     /** 把一整串 Cookie 拆成合法的 `name=value` 列表。 */
     fun parse(cookieHeader: String): List<String> = buildList {
-        cookieHeader.split(';').forEach { raw ->
+        splitOutsideQuotes(cookieHeader).forEach { raw ->
             val seg = raw.trim()
             val eq = seg.indexOf('=')
             if (eq <= 0) return@forEach // 无 '=' 或 name 为空：畸形段，跳过
@@ -26,6 +26,36 @@ object CookieParser {
             if (value.isBlank()) return@forEach
             add("$name=$value")
         }
+    }
+
+    /**
+     * 按分号切分，但**跳过引号内部的**分号。
+     *
+     * v0.1.87：原来直接 `split(';')`。RFC 6265 的 cookie-value 允许 quoted-string，
+     * 值里可以带 `;`，于是 `RT="z=1&v=3;abc"` 会被切成 `RT="z=1&v=3` 和 `abc"` 两段——
+     * 前一段首尾引号不配对、剥不掉，残留一个孤零零的 `"`；后一段被当成名叫 `abc`
+     * 的新 Cookie。逐段 setCookie 之后 WebView 侧的登录态直接坏掉，表现是莫名其妙
+     * 被重定向到登录页。本文件开头注释里举的 `RT="z=1&..."` 正是这类值。
+     */
+    private fun splitOutsideQuotes(text: String): List<String> {
+        val parts = mutableListOf<String>()
+        val current = StringBuilder()
+        var inQuotes = false
+        for (ch in text) {
+            when {
+                ch == '"' -> {
+                    inQuotes = !inQuotes
+                    current.append(ch)
+                }
+                ch == ';' && !inQuotes -> {
+                    parts += current.toString()
+                    current.setLength(0)
+                }
+                else -> current.append(ch)
+            }
+        }
+        parts += current.toString()
+        return parts
     }
 
     /**

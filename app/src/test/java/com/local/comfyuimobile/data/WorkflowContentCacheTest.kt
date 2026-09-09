@@ -107,4 +107,20 @@ class WorkflowContentCacheTest {
     private companion object {
         const val SERVER = "https://aistudio.baidu.com/x/api_serving/8188"
     }
+
+    @Test
+    fun overwritingRefreshesLruPosition() {
+        // v0.1.87：以前覆盖写入只更新值、不动 LRU 位置，于是反复写的那个 key
+        // 一直赖在队首，容量满时第一个被淘汰的恰恰是刚刚才写过的内容。
+        val capacity = 24
+        repeat(capacity) { index ->
+            WorkflowContentCache.put(SERVER, "workflows/w$index.json", "content-$index")
+        }
+        // 反复更新 w0
+        WorkflowContentCache.put(SERVER, "workflows/w0.json", "content-0-v2")
+        // 再塞一条触发淘汰，被淘汰的应该是 w1，不是 w0
+        WorkflowContentCache.put(SERVER, "workflows/new.json", "new")
+        assertEquals("content-0-v2", WorkflowContentCache[SERVER, "workflows/w0.json"])
+        assertNull(WorkflowContentCache[SERVER, "workflows/w1.json"])
+    }
 }

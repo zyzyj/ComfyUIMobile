@@ -99,18 +99,23 @@ class WorkflowSnapshotStore internal constructor(private val directory: File) {
                     val path = root.optString("workflowPath")
                     val json = root.optString("json")
                     if (path.isBlank() || json.isBlank()) return@mapNotNull null
-                    WorkflowEntry(
+                    // v0.1.87：排序改成按原始毫秒。modified 是秒（要跟 ComfyUI
+                    // /userdata 对齐），除以 1000 会把同一秒内保存的几个快照抹成
+                    // 同一个值，稳定排序随即退化成 listFiles() 的文件系统顺序——
+                    // 用户刚导入的那个不一定排在最前面。
+                    // 排序键用原始毫秒，modified 仍按秒对外（要跟 ComfyUI 对齐）。
+                    root.optLong("updatedAt") to WorkflowEntry(
                         name = path.substringAfterLast('/'),
                         path = path,
                         isDirectory = false,
                         size = json.toByteArray().size.toLong(),
-                        // WorkflowEntry.modified 用秒（和 ComfyUI /userdata 一致），快照存毫秒。
                         modified = root.optLong("updatedAt") / 1000.0,
                     )
                 }.getOrNull()
             }
             // 最近保存的排前面：用户刚导入的应该第一个看到。
-            .sortedByDescending { it.modified }
+            .sortedByDescending { it.first }
+            .map { it.second }
     }
 
     private fun writeNow(serverUrl: String, workflowPath: String, json: String) {        directory.mkdirs()

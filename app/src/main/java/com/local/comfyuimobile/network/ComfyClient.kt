@@ -27,6 +27,8 @@ import java.net.URLEncoder
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.UUID
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import okio.source
 
@@ -60,6 +62,15 @@ class ComfyClient {
 
     @Volatile private var baseUrl: String = ""
     @Volatile private var socket: WebSocket? = null
+    /**
+     * v0.1.87：记住"这条连接是我们主动关的"。
+     *
+     * `onClosed` 那边靠 `1000 + "switch server"` 哨兵认出主动关闭，但 OkHttp 在关闭握手
+     * 没走完时（网络已经断了、对端不回关闭帧）走的是 `onFailure` 而不是 `onClosed`。
+     * 换服务器 / 断开连接恰好都发生在"网络可能已经不好"的时刻，于是主动关也会回调
+     * `onFailure` → 上层当成一次掉线 → 再起一轮重连，和正在跑的 `connect()` 抢锁抢状态。
+     */
+    private val closedByUs = Collections.newSetFromMap(ConcurrentHashMap<WebSocket, Boolean>())
 
     /**
      * v0.1.68：记录这台服务器实际支持哪些 ComfyUI 接口。
@@ -481,7 +492,11 @@ class ComfyClient {
             override fun onMessage(webSocket: WebSocket, text: String) {
                 runCatching { onMessage(JSONObject(text)) }
             }
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = onFailure(t)
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                // v0.1.87：自己关的连接不算掉线（见 closedByUs 的说明）。
+                if (closedByUs.remove(webSocket)) return
+                onFailure(t)
+            }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 // v0.1.81：自己关的连接不能当成掉线。closeWebSocket() 是异步的——
                 // 它发出关闭帧后由 OkHttp 在读取线程回调 onClosed——而调用它的两处
@@ -491,14 +506,20 @@ class ComfyClient {
                 // ② 重连成功后 openSocket 会先关旧连接，那个回调又启动一轮重连，
                 // 和刚建立的连接抢状态。用我们自己传的 1000 + "switch server"
                 // 认出主动关闭，直接吞掉。
-                if (code == NORMAL_CLOSURE && reason == CLOSE_REASON) return
+                if (code == NORMAL_CLOSURE && reason == CLOSE_REASON) {
+                    // v0.1.87：顺手清掉标记，免得集合里留下已经结束的连接。
+                    closedByUs.remove(webSocket)
+                    return
+                }
                 onFailure(IllegalStateException("WebSocket 已关闭：$code $reason"))
             }
         })
     }
 
     fun closeWebSocket() {
-        socket?.close(NORMAL_CLOSURE, CLOSE_REASON)
+        val current = socket ?: return
+        closedByUs.add(current)
+        current.close(NORMAL_CLOSURE, CLOSE_REASON)
         socket = null
     }
 

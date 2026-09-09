@@ -150,7 +150,21 @@ data class ResultMedia(
     val intrinsicWidth: Int? = null,
     val intrinsicHeight: Int? = null,
 ) {
-    fun stableKey(): String = listOf(jobId, nodeId, type, subfolder, filename).joinToString("/")
+    /**
+     * 这条输出在本机缓存里的唯一 key。
+     *
+     * v0.1.87：原来用 `/` 直接拼接五个字段，是**有歧义**的编码——ComfyUI 的
+     * subfolder 自带日期斜杠，`subfolder="a/b" + filename="c.png"` 与
+     * `subfolder="a" + filename="b/c.png"` 会拼成同一个 key。后果是第二条输出
+     * 直接覆盖第一条已保存的图片文件，收藏、多选、批量对比全部串号。
+     * 改成"长度前缀 + 值"的无歧义编码：字段值里出现任何分隔符都不会撞车。
+     *
+     * LocalResultCache 用的是同一份编码，并对旧索引做了按字段重算的迁移，
+     * 老用户已保存的图片不会因此消失。
+     */
+    fun stableKey(): String = ResultKey.encode(
+        listOf(jobId, nodeId, type, subfolder, filename)
+    )
 
     /** 解析后的分辨率文案，未知时返回 null。 */
     fun resolutionLabel(): String? {
