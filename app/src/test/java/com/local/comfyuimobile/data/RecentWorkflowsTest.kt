@@ -67,4 +67,16 @@ class RecentWorkflowsTest {
         assertEquals("workflows/A.json", resolved.first().path)
         assertEquals("workflows/B.json", resolved.last().path)
     }
+
+    // v0.1.87：path == replacedPath 时，以前新路径会连同旧路径一起被过滤掉，
+    // 用户重命名/覆盖某个工作流后它反而从"最近浏览"里消失。
+    @Test fun addingTheReplacedPathKeepsItVisible() {
+        val updated = RecentWorkflows.add(
+            listOf("workflows/old.json", "workflows/keep.json"),
+            path = "workflows/old.json",
+            replacedPath = "workflows/old.json",
+        )
+        assertEquals("workflows/old.json", updated.first())
+        assertEquals(listOf("workflows/old.json", "workflows/keep.json"), updated)
+    }
 }

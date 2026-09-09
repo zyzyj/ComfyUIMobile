@@ -140,8 +140,16 @@ class UpdateManager(private val context: Context) {
             UpdateDownloadState(
                 status = when (status) {
                     DownloadManager.STATUS_SUCCESSFUL -> UpdateDownloadStatus.SUCCESSFUL
-                    DownloadManager.STATUS_FAILED -> UpdateDownloadStatus.FAILED
-                    else -> UpdateDownloadStatus.DOWNLOADING
+                    // v0.1.87：以前除 SUCCESSFUL / FAILED 之外一律算 DOWNLOADING，
+                    // 于是 STATUS_CANCELED、以及 4/8/9/10 这几个 PAUSED 全被当成"还在下"。
+                    // 用户在系统下载通知里点一下取消，被取消的任务在 cursor 里仍然查得到，
+                    // downloadState 永远返回非 null，MainViewModel 那个轮询协程就每 800ms
+                    // 空转一次、永不退出，updateDownloading 也一直挂着 true。
+                    // 只有"还在队列里 / 正在下 / 已完成"算数，其余（FAILED、CANCELED，
+                    // 以及 4/8/9/10 那几个隐藏的 PAUSED_* 状态）一律按失败处理。
+                    // 这样写不依赖具体常量值，隐藏状态变了也不会漏。
+                    DownloadManager.STATUS_PENDING, DownloadManager.STATUS_RUNNING -> UpdateDownloadStatus.DOWNLOADING
+                    else -> UpdateDownloadStatus.FAILED
                 },
                 bytesDownloaded = bytes,
                 totalBytes = total,
@@ -161,7 +169,12 @@ class UpdateManager(private val context: Context) {
             val file = File(state.getString("file", null) ?: error("更新文件路径缺失"))
             require(file.isFile) { "更新 APK 不存在" }
             val expectedSha = state.getString("sha", "").orEmpty()
-            if (expectedSha.isNotBlank()) require(sha256(file).equals(expectedSha, true)) { "APK SHA-256 校验失败" }
+            // v0.1.87：以前是 `if (expectedSha.isNotBlank()) require(...)`——校验值为空时
+            // 整段哈希校验被跳过，直接进签名校验并跳安装。这是典型的 fail-open：
+            // 只要哪天 enqueue 没写 sha（或被清掉），完整性校验就名存实亡。
+            // 现在没有校验值一律拒绝安装。
+            require(expectedSha.isNotBlank()) { "更新包缺少 SHA-256 校验值" }
+            require(sha256(file).equals(expectedSha, true)) { "APK SHA-256 校验失败" }
             verifyPackage(file)
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
             val intent = Intent(Intent.ACTION_VIEW).apply {

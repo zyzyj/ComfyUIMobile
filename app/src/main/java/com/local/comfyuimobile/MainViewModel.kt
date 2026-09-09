@@ -16,6 +16,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.local.comfyuimobile.bridge.ComfyBridge
 import com.local.comfyuimobile.bridge.CookieParser
+import com.local.comfyuimobile.bridge.FieldValue
 import com.local.comfyuimobile.bridge.AdvancedEditorSession
 import com.local.comfyuimobile.bridge.WorkflowImageReader
 import com.local.comfyuimobile.data.AppPreferences
@@ -136,6 +137,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var workflowSaveJob: Job? = null
     private var workflowDraftSaveJob: Job? = null
     private var visibleNodeJob: Job? = null
+    // v0.1.87：任务列表刷新的合并器（见 scheduleTasksRefresh）。
+    private var tasksRefreshJob: Job? = null
+    private var lastTasksRefreshAt: Long = 0L
     private val bridgeOperationMutex = Mutex()
     private val monitoredJobIds = ConcurrentHashMap.newKeySet<String>()
     private val awaitingQueueJobIds = ConcurrentHashMap.newKeySet<String>()
@@ -918,7 +922,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val updatedFields = ui.fields.map { field ->
                 if (field.key != key) field else field.copy(
                     displayValue = value,
-                    valueJson = valueJson(field.kind, value),
+                    valueJson = valueJson(field.kind, value, field.originalValueJson),
                 )
             }
             ui.copy(
@@ -1173,7 +1177,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { st ->
             st.copy(quickFields = st.quickFields.map { field ->
                 if (field.key == key) field.copy(
-                    valueJson = valueJson(field.kind, value),
+                    valueJson = valueJson(field.kind, value, field.originalValueJson),
                     displayValue = value,
                 ) else field
             })
@@ -1236,7 +1240,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 awaitingQueueJobIds.add(response.promptId)
                 submittedAt[response.promptId] = System.currentTimeMillis()
                 val submitted = _state.value.submittedJobIds + response.promptId
-                preferences.saveSubmittedJobs(submitted)
+                // v0.1.87：以前这行不在 runCatching 里。DataStore 写入抛异常时，
+                // 任务已经在服务器入队了，但 submittedJobIds 没更新 —— 后续刷新
+                // 认不出这是自己提交的任务，不跟踪、不起后台监控、不发完成通知，
+                // 用户点了生成却什么反馈都没有。持久化失败不能把入队结果一起带走。
+                runCatching { preferences.saveSubmittedJobs(submitted) }
+                    .onFailure { AppLogger.error("保存已提交任务记录失败", it) }
                 _state.update {
                     it.copy(
                         submittedJobIds = submitted,
@@ -1463,7 +1472,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         awaitingQueueJobIds.add(response.promptId)
         submittedAt[response.promptId] = System.currentTimeMillis()
         val submitted = _state.value.submittedJobIds + response.promptId
-        preferences.saveSubmittedJobs(submitted)
+        runCatching { preferences.saveSubmittedJobs(submitted) }
+            .onFailure { AppLogger.error("保存已提交任务记录失败", it) }
         _state.update {
             it.copy(
                 submittedJobIds = submitted,
@@ -1547,7 +1557,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 awaitingQueueJobIds.add(response.promptId)
                 submittedAt[response.promptId] = System.currentTimeMillis()
                 val submitted = _state.value.submittedJobIds + response.promptId
-                preferences.saveSubmittedJobs(submitted)
+                // v0.1.87：以前这行不在 runCatching 里。DataStore 写入抛异常时，
+                // 任务已经在服务器入队了，但 submittedJobIds 没更新 —— 后续刷新
+                // 认不出这是自己提交的任务，不跟踪、不起后台监控、不发完成通知，
+                // 用户点了生成却什么反馈都没有。持久化失败不能把入队结果一起带走。
+                runCatching { preferences.saveSubmittedJobs(submitted) }
+                    .onFailure { AppLogger.error("保存已提交任务记录失败", it) }
                 var history = _state.value.promptHistory
                 _state.value.fields
                     .filter { it.kind == ParameterKind.MULTILINE && it.nodeType.contains("TextEncode", true) }
@@ -2094,6 +2109,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 按用户偏好写入"图片保存位置"（自定义文件夹）；未设置自定义文件夹时
         // 不写入系统相册（避免相册被生成图刷屏），仅保留在本地作品缓存里。
         var autoSaved = 0
+        var autoSaveFailed = 0
+        var autoSaveError = ""
         var autoSkipped = false
         val saveFolderUri = _state.value.saveFolderUri
         if (_state.value.autoSaveResults && local.isNotEmpty()) {
@@ -2112,13 +2129,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     local.filter { it.source == ResultSource.LOCAL && it.createdAt == latestCreatedAt }
                 }
                 fresh.forEach { media ->
+                    // v0.1.87：以前只数成功、不数失败也不记日志。SAF 树权限被撤销、
+                    // 磁盘满、个别文件写入失败时，5 张只进了 2 张，界面照样报
+                    // "已自动保存 2 张到图片文件夹"，另外 3 张的失败完全不可见。
                     runCatching { saveToMediaStore(media) }
                         .onSuccess { autoSaved += 1 }
+                        .onFailure { error ->
+                            autoSaveFailed += 1
+                            autoSaveError = error.message.orEmpty().ifBlank { error.javaClass.simpleName }
+                            AppLogger.error("自动保存到图片文件夹失败：${media.filename}", error)
+                        }
                 }
             }
         }
         val autoSavedNote = when {
+            // v0.1.87：部分失败也要说清楚，不再只报成功数。
+            autoSaved > 0 && autoSaveFailed > 0 ->
+                "，已自动保存 $autoSaved 张到图片文件夹，另有 $autoSaveFailed 张失败${if (autoSaveError.isNotBlank()) "：$autoSaveError" else ""}"
             autoSaved > 0 -> "，已自动保存 $autoSaved 张到图片文件夹"
+            autoSaveFailed > 0 ->
+                "，自动保存失败 $autoSaveFailed 张${if (autoSaveError.isNotBlank()) "：$autoSaveError" else ""}"
             autoSkipped -> "，未设置图片保存位置，已跳过自动保存（仅保留在本地作品）"
             else -> ""
         }
@@ -2708,7 +2738,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "status" -> {
                 val remaining = data.optJSONObject("status")?.optJSONObject("exec_info")?.optInt("queue_remaining") ?: 0
                 _state.update { it.copy(queueRemaining = remaining) }
-                viewModelScope.launch { refreshTasksInternal() }
+                // v0.1.87：合并去抖，不再每条 status 都拉一次全量历史。
+                scheduleTasksRefresh()
             }
             "progress" -> {
                 val id = data.optString("prompt_id")
@@ -2915,7 +2946,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * v0.1.87：WebSocket 的 `status` 是心跳级消息，队列一有动静就来一条。以前每条都
+     * 立刻 `launch { refreshTasksInternal() }`，而它内部会拉一次不带 max_items 的
+     * 全量 `/history`——云端反代上那份历史动辄几 MB，界面就是这么被拖垮的。
+     * 现在合并成"最小间隔内只跑一次"：期间到达的 status 只刷新新一次。
+     *
+     * 注意这里是合并而不是简单 debounce：持续有消息时也必须跑，否则队列状态永远不更新。
+     */
+    private fun scheduleTasksRefresh() {
+        if (tasksRefreshJob?.isActive == true) return
+        val wait = (TASKS_REFRESH_MIN_INTERVAL_MS - (System.currentTimeMillis() - lastTasksRefreshAt))
+            .coerceAtLeast(0L)
+        tasksRefreshJob = viewModelScope.launch {
+            if (wait > 0) delay(wait)
+            tasksRefreshJob = null
+            lastTasksRefreshAt = System.currentTimeMillis()
+            refreshTasksInternal()
+        }
+    }
+
     private suspend fun refreshTasksInternal() {
+        // v0.1.87：断开后 client.baseUrl 还指向旧服务器，请求照样会成功。以前没有这道
+        // 门槛，disconnect() 清空 jobs / activeServer 之后，在飞的那次刷新会把旧任务
+        // 重新填回列表。
+        val serverAtStart = _state.value.activeServer?.baseUrl
+        if (serverAtStart == null) return
         runCatching {
             val existing = _state.value.jobs.associateBy { it.id }
             val live = client.queue()
@@ -2939,6 +2995,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val reconnectRuntimeNode = pendingReconnectNodeId
             var reconnectNodeApplied = false
             _state.update { ui ->
+                // v0.1.87：请求发出到回来的这段时间里用户可能已经断开或换服务器，
+                // 这时这份结果属于旧服务器，直接丢弃，不能再覆盖当前状态。
+                if (ui.activeServer?.baseUrl != serverAtStart) return@update ui
                 // 网络刷新期间 WebSocket 仍可能推进节点；再次与最新 UI 状态合并，不能倒退绿框和进度。
                 val jobs = fetchedJobs.map { fresh ->
                     val live = ui.jobs.firstOrNull { it.id == fresh.id }
@@ -3697,12 +3756,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun valueJson(kind: ParameterKind, value: String): String = when (kind) {
-        ParameterKind.INTEGER -> value.toLongOrNull()?.toString() ?: "0"
-        ParameterKind.DECIMAL -> value.toDoubleOrNull()?.toString() ?: "0.0"
-        ParameterKind.BOOLEAN -> value.toBooleanStrictOrNull()?.toString() ?: "false"
-        else -> JSONObject.quote(value)
-    }
+    // v0.1.87：空值/非法值不再静默折叠成 0、0.0、false，改为沿用工作流原值
+    // （fallbackJson），详见 FieldValue 的说明。
+    private fun valueJson(kind: ParameterKind, value: String, fallbackJson: String = ""): String =
+        FieldValue.toJson(kind, value, fallbackJson)
 
     private fun mimeType(media: ResultMedia): String = when (media.filename.substringAfterLast('.', "").lowercase()) {
         "jpg", "jpeg" -> "image/jpeg"
@@ -3790,6 +3847,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         /** v0.1.82：恢复期间主动重载的单次超时。给 15 秒——比平台的自动重载周期长，
          *  又不至于吃掉整个 40 秒恢复窗口，失败还能再试一轮。 */
         const val RELOAD_TIMEOUT_MS = 15_000L
+        /** v0.1.87：任务列表刷新的最小间隔。`status` 是心跳级消息，队列每动一下就来
+         *  一条，而一次刷新要拉全量 `/history`——合并掉中间那些，避免持续占满网络。 */
+        const val TASKS_REFRESH_MIN_INTERVAL_MS = 3_000L
         /** v0.1.83：批量对比单张轮询间隔与超时。20 分钟上限给云端平台排队留足余量。 */
         const val BATCH_POLL_INTERVAL_MS = 3_000L
         const val BATCH_ITEM_TIMEOUT_MS = 20 * 60_000L

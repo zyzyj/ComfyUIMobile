@@ -7,9 +7,13 @@ object RecentWorkflows {
 
     fun add(current: List<String>, path: String, replacedPath: String? = null): List<String> {
         if (path.isBlank()) return current.filter(String::isNotBlank).distinct().take(MAX_SIZE)
+        // v0.1.87：先去重、再剔除 replacedPath。以前两步写在同一个 filter 里，
+        // `path == replacedPath` 时刚 prepend 进去的新路径会被自己那条条件一起过滤掉
+        // ——用户重命名/覆盖了某个工作流，它反而从"最近浏览"里彻底消失。
         return (listOf(path) + current)
-            .filter { it.isNotBlank() && it != replacedPath }
+            .filter { it.isNotBlank() }
             .distinct()
+            .filter { it == path || it != replacedPath }
             .take(MAX_SIZE)
     }
 

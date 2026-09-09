@@ -43,4 +43,22 @@ class FieldValidatorTest {
         label = name, widgetType = "widget", kind = kind, valueJson = "null", displayValue = value,
         options = options, linked = linked,
     )
+
+    @Test fun skipsEmptyComboInsteadOfLockingGeneration() {
+        // v0.1.87：COMBO 以前是唯一不跳空值的分支。节点值本来就是 null 时
+        // ComfyBridge 会把 displayValue 显示成空串，"XX 的选项已经失效"常驻，
+        // 而生成按钮只认 localProblems.isEmpty()，整条生成路径被锁死且用户没法自救。
+        assertTrue(
+            FieldValidator.problems(listOf(field("sampler", ParameterKind.COMBO, "", listOf("euler")))).isEmpty(),
+        )
+        // 非空但不在选项里，仍然要报（这是真的失效了，得提示用户）。
+        assertEquals(
+            1,
+            FieldValidator.problems(listOf(field("sampler", ParameterKind.COMBO, "gone", listOf("euler")))).size,
+        )
+        // 没有 options 的 combo（拿不到枚举）不报错。
+        assertTrue(
+            FieldValidator.problems(listOf(field("sampler", ParameterKind.COMBO, ""))).isEmpty(),
+        )
+    }
 }

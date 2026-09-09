@@ -20,7 +20,11 @@ object WorkflowContentCache {
     fun put(serverUrl: String, path: String, json: String) {
         if (path.isBlank() || json.isBlank()) return
         val key = key(serverUrl, path)
-        if (!entries.containsKey(key)) order.addLast(key)
+        // v0.1.87：覆盖写入也算"用过一次"，要挪到队尾。以前只更新值不动位置，
+        // 于是反复更新的那个 key 一直赖在队首，容量满时第一个被淘汰的恰恰是
+        // 刚刚才写过的最新内容。
+        order.remove(key)
+        order.addLast(key)
         entries[key] = json
         trim()
     }

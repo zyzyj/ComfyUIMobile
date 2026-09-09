@@ -2,6 +2,7 @@ package com.local.comfyuimobile.data
 
 import com.local.comfyuimobile.model.WorkflowEntry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WorkflowBrowserTest {
@@ -32,5 +33,17 @@ class WorkflowBrowserTest {
         assertEquals(listOf("workflows/KREA2/nested/deep.json"), WorkflowBrowser.entries(entries, WorkflowBrowser.ROOT, "deep").map { it.path })
         assertEquals("workflows/KREA2", WorkflowBrowser.up("workflows/KREA2/nested"))
         assertEquals(WorkflowBrowser.ROOT, WorkflowBrowser.up("workflows/KREA2"))
+    }
+
+    @Test fun pathWithoutSlashBelongsToRoot() {
+        // v0.1.87：以前返回空串，跟任何 folder 都比不上，这类工作流在浏览模式里不可见。
+        assertEquals(WorkflowBrowser.ROOT, WorkflowBrowser.parent("loose.json"))
+        assertEquals(WorkflowBrowser.ROOT, WorkflowBrowser.parent("workflows"))
+        assertEquals("workflows", WorkflowBrowser.parent("workflows/root.json"))
+        // 于是顶层散装工作流也能在根目录里列出来
+        val withLoose = entries + WorkflowEntry("loose.json", "loose.json", false)
+        assertTrue(
+            WorkflowBrowser.entries(withLoose, WorkflowBrowser.ROOT, "").any { it.path == "loose.json" },
+        )
     }
 }

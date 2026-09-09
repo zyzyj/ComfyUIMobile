@@ -67,8 +67,11 @@ object AppLogger {
     fun read(): String = synchronized(lock) {
         val app = context ?: return@synchronized "日志器尚未初始化"
         val folder = File(app.filesDir, "logs")
-        val previous = File(folder, "comfy-mobile.previous.log").takeIf(File::isFile)?.readText().orEmpty()
-        val current = File(folder, "comfy-mobile.log").takeIf(File::isFile)?.readText().orEmpty()
+        // v0.1.87：显式 UTF-8。写侧一直用 Charsets.UTF_8，这里却走平台默认字符集，
+        // 是全代码库唯一漏掉的一处（WorkflowDraftStore / WorkflowSnapshotStore /
+        // LocalResultCache 都显式传了）。中文日志一旦被按别的字符集解码就成了乱码。
+        val previous = File(folder, "comfy-mobile.previous.log").takeIf(File::isFile)?.readText(Charsets.UTF_8).orEmpty()
+        val current = File(folder, "comfy-mobile.log").takeIf(File::isFile)?.readText(Charsets.UTF_8).orEmpty()
         listOf(previous, current)
             .filter(String::isNotBlank)
             .joinToString("\n")

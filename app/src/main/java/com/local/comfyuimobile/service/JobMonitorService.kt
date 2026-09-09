@@ -18,6 +18,7 @@ import com.local.comfyuimobile.data.LocalResultCache
 import com.local.comfyuimobile.network.ComfyClient
 import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.network.ResultParser
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -41,7 +42,14 @@ class JobMonitorService : Service() {
     // 太短会让后台轮询在服务器可达的情况下持续假失败。
     private val client = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     // 反向代理认证 Cookie（AI Studio 等需要登录态），由 handleStartCommand 从 intent 设置。
-    @Volatile private var authCookie: String = ""
+    //
+    // v0.1.87：以前这里是一个全局单字段 `authCookie`，每个新 intent 都会覆盖它，而
+    // readStatus / saveLocalOutputs 读的又是这个全局值。于是"先提交云端任务（带 Cookie）、
+    // 再提交本机任务（无 Cookie）"时，后者的空 Cookie 会把前者的登录态冲掉——轮询从此
+    // 不带 Cookie，平台稳定返回 403/404，按永久失败每次 +2，10 秒内被误判成"任务已超时"
+    // 停止监控，而服务器上的任务其实跑得好好的。
+    // 现在一律按 promptId 从 authCookies 取，每个任务只用自己的那一份。
+    private fun cookieFor(promptId: String): String = authCookies[promptId].orEmpty()
     private val monitors = ConcurrentHashMap<String, Job>()
     private val workflowNames = ConcurrentHashMap<String, String>()
     private val workflowPaths = ConcurrentHashMap<String, String>()
@@ -95,7 +103,6 @@ class JobMonitorService : Service() {
             authCookies[promptId].orEmpty()
         }
         if (cookie.isNotBlank()) authCookies[promptId] = cookie
-        authCookie = cookie
         return try {
             // startForegroundService() 启动后必须立刻建立前台通知。日志、锁和任务恢复均放在其后，
             // 避免系统在进程繁忙或锁获取变慢时抛出 ForegroundServiceDidNotStartInTimeException。
@@ -179,7 +186,6 @@ class JobMonitorService : Service() {
         workflowNames[promptId] = workflowName
         workflowPaths[promptId] = workflowPath
         serverUrls[promptId] = baseUrl
-        authCookies[promptId] = authCookie
         AppLogger.info("后台开始监控任务：$promptId，工作流=$workflowName")
         startForeground(
             FOREGROUND_ID,
@@ -203,7 +209,7 @@ class JobMonitorService : Service() {
                         if (status.error) {
                             getSystemService(NotificationManager::class.java)
                                 .notify(
-                                    promptId.hashCode(),
+                                    notificationId(promptId),
                                     completionNotification(
                                         "生成失败",
                                         workflowName,
@@ -213,7 +219,9 @@ class JobMonitorService : Service() {
                                     ),
                                 )
                         } else {
-                            val localSaveRequested = runCatching { hasLocalSaveRequested(baseUrl) }.getOrDefault(false)
+                            val localSaveRequested = runCatching { hasLocalSaveRequested(baseUrl) }
+                                // v0.1.87：取消不是失败，原样抛出，交给协程自己收尾。
+                                .getOrElse { if (it is CancellationException) throw it else false }
                             startForeground(
                                 FOREGROUND_ID,
                                 notification(
@@ -233,12 +241,18 @@ class JobMonitorService : Service() {
                             )
                             for (attempt in 0 until 12) {
                                 report = runCatching { saveLocalOutputs(baseUrl, promptId) }
-                                    .getOrElse {
+                                    .getOrElse { error ->
+                                        // v0.1.87：以前 CancellationException 在这里被当成一次
+                                        // 普通的保存失败。用户取消任务（或服务销毁）时，下面整段
+                                        // 收尾（完成通知、广播、monitors.remove）会全部跳过——
+                                        // 通知不弹、界面永远停在"生成中"，monitor 残留还让
+                                        // stopIfIdle 以为还有活，前台服务一直挂着。
+                                        if (error is CancellationException) throw error
                                         SaveReport(
                                             total = 0,
                                             failed = 1,
                                             localSaveRequested = localSaveRequested,
-                                            detail = it.message.orEmpty(),
+                                            detail = error.message.orEmpty(),
                                         )
                                     }
                                 if (report.failed == 0) break
@@ -267,7 +281,7 @@ class JobMonitorService : Service() {
                             val detail = if (report.failed == 0) workflowName else listOf(workflowName, report.detail.ifBlank { "${report.failed} 项保存失败" }).joinToString(" · ")
                             getSystemService(NotificationManager::class.java)
                                 .notify(
-                                    promptId.hashCode(),
+                                    notificationId(promptId),
                                     completionNotification(title, detail, promptId, baseUrl, workflowPath),
                                 )
                             sendBroadcast(
@@ -291,6 +305,9 @@ class JobMonitorService : Service() {
                         return@launch
                     }
                 }.onFailure { error ->
+                    // v0.1.87：取消不是失败。以前这里会把 CancellationException 记成一次
+                    // 轮询失败，失败计数被顶上去后可能直接弹出"任务已超时"。
+                    if (error is CancellationException) throw error
                     // v0.1.71：区分"抖动"和"这条路根本走不通"。反向代理拿不到 Cookie 时
                     // /history 会稳定返回 403/404，重试一万次也不会变好，直接按 2 次计，
                     // 10 秒内放弃并发通知；5xx 与网络异常仍按 1 次计，多给几次机会。
@@ -312,7 +329,7 @@ class JobMonitorService : Service() {
                         authCookies.remove(promptId)
                         getSystemService(NotificationManager::class.java)
                             .notify(
-                                promptId.hashCode(),
+                                notificationId(promptId),
                                 completionNotification(
                                     "任务已超时",
                                     // 用实际失败次数而不是上限：永久性失败按 2 次计，
@@ -344,7 +361,9 @@ class JobMonitorService : Service() {
     private fun readStatus(baseUrl: String, promptId: String): PollStatus {
         val encoded = URLEncoder.encode(promptId, Charsets.UTF_8.name())
         val builder = Request.Builder().url("$baseUrl/history/$encoded").get()
-        if (authCookie.isNotBlank()) builder.header("Cookie", authCookie)
+        // v0.1.87：用本任务自己的 Cookie，不再读全局字段（见 cookieFor 的说明）。
+        val cookie = cookieFor(promptId)
+        if (cookie.isNotBlank()) builder.header("Cookie", cookie)
         val request = builder.build()
         client.newCall(request).execute().use { response ->
             // v0.1.71：以前这里遇到非 2xx 直接返回"未完成"，等于把失败吞掉，
@@ -377,7 +396,7 @@ class JobMonitorService : Service() {
     private suspend fun saveLocalOutputs(baseUrl: String, promptId: String): SaveReport {
         val resultClient = ComfyClient()
         resultClient.setServer(baseUrl)
-        resultClient.setAuthCookie(authCookie)
+        resultClient.setAuthCookie(cookieFor(promptId))
         val history = resultClient.history(promptId)
         check(history.optJSONObject(promptId) != null) { "任务结果尚未写入历史" }
         val settings = preferences.settings.first()
@@ -604,5 +623,18 @@ class JobMonitorService : Service() {
         const val EXTRA_SERVER_NAME = "server_name"
         const val EXTRA_OPEN_COMPLETED = "open_completed"
         private const val FOREGROUND_ID = 8188
+    }
+
+    /**
+     * 完成通知的 ID。
+     *
+     * v0.1.87：直接用 `promptId.hashCode()` 有个具体的坑——万一某个 promptId 的哈希
+     * 正好是 8188，完成通知会落到前台通知的 ID 上，把"正在生成"那条占位通知顶掉，
+     * 前台服务随即失去通知，在 Android 12+ 上会被系统判定为违规并停掉。
+     * 撞上就让开一位。两个 promptId 之间哈希冲突的概率可以忽略。
+     */
+    private fun notificationId(promptId: String): Int {
+        val hash = promptId.hashCode()
+        return if (hash == FOREGROUND_ID) hash + 1 else hash
     }
 }
