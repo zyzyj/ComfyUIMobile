@@ -41,6 +41,18 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
+/**
+ * v0.1.87：`awaitReady` 等不到前端就绪时抛出。
+ *
+ * 以前抛的是裸 `IllegalStateException`，而调用方只捕获页面切换与脚本无响应两类异常，
+ * 于是它直接逃出 `repeat(3)` 重试——注释里承诺的"最坏 60 秒、失败还能再试一轮"
+ * 根本没兑现，20 秒一到就彻底失败。偏偏 AI Studio 这类平台每 11~12 秒自动重载一次，
+ * 加载窗口正好横跨一轮重载是常态，而等满 20 秒时页面往往已经重载完了、重试就能成。
+ *
+ * 单独建一个类型，调用方才能只重试"超时"这一种，不误伤其他真正的 IllegalStateException。
+ */
+class BridgeTimeoutException(message: String) : IllegalStateException(message)
+
 class ComfyBridge(private val activity: Activity) {
     data class LinkRepairReport(
         val paintedBeforeRefresh: Int,
@@ -334,7 +346,7 @@ class ComfyBridge(private val activity: Activity) {
             lastError = json?.optString("error").takeUnless { it.isNullOrBlank() } ?: lastError
             delay(200)
         }
-        throw IllegalStateException("前端桥接超时：$lastError")
+        throw BridgeTimeoutException("前端桥接超时：$lastError")
     }
 
     suspend fun refreshVisibleViewport() = withContext(Dispatchers.Main.immediate) {
@@ -389,6 +401,15 @@ class ComfyBridge(private val activity: Activity) {
                 lastError = error
                 AppLogger.info("工作流加载时 ComfyUI 页面发生切换，正在重试 ${attempt + 1}/3")
                 delay(500)
+                null
+            } catch (error: BridgeTimeoutException) {
+                // v0.1.87：超时以前不在捕获范围内，直接逃出整个 repeat(3)。
+                // 现在和另外两类一样重试——等满 20 秒时页面往往已经重载完了。
+                lastError = error
+                if (attempt < 2) {
+                    AppLogger.info("等待 ComfyUI 前端就绪超时，正在重试 ${attempt + 1}/3")
+                    delay(500)
+                }
                 null
             } catch (error: JavascriptContextUnavailableException) {
                 lastError = error
