@@ -1354,7 +1354,7 @@ private fun ParameterEditor(
                 // v0.1.88：AI 提示词助手入口。放在"历史"左边，两者都是"往这个框里
                 // 塞内容"的动作，摆一起最符合直觉。
                 IconButton(onClick = onAiAssist, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Default.AutoAwesome, "AI 写提示词", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
+                    Icon(Icons.Default.Star, "AI 写提示词", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
                 }
                 IconButton(onClick = onHistory, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Default.History, "历史", modifier = Modifier.size(20.dp))
@@ -2386,7 +2386,7 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
                     modifier = Modifier.weight(1f),
                 )
                 TextButton(onClick = { viewModel.openAiAssist(field.key, AiAssistScope.QUICK) }) {
-                    Icon(Icons.Default.AutoAwesome, null, Modifier.size(18.dp))
+                    Icon(Icons.Default.Star, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("AI 写")
                 }
@@ -3053,7 +3053,7 @@ private fun AiAssistDialog(state: AppUiState, viewModel: MainViewModel) {
         onDismissRequest = { if (!state.aiAssistBusy) viewModel.dismissAiAssist() },
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.AutoAwesome, null, tint = MaterialTheme.colorScheme.primary)
+                Icon(Icons.Default.Star, null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(8.dp))
                 Text("AI 写提示词")
             }
