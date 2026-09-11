@@ -8,6 +8,8 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.local.comfyuimobile.model.ServerProfile
 import com.local.comfyuimobile.model.CacheOutputRule
+import com.local.comfyuimobile.model.LlmConfig
+import com.local.comfyuimobile.model.LlmPreset
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import org.json.JSONArray
@@ -29,6 +31,8 @@ data class StoredSettings(
     val favoriteResultKeys: Set<String> = emptySet(),
     val saveFolderUri: String = "",
     val quickEnabledParamsByWorkflow: Map<String, List<String>> = emptyMap(),
+    // v0.1.88：AI 提示词助手所用的外部大模型配置。
+    val llmConfig: LlmConfig = LlmConfig(),
 )
 
 class AppPreferences(private val context: Context) {
@@ -47,6 +51,7 @@ class AppPreferences(private val context: Context) {
         val favoriteResultKeys = stringPreferencesKey("favorite_result_keys")
         val saveFolderUri = stringPreferencesKey("save_folder_uri")
         val quickEnabledParams = stringPreferencesKey("quick_enabled_params")
+        val llmConfig = stringPreferencesKey("llm_config")
     }
 
     val settings: Flow<StoredSettings> = context.dataStore.data.map { preferences ->
@@ -66,6 +71,7 @@ class AppPreferences(private val context: Context) {
             favoriteResultKeys = decodeStrings(preferences[Keys.favoriteResultKeys].orEmpty()).toSet(),
             saveFolderUri = preferences[Keys.saveFolderUri].orEmpty(),
             quickEnabledParamsByWorkflow = decodeQuickParams(preferences[Keys.quickEnabledParams].orEmpty()),
+            llmConfig = decodeLlmConfig(preferences[Keys.llmConfig].orEmpty()),
         )
     }
 
@@ -168,6 +174,30 @@ class AppPreferences(private val context: Context) {
             preferences[Keys.quickEnabledParams] = encodeQuickParams(updated)
         }
     }
+
+    suspend fun saveLlmConfig(config: LlmConfig) {
+        context.dataStore.edit { preferences ->
+            preferences[Keys.llmConfig] = JSONObject()
+                .put("baseUrl", config.baseUrl.trim())
+                .put("apiKey", config.apiKey.trim())
+                .put("model", config.model.trim())
+                .put("preset", config.preset.id)
+                .put("temperature", config.temperature.toDouble())
+                .toString()
+        }
+    }
+
+    private fun decodeLlmConfig(raw: String): LlmConfig = runCatching {
+        if (raw.isBlank()) return@runCatching LlmConfig()
+        val item = JSONObject(raw)
+        LlmConfig(
+            baseUrl = item.optString("baseUrl"),
+            apiKey = item.optString("apiKey"),
+            model = item.optString("model"),
+            preset = LlmPreset.fromId(item.optString("preset")),
+            temperature = LlmConfig.normalizeTemperature(item.optDouble("temperature", LlmConfig.DEFAULT_TEMPERATURE.toDouble()).toFloat()),
+        )
+    }.getOrDefault(LlmConfig())
 
     private fun decodeQuickParams(raw: String): Map<String, List<String>> = runCatching {
         val array = JSONArray(raw.ifBlank { "[]" })
