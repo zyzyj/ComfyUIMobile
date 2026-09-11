@@ -269,4 +269,10 @@ data class AppUiState(
     val updateDownloading: Boolean = false,
     val updateDownloadProgress: Float? = null,
     val updateDownloadSource: String? = null,
+    // ===== v0.1.88 AI 提示词助手 =====
+    val llmConfig: LlmConfig = LlmConfig(),
+    /** 非 null 即表示 AI 助手对话框应该打开，并指向这个字段。 */
+    val aiAssistTarget: AiAssistTarget? = null,
+    val aiAssistBusy: Boolean = false,
+    val aiAssistError: String? = null,
 )

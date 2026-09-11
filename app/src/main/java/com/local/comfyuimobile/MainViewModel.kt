@@ -36,6 +36,9 @@ import com.local.comfyuimobile.data.WorkflowSnapshotStore
 import com.local.comfyuimobile.model.AppUiState
 import com.local.comfyuimobile.model.AppDestination
 import com.local.comfyuimobile.model.AppNavigationRequest
+import com.local.comfyuimobile.model.AiAssistMode
+import com.local.comfyuimobile.model.AiAssistScope
+import com.local.comfyuimobile.model.AiAssistTarget
 import com.local.comfyuimobile.model.BatchCompareLogic
 import com.local.comfyuimobile.model.BatchItemResult
 import com.local.comfyuimobile.model.BatchPhase
@@ -44,6 +47,7 @@ import com.local.comfyuimobile.model.CacheOutputRule
 import com.local.comfyuimobile.model.ConnectionStatus
 import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.JobSummary
+import com.local.comfyuimobile.model.LlmConfig
 import com.local.comfyuimobile.model.MediaKind
 import com.local.comfyuimobile.model.ParameterField
 import com.local.comfyuimobile.model.ParameterKind
@@ -60,6 +64,8 @@ import com.local.comfyuimobile.network.ComfyClient
 import com.local.comfyuimobile.network.ExecutionNodeResolver
 import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.network.LanScanner
+import com.local.comfyuimobile.network.LlmPrompts
+import com.local.comfyuimobile.network.LlmRepository
 import com.local.comfyuimobile.network.ResultParser
 import com.local.comfyuimobile.network.PromptSubmissionException
 import com.local.comfyuimobile.network.PlatformResponseException
@@ -167,6 +173,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private var cookieSeededAddress: String? = null
     private var cookiePersistJob: Job? = null
+    // ===== v0.1.88 AI 提示词助手 =====
+    /**
+     * 外部大模型客户端。
+     *
+     * 它内部用的是**独立**的 OkHttpClient —— 绝不能顺手传 ComfyClient 那个：
+     * ComfyClient 上挂着无差别附加反代登录 Cookie 的拦截器，用它请求第三方
+     * 端点等于把 AI Studio 的登录态发给别人。
+     */
+    private val llm = LlmRepository()
+    private var aiAssistJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -212,6 +228,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         recentWorkflowPaths = stored.recentWorkflows,
                         saveFolderUri = stored.saveFolderUri.ifBlank { null },
                         serverInput = resolvedServerInput,
+                        llmConfig = stored.llmConfig,
                     )
                 }
                 if (submittedJobsChanged && _state.value.activeServer != null) {
@@ -1265,6 +1282,140 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             job.invokeOnCompletion { if (generationJob === job) generationJob = null }
         }
     }
+
+    // ===== v0.1.88 AI 提示词助手 =====
+
+    /** 设置页：保存大模型配置（地址 / Key / 模型名 / 风格预设）。 */
+    fun saveLlmConfig(config: LlmConfig) {
+        _state.update { it.copy(llmConfig = config, aiAssistError = null) }
+        viewModelScope.launch {
+            runCatching { preferences.saveLlmConfig(config) }
+                .onFailure { AppLogger.error("保存大模型配置失败", it) }
+        }
+    }
+
+    /** 设置页：用一句话探活，免得填完配置到生图时才发现是错的。 */
+    fun testLlmConnection() {
+        if (aiAssistJob?.isActive == true) return
+        val config = _state.value.llmConfig
+        if (!config.isConfigured()) {
+            _state.update { it.copy(aiAssistError = "先填接口地址和模型名再测试") }
+            return
+        }
+        _state.update { it.copy(aiAssistBusy = true, aiAssistError = null) }
+        aiAssistJob = viewModelScope.launch {
+            val reply = runCatching {
+                llm.chat(config, "You answer with one very short sentence.", "Reply with exactly: OK")
+            }.getOrElse { error ->
+                // v0.1.87 的老坑：CancellationException 不能被当普通失败吞掉，
+                // 否则用户关掉界面之后协程永远退不干净。
+                if (error is CancellationException) throw error
+                AppLogger.error("大模型连通性测试失败", error)
+                _state.update { it.copy(aiAssistBusy = false, aiAssistError = error.message ?: "测试失败") }
+                return@launch
+            }
+            _state.update { it.copy(aiAssistBusy = false, notice = "大模型可用：${reply.trim().take(60)}") }
+        }
+    }
+
+    /** 打开 AI 助手对话框，指向参数页或快捷页的某个多行字段。 */
+    fun openAiAssist(fieldKey: String, scope: AiAssistScope) {
+        val field = fieldForKey(fieldKey, scope) ?: return
+        _state.update {
+            it.copy(
+                aiAssistTarget = AiAssistTarget(
+                    fieldKey = fieldKey,
+                    label = field.label,
+                    isNegative = looksNegative(field),
+                    scope = scope,
+                ),
+                aiAssistBusy = false,
+                aiAssistError = null,
+            )
+        }
+    }
+
+    fun dismissAiAssist() {
+        aiAssistJob?.cancel()
+        aiAssistJob = null
+        _state.update { it.copy(aiAssistTarget = null, aiAssistBusy = false, aiAssistError = null) }
+    }
+
+    /**
+     * 让大模型写提示词，成功即写回目标字段。
+     *
+     * 写回走的是 [updateField] / [quickUpdateField] 这两条既有通道，桥接层一行都不用改：
+     * 参数页的 `displayValue + valueJson` 与草稿保存都在那两个函数里，AI 生成的结果
+     * 和"用户手打进去"走的完全是同一条路，不存在第二种写入语义。
+     */
+    fun runAiAssist(mode: AiAssistMode, idea: String) {
+        val target = _state.value.aiAssistTarget ?: return
+        val config = _state.value.llmConfig
+        if (!config.isConfigured()) {
+            _state.update { it.copy(aiAssistError = "还没配置大模型：设置 → AI 提示词助手") }
+            return
+        }
+        // 「润色」允许不写想法（就按当前提示词优化），另两种必须有输入。
+        if (mode != AiAssistMode.POLISH && idea.isBlank()) {
+            _state.update { it.copy(aiAssistError = "先描述一下你想要什么") }
+            return
+        }
+        if (aiAssistJob?.isActive == true) return
+        val field = fieldForKey(target.fieldKey, target.scope) ?: return
+        val current = field.displayValue
+        _state.update { it.copy(aiAssistBusy = true, aiAssistError = null) }
+        aiAssistJob = viewModelScope.launch {
+            val text = runCatching {
+                llm.chat(
+                    config,
+                    LlmPrompts.systemPrompt(config.preset, target.isNegative),
+                    LlmPrompts.userPrompt(mode, current, idea),
+                )
+            }.getOrElse { error ->
+                if (error is CancellationException) throw error
+                AppLogger.error("AI 生成提示词失败", error)
+                _state.update { it.copy(aiAssistBusy = false, aiAssistError = error.message ?: "生成失败") }
+                return@launch
+            }.trim()
+            if (text.isBlank()) {
+                _state.update { it.copy(aiAssistBusy = false, aiAssistError = "大模型返回了空内容") }
+                return@launch
+            }
+            val merged = when (mode) {
+                // 追加模式保留原文，只把新内容接在后面；顺手修掉重复/多余的逗号。
+                AiAssistMode.APPEND -> listOf(current.trim().trimEnd(','), text.trimStart(','))
+                    .filter { it.isNotBlank() }
+                    .joinToString(", ")
+                else -> text
+            }
+            when (target.scope) {
+                AiAssistScope.QUICK -> quickUpdateField(target.fieldKey, merged)
+                AiAssistScope.PARAM -> updateField(target.fieldKey, merged)
+            }
+            _state.update {
+                it.copy(aiAssistBusy = false, aiAssistTarget = null, notice = "已写入「${target.label}」")
+            }
+        }.also { job ->
+            job.invokeOnCompletion { if (aiAssistJob === job) aiAssistJob = null }
+        }
+    }
+
+    private fun fieldForKey(key: String, scope: AiAssistScope): ParameterField? =
+        when (scope) {
+            AiAssistScope.QUICK -> _state.value.quickFields.firstOrNull { it.key == key }
+            AiAssistScope.PARAM -> _state.value.fields.firstOrNull { it.key == key }
+        }
+
+    /**
+     * 负向提示词字段的启发式判定。
+     *
+     * 判错了不会出事 —— 最坏情况是 AI 按正向的写法写负向，用户自己改掉即可；
+     * 但判对了体验差很多（负向框里塞"masterpiece, best quality"是经典翻车）。
+     */
+    private fun looksNegative(field: ParameterField): Boolean =
+        field.name.contains("negative", ignoreCase = true) ||
+            field.label.contains("负") ||
+            field.nodeTitle.contains("negative", ignoreCase = true)
 
     private suspend fun ensureBridgeReadyForQuick() {
         // 参数页可能在快捷页之后加载了别的工作流，桥接画布因此指向了别的图；

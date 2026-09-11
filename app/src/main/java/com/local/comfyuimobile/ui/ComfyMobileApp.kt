@@ -166,6 +166,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
@@ -190,12 +191,16 @@ import com.local.comfyuimobile.data.WorkflowBrowser
 import com.local.comfyuimobile.data.WorkflowPath
 import com.local.comfyuimobile.model.AppDestination
 import com.local.comfyuimobile.model.AppUiState
+import com.local.comfyuimobile.model.AiAssistMode
+import com.local.comfyuimobile.model.AiAssistScope
 import com.local.comfyuimobile.model.BatchCompareLogic
 import com.local.comfyuimobile.model.BatchPhase
 import com.local.comfyuimobile.model.BatchRun
 import com.local.comfyuimobile.model.ConnectionStatus
 import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.JobSummary
+import com.local.comfyuimobile.model.LlmConfig
+import com.local.comfyuimobile.model.LlmPreset
 import com.local.comfyuimobile.model.MediaKind
 import com.local.comfyuimobile.model.ParameterField
 import com.local.comfyuimobile.model.ParameterKind
@@ -271,6 +276,8 @@ fun ComfyMobileApp(viewModel: MainViewModel, bridge: ComfyBridge) {
         } else {
             ConnectedApp(state, viewModel, snackbar)
         }
+        // v0.1.88：AI 提示词助手挂在最外层，参数页和快捷页都能弹出来。
+        if (state.aiAssistTarget != null) AiAssistDialog(state, viewModel)
         key(bridge.webView) {
             AndroidView(
                 factory = { bridge.webView },
@@ -980,6 +987,7 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
                             onLongPress = if (node.isOutput) ({ cacheNode = node }) else null,
                             viewModel = viewModel,
                             onHistory = { historyField = it },
+                            onAiAssist = { viewModel.openAiAssist(it.key, AiAssistScope.PARAM) },
                             onUpload = { field ->
                                 uploadField = field
                                 if (field.kind == ParameterKind.VIDEO) {
@@ -1139,6 +1147,7 @@ private fun NodeParameterCard(
     onLongPress: (() -> Unit)?,
     viewModel: MainViewModel,
     onHistory: (ParameterField) -> Unit,
+    onAiAssist: (ParameterField) -> Unit,
     onUpload: (ParameterField) -> Unit,
     multilineEditorStates: MutableMap<String, TextFieldValue>,
     onMultilineFocusGained: () -> Unit,
@@ -1227,6 +1236,7 @@ private fun NodeParameterCard(
                                             field,
                                             viewModel,
                                             onHistory = { onHistory(field) },
+                                            onAiAssist = { onAiAssist(field) },
                                             onUpload = { onUpload(field) },
                                             multilineEditorStates = multilineEditorStates,
                                             onMultilineFocusGained = onMultilineFocusGained,
@@ -1323,6 +1333,7 @@ private fun ParameterEditor(
     field: ParameterField,
     viewModel: MainViewModel,
     onHistory: () -> Unit,
+    onAiAssist: () -> Unit,
     onUpload: () -> Unit,
     multilineEditorStates: MutableMap<String, TextFieldValue>,
     onMultilineFocusGained: () -> Unit,
@@ -1339,8 +1350,15 @@ private fun ParameterEditor(
                     Text(field.name, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            if (field.kind == ParameterKind.MULTILINE) IconButton(onClick = onHistory, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Default.History, "历史", modifier = Modifier.size(20.dp))
+            if (field.kind == ParameterKind.MULTILINE) {
+                // v0.1.88：AI 提示词助手入口。放在"历史"左边，两者都是"往这个框里
+                // 塞内容"的动作，摆一起最符合直觉。
+                IconButton(onClick = onAiAssist, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.AutoAwesome, "AI 写提示词", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
+                }
+                IconButton(onClick = onHistory, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.History, "历史", modifier = Modifier.size(20.dp))
+                }
             }
         }
         if (field.linked) Text("已由其他部件连接，当前值只读", color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.labelSmall)
@@ -2359,11 +2377,20 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
         }
 
         textFields.forEach { field ->
-            Text(
-                field.nodeTitle.ifBlank { field.nodeType },
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
+            // v0.1.88：AI 入口。快捷页没有"历史"图标位，所以做成标题行右侧的文字按钮。
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    field.nodeTitle.ifBlank { field.nodeType },
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { viewModel.openAiAssist(field.key, AiAssistScope.QUICK) }) {
+                    Icon(Icons.Default.AutoAwesome, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("AI 写")
+                }
+            }
             OutlinedTextField(
                 value = field.displayValue,
                 onValueChange = { viewModel.quickUpdateField(field.key, it) },
@@ -2896,12 +2923,224 @@ private fun JobCard(job: JobSummary, viewModel: MainViewModel, tracked: Boolean)
     }
 }
 
+/**
+ * v0.1.88：设置页里的 AI 大模型配置区。
+ *
+ * 只认一种协议 —— OpenAI 兼容的 `/v1/chat/completions`。理由是这个形态事实上已经
+ * 是行业标准：OpenAI、DeepSeek、智谱、硅基流动、各种中转站、本地 ollama/llama.cpp
+ * 全都吃它，填三个字段就能用，不必为每家写一套请求代码。
+ */
+@Composable
+private fun LlmSettingsSection(
+    state: AppUiState,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onSave: (LlmConfig) -> Unit,
+    onTest: () -> Unit,
+) {
+    val config = state.llmConfig
+    var baseUrl by remember(config) { mutableStateOf(config.baseUrl) }
+    var apiKey by remember(config) { mutableStateOf(config.apiKey) }
+    var model by remember(config) { mutableStateOf(config.model) }
+    var preset by remember(config) { mutableStateOf(config.preset) }
+    var temperature by remember(config) { mutableStateOf(config.temperature) }
+    val dirty = baseUrl != config.baseUrl || apiKey != config.apiKey ||
+        model != config.model || preset != config.preset || temperature != config.temperature
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("AI 提示词助手", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (config.isConfigured()) "已配置 · ${config.model}"
+                    else "未配置 —— 配好后参数页与快捷页会出现 AI 按钮",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onToggle) { Text(if (expanded) "收起" else "配置") }
+        }
+        if (expanded) {
+            Text(
+                "填任意 OpenAI 兼容端点即可（OpenAI / DeepSeek / 智谱 / 硅基流动 / 中转站 / 本地 ollama 都行）。" +
+                    "地址只用于请求大模型，不会带上 ComfyUI 的登录 Cookie。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                baseUrl, { baseUrl = it },
+                Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("接口地址") },
+                placeholder = { Text("https://api.openai.com/v1") },
+            )
+            OutlinedTextField(
+                apiKey, { apiKey = it },
+                Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                label = { Text("API Key（本地服务可留空）") },
+            )
+            OutlinedTextField(
+                model, { model = it },
+                Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("模型名") },
+                placeholder = { Text("gpt-4o-mini") },
+            )
+            Text("提示词风格", style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                LlmPreset.entries.forEach { item ->
+                    if (preset == item) {
+                        Button(onClick = { preset = item }, modifier = Modifier.weight(1f)) { Text(item.label) }
+                    } else {
+                        OutlinedButton(onClick = { preset = item }, modifier = Modifier.weight(1f)) { Text(item.label) }
+                    }
+                }
+            }
+            Text(preset.hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("发散程度", style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(0.5f to "保守", 0.9f to "标准", 1.3f to "放飞").forEach { (value, label) ->
+                    if (temperature == value) {
+                        Button(onClick = { temperature = value }, modifier = Modifier.weight(1f)) { Text(label) }
+                    } else {
+                        OutlinedButton(onClick = { temperature = value }, modifier = Modifier.weight(1f)) { Text(label) }
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { onSave(LlmConfig(baseUrl.trim(), apiKey, model.trim(), preset, temperature)) },
+                    modifier = Modifier.weight(1f),
+                    enabled = dirty,
+                ) { Text(if (dirty) "保存" else "已保存") }
+                OutlinedButton(
+                    onClick = onTest,
+                    modifier = Modifier.weight(1f),
+                    enabled = !state.aiAssistBusy && config.isConfigured(),
+                ) { Text(if (state.aiAssistBusy) "测试中" else "测试连接") }
+            }
+            state.aiAssistError?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+/**
+ * v0.1.88：AI 提示词助手。
+ *
+ * 三种动作刻意做成"覆盖 / 优化 / 追加"而不是只有一个"生成"：
+ * 提示词这种东西用户往往已经攒了一堆得意标签，一键覆盖掉是最招骂的设计，
+ * 所以必须有"只追加不动原文"这条路。
+ */
+@Composable
+private fun AiAssistDialog(state: AppUiState, viewModel: MainViewModel) {
+    val target = state.aiAssistTarget ?: return
+    var mode by remember(target.fieldKey) { mutableStateOf(AiAssistMode.GENERATE) }
+    var idea by remember(target.fieldKey) { mutableStateOf("") }
+    val current = remember(target, state.fields, state.quickFields) {
+        when (target.scope) {
+            AiAssistScope.QUICK -> state.quickFields.firstOrNull { it.key == target.fieldKey }?.displayValue
+            AiAssistScope.PARAM -> state.fields.firstOrNull { it.key == target.fieldKey }?.displayValue
+        }.orEmpty()
+    }
+    val configured = state.llmConfig.isConfigured()
+    val canSubmit = configured && !state.aiAssistBusy && (mode == AiAssistMode.POLISH || idea.isNotBlank())
+
+    AlertDialog(
+        onDismissRequest = { if (!state.aiAssistBusy) viewModel.dismissAiAssist() },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.AutoAwesome, null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(8.dp))
+                Text("AI 写提示词")
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "写入「${target.label}」" + if (target.isNegative) "（识别为负向提示词）" else "",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                if (!configured) {
+                    Text(
+                        "还没配置大模型：设置 → AI 提示词助手，填接口地址和模型名。",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    AiAssistMode.entries.forEach { item ->
+                        val selected = mode == item
+                        if (selected) {
+                            Button(onClick = { mode = item }, modifier = Modifier.weight(1f), enabled = !state.aiAssistBusy) {
+                                Text(item.label)
+                            }
+                        } else {
+                            OutlinedButton(onClick = { mode = item }, modifier = Modifier.weight(1f), enabled = !state.aiAssistBusy) {
+                                Text(item.label)
+                            }
+                        }
+                    }
+                }
+                Text(mode.hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(
+                    value = idea,
+                    onValueChange = { idea = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                    maxLines = 6,
+                    enabled = !state.aiAssistBusy,
+                    label = {
+                        Text(
+                            when (mode) {
+                                AiAssistMode.GENERATE -> "描述你想画的画面"
+                                AiAssistMode.POLISH -> "补充要求（可不填）"
+                                AiAssistMode.APPEND -> "想追加什么"
+                            },
+                        )
+                    },
+                )
+                if (current.isNotBlank()) {
+                    Text(
+                        "当前内容 ${current.length} 字：${current.take(70)}${if (current.length > 70) "…" else ""}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (state.aiAssistBusy) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text("大模型正在写…", style = MaterialTheme.typography.bodySmall)
+                }
+                state.aiAssistError?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { viewModel.runAiAssist(mode, idea) },
+                enabled = canSubmit,
+            ) { Text(if (state.aiAssistBusy) "生成中" else mode.label) }
+        },
+        dismissButton = {
+            TextButton(onClick = { viewModel.dismissAiAssist() }, enabled = !state.aiAssistBusy) { Text("关闭") }
+        },
+    )
+}
+
 @Composable
 private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismiss: () -> Unit) {
     val context = LocalContext.current
     var confirmDeleteLocal by remember { mutableStateOf(false) }
     var confirmClearDrafts by remember { mutableStateOf(false) }
     var showDiagnosticLog by remember { mutableStateOf(false) }
+    // v0.1.88：AI 提示词助手配置区默认收起 —— 设置页已经很长了，
+    // 不玩 AI 的人不该被三个输入框往下顶。
+    var llmExpanded by remember { mutableStateOf(false) }
     var diagnosticLog by remember { mutableStateOf("") }
     var pendingLogExport by remember { mutableStateOf("") }
     val logExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
@@ -2970,6 +3209,14 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                 OutlinedButton(onClick = viewModel::disconnect, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Default.CloudOff, null); Spacer(Modifier.width(6.dp)); Text("切换服务器")
                 }
+                HorizontalDivider()
+                LlmSettingsSection(
+                    state = state,
+                    expanded = llmExpanded,
+                    onToggle = { llmExpanded = !llmExpanded },
+                    onSave = viewModel::saveLlmConfig,
+                    onTest = viewModel::testLlmConnection,
+                )
                 HorizontalDivider()
                 Text("图片保存位置", style = MaterialTheme.typography.titleSmall)
                 Text(
