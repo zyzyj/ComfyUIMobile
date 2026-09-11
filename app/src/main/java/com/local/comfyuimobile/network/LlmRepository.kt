@@ -4,7 +4,6 @@ import com.local.comfyuimobile.model.LlmConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.resume
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -69,7 +68,9 @@ class LlmRepository {
             }
 
             override fun onResponse(call: Call, response: Response) {
-                if (cont.isActive) cont.resume(response)
+                // 用 Continuation 接口的 resumeWith，而不是 kotlinx 的 resume 扩展 ——
+                // 后者在 1.9 里多了个没有默认值的 onCancellation 参数，还得额外 import。
+                if (cont.isActive) cont.resumeWith(Result.success(response))
             }
         })
     }
