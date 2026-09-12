@@ -275,4 +275,12 @@ data class AppUiState(
     val aiAssistTarget: AiAssistTarget? = null,
     val aiAssistBusy: Boolean = false,
     val aiAssistError: String? = null,
+    // ===== v0.1.89 节点缺失预检 =====
+    /**
+     * 当前工作流用到、但服务器上没注册的节点类型。
+     *
+     * 由 /object_info 的清单比对得出（见 NodeAvailability）。不阻断生成，只提示 ——
+     * 有些节点存在于运行时却不在 object_info 里，一刀切禁掉会误伤。
+     */
+    val missingNodes: List<String> = emptyList(),
 )
