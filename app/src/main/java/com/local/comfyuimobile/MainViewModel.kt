@@ -65,6 +65,7 @@ import com.local.comfyuimobile.network.ExecutionNodeResolver
 import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.network.LanScanner
 import com.local.comfyuimobile.network.LlmPrompts
+import com.local.comfyuimobile.network.NodeAvailability
 import com.local.comfyuimobile.network.LlmRepository
 import com.local.comfyuimobile.network.ResultParser
 import com.local.comfyuimobile.network.PromptSubmissionException
@@ -183,6 +184,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private val llm = LlmRepository()
     private var aiAssistJob: Job? = null
+    // v0.1.89：服务器已注册的节点类型集合，来自 /object_info，用于缺失预检。
+    @Volatile private var knownNodeTypes: Set<String>? = null
 
     init {
         viewModelScope.launch {
@@ -579,13 +582,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      *
      * v0.1.85：以前这一步卡在连接流程里，云端反代上要 15~30 秒。它唯一的实际作用
      * 是"确认对面真是 ComfyUI"，而 probe 已经验过了，所以降级成后台的软校验。
+     *
+     * v0.1.89：顺便把节点类型集合留下来给 [NodeAvailability] 做缺失预检 —— 以前
+     * 拉回来几 MB 的数据只判了个 length()，白白扔掉。
      */
     private fun verifyObjectInfoInBackground() {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { client.objectInfo() }
                 .onSuccess { info ->
-                    if (info.length() <= 0) {
+                    val catalog = NodeAvailability.parseCatalog(info.toString())
+                    if (catalog == null) {
                         AppLogger.warn("服务器返回的节点定义为空（不影响已建立的连接）")
+                    } else {
+                        knownNodeTypes = catalog
+                        AppLogger.info("节点定义已缓存：${catalog.size} 种类型，可用于缺失预检")
+                        // 连接时可能已经加载过工作流了，拿新到的清单补检一次。
+                        viewModelScope.launch { recheckNodeAvailability() }
                     }
                 }
                 .onFailure { error ->
@@ -594,6 +606,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
         }
+    }
+
+    /**
+     * v0.1.89：重新比对当前工作流与已知节点清单。
+     *
+     * 正常路径是"先拉到 object_info，再加载工作流"，但云端平台 object_info 慢到
+     * 几十秒，用户往往等不及就先点了工作流 —— 所以两处都要触发，谁后到算谁的。
+     */
+    private suspend fun recheckNodeAvailability() {
+        val catalog = knownNodeTypes ?: return
+        val document = _state.value.selectedWorkflow ?: return
+        val missing = NodeAvailability.findMissing(document.nodes.map { it.type }, catalog)
+        _state.update { it.copy(missingNodes = missing) }
+    }
+
+    /** 加载完工作流后调一次；清单还没到就静默跳过，等它到了会补检。 */
+    private fun checkNodeAvailability(nodes: List<WorkflowNode>) {
+        val catalog = knownNodeTypes ?: return
+        val missing = NodeAvailability.findMissing(nodes.map { it.type }, catalog)
+        _state.update { it.copy(missingNodes = missing) }
     }
 
     fun disconnect() {
@@ -623,10 +655,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 generationProgress = null,
                 generationMessage = "",
                 bridgeReady = false,
+                // v0.1.89：断开就把预检结果清掉，别把上一台服务器的结论留在界面上；
+                // 节点清单同理，换服务器后必须重新拉。
+                missingNodes = emptyList(),
                 workflowDraftConflictRequired = false,
                 workflowDraftConflictReason = "",
             )
         }
+        knownNodeTypes = null
     }
 
     fun scanLan() {
@@ -901,6 +937,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     updateRecentWorkflowState(entry.path)
                     preferences.setRecentWorkflow(entry.path)
                 }
+                // v0.1.89：节点缺失预检。放在这里而不是上面那个 _state.update 里，
+                // 是因为它要读刚写进去的 selectedWorkflow；清单没到会静默跳过。
+                checkNodeAvailability(manifest.nodes)
             }
         }
     }
@@ -930,6 +969,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         recordSelectedWorkflowOpened()
+        // v0.1.89：预读取时清单可能还没到，这里补一次缺失预检。
+        checkNodeAvailability(manifestNodes)
     }
 
     fun updateField(key: String, value: String) {

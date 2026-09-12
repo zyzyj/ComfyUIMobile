@@ -102,6 +102,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.VideoFile
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -906,6 +907,10 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
                     ) { Text("另存", color = MaterialTheme.colorScheme.onSecondaryContainer) }
                 }
             }
+        }
+        // v0.1.89：节点缺失预检提示。放在生成状态卡片之前，用户还没点生成就能看见。
+        if (state.missingNodes.isNotEmpty()) {
+            MissingNodesCard(state.missingNodes)
         }
         if (state.generationMessage.isNotBlank()) {
             OutlinedCard(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
@@ -3130,6 +3135,47 @@ private fun AiAssistDialog(state: AppUiState, viewModel: MainViewModel) {
             TextButton(onClick = { viewModel.dismissAiAssist() }, enabled = !state.aiAssistBusy) { Text("关闭") }
         },
     )
+}
+
+/**
+ * v0.1.89：节点缺失预检的提示卡片。
+ *
+ * 刻意做成"警告"而不是"阻断"——有些节点存在于运行时却不在 /object_info 里
+ * （老的 Note、部分前端专属节点），一刀切禁掉生成会误伤。这里只负责把话讲清楚：
+ * 缺什么、会怎样、该去装什么。用户自己判断要不要提交。
+ */
+@Composable
+private fun MissingNodesCard(missing: List<String>) {
+    OutlinedCard(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.6f)),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Warning, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "这个工作流缺少 ${missing.size} 个节点",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            Text(
+                missing.take(8).joinToString("\n"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (missing.size > 8) {
+                Text("…另外还有 ${missing.size - 8} 个", style = MaterialTheme.typography.bodySmall)
+            }
+            Text(
+                "这些节点当前 ComfyUI 里没有，直接生成会在服务器端报错。" +
+                    "请安装对应的自定义节点包后重启 ComfyUI，再重新连接。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
 }
 
 @Composable
