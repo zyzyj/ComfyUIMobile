@@ -66,7 +66,8 @@ import com.local.comfyuimobile.model.WorkflowNode
 import com.local.comfyuimobile.network.ActiveJobRecovery
 import com.local.comfyuimobile.network.ComfyClient
 import com.local.comfyuimobile.network.AiStudioClient
-import com.local.comfyuimobile.network.AiStudioExceptionimport com.local.comfyuimobile.network.AiStudioProtocol
+import com.local.comfyuimobile.network.AiStudioException
+import com.local.comfyuimobile.network.AiStudioProtocol
 import com.local.comfyuimobile.network.ExecutionNodeResolver
 import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.network.LanScanner
