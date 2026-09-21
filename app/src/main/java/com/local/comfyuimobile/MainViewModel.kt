@@ -66,8 +66,7 @@ import com.local.comfyuimobile.model.WorkflowNode
 import com.local.comfyuimobile.network.ActiveJobRecovery
 import com.local.comfyuimobile.network.ComfyClient
 import com.local.comfyuimobile.network.AiStudioClient
-import com.local.comfyuimobile.network.AiStudioException
-import com.local.comfyuimobile.network.AiStudioProtocol
+import com.local.comfyuimobile.network.AiStudioExceptionimport com.local.comfyuimobile.network.AiStudioProtocol
 import com.local.comfyuimobile.network.ExecutionNodeResolver
 import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.network.LanScanner
@@ -540,12 +539,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     AppLogger.warn("读取 AI Studio 积分失败", error)
                 }
                 .getOrDefault(null to null)
-            val compute = runCatching { aiStudio.fetchComputeCard(account) }
+            val snapshot = runCatching { aiStudio.fetchResources(account) }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
                     AppLogger.warn("读取 AI Studio 算力卡失败", error)
                 }
-                .getOrNull()
+                .getOrDefault(AiStudioClient.ResourceSnapshot(null, null, emptyMap(), emptyList()))
             val aCoin = runCatching { aiStudio.fetchACoin(account) }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
@@ -562,14 +561,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     aiStudio = it.aiStudio.copy(
                         points = points,
-                        computeCard = compute,
+                        computeCardMinutes = snapshot.computeCardMinutes,
+                        computeCard = snapshot.computeCard,
+                        weekQuota = snapshot.weekQuota,
+                        pointActions = snapshot.actions,
                         aCoin = aCoin,
                         signedInToday = signedTodayFromApi ?: signedTodayLocal,
                         lastRawResponse = aiStudio.lastRawResponse,
                     ),
                 )
             }
-            AppLogger.info("AI Studio 资源：积分=${points ?: "未知"}，算力卡=${compute ?: "未知"}，A币=${aCoin ?: "未知"}")
+            AppLogger.info(
+                "AI Studio 资源：积分=${points ?: "未知"}，算力卡=${snapshot.computeCard ?: "未知"}，" +
+                    "A币=${aCoin ?: "未知"}，任务=${snapshot.actions.size} 项",
+            )
         }
     }
 

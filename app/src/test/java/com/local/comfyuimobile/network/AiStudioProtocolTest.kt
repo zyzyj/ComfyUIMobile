@@ -148,23 +148,24 @@ class AiStudioProtocolTest {
     fun parsesSchedules() {
         val json = JSONObject(
             """
-            {"list":[
+            {"scheduleList":[
               {"scheduleName":"normalSchedule","gpuType":"V100 16G"},
-              {"name":"a100","label":"A100","available":false},
+              {"name":"a100","displayName":"A100","available":false},
               {"desc":"没有 scheduleName 的项"}
             ]}
             """.trimIndent(),
         )
         val schedules = AiStudioProtocol.parseSchedules(json)
         assertEquals(2, schedules.size)
-        assertEquals("V100 16G", schedules[0].displayName())
+        // normalSchedule 无 displayName，用平台枚举名兑底
+        assertEquals("基础版（CPU）", schedules[0].displayName())
         assertEquals("A100", schedules[1].displayName())
         assertFalse(schedules[1].available)
     }
 
     @Test
     fun scheduleDefaultsToAvailableWhenUnknown() {
-        val json = JSONObject("""{"list":[{"scheduleName":"x"}]}""")
+        val json = JSONObject("""{"scheduleList":[{"scheduleName":"x"}]}""")
         assertTrue(AiStudioProtocol.parseSchedules(json).single().available)
     }
 
@@ -218,12 +219,54 @@ class AiStudioProtocolTest {
     }
 
     @Test
-    fun parsesComputeCardAsHours() {
-        // resourceTotal 单位是**分钟**，平台自己按 /60 显示成小时。
-        // 3761 分钟 -> 62.7 小时（真机日志里的实际值）。
-        assertEquals("62.7 小时", AiStudioProtocol.parseComputeCard(JSONObject("""{"resourceTotal":3761}""")))
-        assertEquals("12.7 小时", AiStudioProtocol.parseComputeCard(JSONObject("""{"resourceTotal":761}""")))
-        assertEquals("1 小时", AiStudioProtocol.parseComputeCard(JSONObject("""{"resourceTotal":60}""")))
+    fun parsesComputeCardAsBaseTierHours() {
+        // resourceTotal 单位是**分钟**，是平台按基础版折算的可用时长。
+        // 真机日志：3761 分钟 -> 62.7 小时（基础版）。
+        assertEquals("62.7 小时（按基础版折算）", AiStudioProtocol.parseComputeCard(JSONObject("""{"resourceTotal":3761}""")))
+        assertEquals(3761.0, AiStudioProtocol.parseComputeCardMinutes(JSONObject("""{"resourceTotal":3761}""")))
+    }
+
+    @Test
+    fun parsesWeekQuotaMap() {
+        // 平台字段：resourceWeekQuotaMap，单位分钟
+        val json = JSONObject("""{"resourceWeekQuotaMap":{"DEV":2880,"V100":2880,"A100":240,"DCU":0}}""")
+        val quota = AiStudioProtocol.parseWeekQuotaMap(json)
+        assertEquals(2880.0, quota["V100"])
+        assertEquals(240.0, quota["A100"])
+        assertEquals(0.0, quota["DCU"])
+    }
+
+    @Test
+    fun parsesSchedulesWithGpuDisplayNames() {
+        // 平台返回 scheduleList，含 displayName / costPerHour
+        val json = JSONObject(
+            """
+            {"scheduleList":[
+              {"scheduleName":"normalSchedule","displayName":"基础版","costPerHour":0,"available":1},
+              {"scheduleName":"resourceCardVGpuSchedule","displayName":"V100 16GB","costPerHour":100,"available":1}
+            ]}
+            """.trimIndent(),
+        )
+        val schedules = AiStudioProtocol.parseSchedules(json)
+        assertEquals(2, schedules.size)
+        assertEquals("基础版", schedules[0].displayName())
+        assertEquals("V100 16GB", schedules[1].displayName())
+        assertEquals(100.0, schedules[1].costPerHour)
+    }
+
+    @Test
+    fun scheduleFallsBackToKnownEnumLabel() {
+        // 接口不给 displayName 时，用平台固定枚举名兑底
+        val json = JSONObject("""{"scheduleList":[{"scheduleName":"resourceCardA100Schedule"}]}""")
+        val schedule = AiStudioProtocol.parseSchedules(json).single()
+        assertEquals("至尊版 A100 40GB", schedule.displayName())
+    }
+
+    @Test
+    fun unavailableScheduleIsMarked() {
+        // available: 1=可 2=不可 3=算力不足
+        val json = JSONObject("""{"scheduleList":[{"scheduleName":"x","available":2}]}""")
+        assertFalse(AiStudioProtocol.parseSchedules(json).single().available)
     }
 
     @Test
