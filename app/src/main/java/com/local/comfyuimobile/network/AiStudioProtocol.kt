@@ -273,9 +273,13 @@ object AiStudioProtocol {
      * 全都取不到就返回 null，让界面显示「—」而不是 0。
      */
     fun parsePoints(result: JSONObject): Int? {
-        val direct = result.opt("points")
-        if (direct is Number) return direct.toInt()
-        listOf("point", "available", "residue", "balance", "value").forEach { key ->
+        // 字段名以平台前端实际读取的为准（从 bundle 反查）：
+        // totalUserPoints / totalPoint / point，其余为兼容旧版或多端差异的兜底。
+        val candidates = listOf(
+            "totalUserPoints", "totalPoint", "point", "points",
+            "available", "residue", "balance", "score", "value",
+        )
+        candidates.forEach { key ->
             val value = result.opt(key)
             if (value is Number) return value.toInt()
             if (value is String) value.trim().toIntOrNull()?.let { return it }
@@ -292,20 +296,28 @@ object AiStudioProtocol {
      * 这个字段。拿不到就返回 null。
      */
     fun parseComputeCard(result: JSONObject): String? {
-        listOf("computeCard", "resourceCard", "card", "quota", "remain", "residue").forEach { key ->
+        // 前端读的是 resourceTotal（存量）/ resourceAlloc（配额），coinNum 是 A币。
+        listOf(
+            "resourceTotal", "computeCard", "resourceCard", "card",
+            "quota", "remain", "residue", "coinNum",
+        ).forEach { key ->
             val value = result.opt(key)
             when (value) {
-                is Number -> return "${value.toDouble()} 点"
+                is Number -> return "${trimNumber(value.toDouble())} 点"
                 is String -> if (value.isNotBlank()) return value.trim()
             }
         }
-        // 也有把算力拆成「总/已用/剩余」三个数字的情况。
-        val total = firstDouble(result, listOf("total", "totalQuota", "amount"))
-        val remain = firstDouble(result, listOf("remain", "remaining", "left", "usable"))
-        if (remain != null) return "$remain 点"
-        if (total != null) return "$total 点"
+        // 也有把算力拆成「总/已用/剩余」几个数字的情况。
+        val remain = firstDouble(result, listOf("remain", "remaining", "left", "usable", "resourceAlloc"))
+        val total = firstDouble(result, listOf("resourceTotal", "total", "totalQuota", "amount"))
+        if (remain != null) return "${trimNumber(remain)} 点"
+        if (total != null) return "${trimNumber(total)} 点"
         return null
     }
+
+    /** 去掉无意义的小数尾巴：32.0 -> 32，32.5 保持 32.5。 */
+    private fun trimNumber(value: Double): String =
+        if (value == value.toLong().toDouble()) value.toLong().toString() else value.toString()
 
     private fun firstDouble(root: JSONObject, keys: List<String>): Double? {
         keys.forEach { key ->

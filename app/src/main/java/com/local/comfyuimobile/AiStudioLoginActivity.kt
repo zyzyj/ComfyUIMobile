@@ -174,21 +174,58 @@ class AiStudioLoginActivity : ComponentActivity() {
             return
         }
         doneButton.isEnabled = false
-        // 延迟一拍让平台自己的登录跳转先走完，bdToken 才注入完成。
+        // 延迟一拍让平台自己的登录跳转先走完，页面全局变量才注入完成。
         lifecycleScope.launch {
             delay(1_500)
-            val bdToken = runCatching {
-                suspendCancellableCompat(
-                    "(function(){try{return String((window.aiStudio&&window.aiStudio.bdToken)||'');}catch(e){return '';}})()",
-                )
-            }.getOrDefault("")
+            val probe = runCatching { readPageIdentity() }.getOrDefault(PageIdentity())
             AppLogger.info(
-                "AI Studio 登录完成：Cookie 长度=${cookie.length}，bdToken=${if (bdToken.isBlank()) "未取到" else "已取到"}",
+                "AI Studio 登录完成：Cookie 长度=${cookie.length}，" +
+                    "bdToken=${if (probe.bdToken.isBlank()) "未取到" else "已取到"}，" +
+                    "uid=${probe.uid.ifBlank { "未取到" }}，昵称=${probe.nickname.ifBlank { "未取到" }}",
             )
-            AiStudioLoginSession.complete(cookie, bdToken)
+            AiStudioLoginSession.complete(cookie, probe.bdToken, probe.uid, probe.nickname)
             setResult(Activity.RESULT_OK, Intent())
             finish()
         }
+    }
+
+    private data class PageIdentity(
+        val bdToken: String = "",
+        val uid: String = "",
+        val nickname: String = "",
+    )
+
+    /**
+     * 一次性从页面全局变量里取出 bdToken 与用户 id / 昵称。
+     *
+     * 平台把登录信息直接注入在 `window.aiStudio` 上（前端自己就是这么读的），
+     * 比调接口猜测字段名可靠得多。用一段 JS 返回 JSON 字符串，只在 App 侧解析。
+     */
+    private suspend fun readPageIdentity(): PageIdentity {
+        val script = """
+            (function(){
+              try {
+                var a = window.aiStudio || {};
+                var u = a.userInfo || {};
+                if (typeof u === 'string') { try { u = JSON.parse(u); } catch(e) { u = {}; } }
+                return JSON.stringify({
+                  bdToken: String(a.bdToken || ''),
+                  uid: String(u.id == null ? '' : u.id),
+                  nickname: String(u.nickname || u.userName || u.name || '')
+                });
+              } catch(e) { return '{}'; }
+            })()
+        """.trimIndent()
+        val raw = suspendCancellableCompat(script)
+        if (raw.isBlank()) return PageIdentity()
+        return runCatching {
+            val obj = org.json.JSONObject(raw)
+            PageIdentity(
+                bdToken = obj.optString("bdToken"),
+                uid = obj.optString("uid"),
+                nickname = obj.optString("nickname"),
+            )
+        }.getOrDefault(PageIdentity())
     }
 
     /** evaluateJavascript 的协程封装：单次求值，10 秒超时兜底。 */

@@ -11,13 +11,21 @@ package com.local.comfyuimobile.bridge
 data class AiStudioLoginResult(
     val cookie: String,
     val bdToken: String,
+    /**
+     * 从页面 `window.aiStudio.userInfo` 直接取到的用户 id / 昵称。
+     *
+     * 不再猜接口：平台把登录用户信息直接注入在页面全局变量里，登录完成那一刻
+     * 读它最准。取不到就留空，由调用方退回用资料接口或占位名。
+     */
+    val uid: String = "",
+    val nickname: String = "",
 )
 
 object AiStudioLoginSession {
     @Volatile private var pending: AiStudioLoginResult? = null
 
-    fun complete(cookie: String, bdToken: String) {
-        pending = AiStudioLoginResult(cookie, bdToken)
+    fun complete(cookie: String, bdToken: String, uid: String = "", nickname: String = "") {
+        pending = AiStudioLoginResult(cookie, bdToken, uid, nickname)
     }
 
     /** 取走结果并清空，避免下次登录误用上一次的凭据。 */

@@ -33,6 +33,7 @@ import java.util.concurrent.TimeUnit
 class AiStudioClient {
 
     private val formMedia = "application/x-www-form-urlencoded; charset=utf-8".toMediaType()
+    private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -44,60 +45,92 @@ class AiStudioClient {
     @Volatile var lastRawResponse: String = ""
         private set
 
+    /** 供诊断日志用的简短脱敏摘要。 */
+    private fun logRaw(action: String, raw: String) {
+        AppLogger.info("AI Studio[$action] 响应 ${raw.length} 字：${raw.take(300)}")
+    }
+
     // ===== 对外接口 =====
 
     /** 拉用户资料，用于确认登录态并拿到 UID / 昵称。 */
     suspend fun fetchProfile(account: AiStudioAccount): JSONObject =
         request(account, AiStudioProtocol.PATH_PROFILE, "GET", null, "读取账号信息")
 
-    /** 签到（社区积分）。平台另有「每日运行项目送算力卡」的机制，两者不同。 */
+    /** 签到。 */
     suspend fun signIn(account: AiStudioAccount): JSONObject {
-        // 积分签到走 /point/sign；拿不到时退回 /studio/user/signin 再试一次。
+        // 积分签到：POST /point/sign，无 body（用 JSON 空对象，避免平台对
+        // form 体报 500）。拿不到时退回 /studio/user/signin。
         return runCatching {
-            request(account, AiStudioProtocol.PATH_POINT_SIGN, "POST", "", "签到")
+            request(account, AiStudioProtocol.PATH_POINT_SIGN, "POST_JSON", "{}", "签到")
         }.getOrElse { error ->
             if (error is CancellationException) throw error
+            AppLogger.warn("积分签到失败，改试 /studio/user/signin：${error.message.orEmpty()}")
             request(account, AiStudioProtocol.PATH_SIGN_IN, "GET", null, "签到")
         }
     }
 
     /** 拉积分余额。 */
     suspend fun fetchPoints(account: AiStudioAccount): Int? {
-        val result = runCatching {
+        val raw = runCatching {
             request(account, AiStudioProtocol.PATH_POINT_INFO, "GET", null, "读取积分")
+        }.onFailure { error ->
+            if (error is CancellationException) throw error
+            AppLogger.warn("读取积分失败：${error.message.orEmpty()}")
         }.getOrNull() ?: return null
-        return AiStudioProtocol.parsePoints(result)
+        logRaw("积分", raw.toString())
+        return AiStudioProtocol.parsePoints(raw)
     }
 
     /** 拉算力卡余额。 */
     suspend fun fetchComputeCard(account: AiStudioAccount): String? {
-        val result = runCatching {
-            request(account, AiStudioProtocol.PATH_RESOURCE_SUMMARY, "POST", "", "读取算力")
+        // 该接口前端未指定 type，按 JSON 发；form 体会被拒。
+        val raw = runCatching {
+            request(account, AiStudioProtocol.PATH_RESOURCE_SUMMARY, "POST_JSON", "{}", "读取算力")
+        }.onFailure { error ->
+            if (error is CancellationException) throw error
+            AppLogger.warn("读取算力卡失败：${error.message.orEmpty()}")
         }.getOrNull() ?: return null
-        return AiStudioProtocol.parseComputeCard(result)
+        logRaw("算力卡", raw.toString())
+        return AiStudioProtocol.parseComputeCard(raw)
     }
 
-    /** 领每日资源（算力）。 */
+    /**
+     * 领每日资源（算力）。
+     *
+     * 真实调用是 `POST /studio/user/center/resource/receive?isInfoComplete=1`
+     * 且**不带 body**。之前当成普通表单 POST 发，平台回「用户信息不完整 500」——
+     * `isInfoComplete=1` 正是绕过那份“完善信息”校验的开关。
+     */
     suspend fun receiveResource(account: AiStudioAccount): String {
-        request(account, AiStudioProtocol.PATH_RESOURCE_RECEIVE, "POST", "", "领取算力")
+        request(
+            account,
+            AiStudioProtocol.PATH_RESOURCE_RECEIVE + "?isInfoComplete=1",
+            "POST_EMPTY",
+            null,
+            "领取算力",
+        )
         return "已提交领取请求"
     }
 
     suspend fun listProjects(account: AiStudioAccount, page: Int = 1, pageSize: Int = 30): List<AiStudioProject> {
-        val form = AiStudioProtocol.formEncode(
-            mapOf("pageNo" to page.toString(), "pageSize" to pageSize.toString()),
-        )
-        val primary = request(account, AiStudioProtocol.PATH_PROJECT_LIST, "POST", form, "读取项目列表")
+        // 关键：/studio/project/self/list 前端用的是 `.type("json")`，
+        // 发表单体会被平台 500。这里必须发 JSON。
+        val body = JSONObject()
+            .put("pageNo", page)
+            .put("pageSize", pageSize)
+            .toString()
+        val primary = request(account, AiStudioProtocol.PATH_PROJECT_LIST, "POST_JSON", body, "读取项目列表")
+        logRaw("项目列表", primary.toString())
         val projects = AiStudioProtocol.parseProjects(primary)
         if (projects.isNotEmpty()) return projects
-        // 主入口读不到时试备用端点：平台在「我的项目」和项目大厅用了两套列表接口，
-        // 哪套可用会随页面改版变化。两套都空就当真没有项目。
+        // 主入口读不到时试备用端点（同样是 JSON）。
         val fallback = runCatching {
-            request(account, AiStudioProtocol.PATH_PROJECT_LIST_ALT, "POST", form, "读取项目列表")
+            request(account, AiStudioProtocol.PATH_PROJECT_LIST_ALT, "POST_JSON", body, "读取项目列表")
         }.onFailure { error ->
             if (error is CancellationException) throw error
             AppLogger.warn("备用项目列表接口也不可用: ${error.message.orEmpty()}")
         }.getOrNull() ?: return emptyList()
+        logRaw("项目列表(备用)", fallback.toString())
         return AiStudioProtocol.parseProjects(fallback)
     }
 
@@ -201,9 +234,16 @@ class AiStudioClient {
         val xsrf = AiStudioProtocol.cookieValue(account.cookie, "_xsrf")
         if (xsrf.isNotBlank()) builder.header("X-XSRFToken", xsrf)
 
+        // 方法语义：
+        //   GET         — 无体
+        //   POST        — application/x-www-form-urlencoded
+        //   POST_JSON   — application/json（平台部分接口如 /studio/project/self/list 必须）
+        //   POST_EMPTY  — 完全没有请求体（领资源接口用，带体反而报 500）
         when (method) {
             "GET" -> builder.get()
             "POST" -> builder.post((formBody ?: "").toRequestBody(formMedia))
+            "POST_JSON" -> builder.post((formBody ?: "{}").toRequestBody(jsonMedia))
+            "POST_EMPTY" -> builder.post(ByteArray(0).toRequestBody(null))
         }
 
         val response: Response = try {
