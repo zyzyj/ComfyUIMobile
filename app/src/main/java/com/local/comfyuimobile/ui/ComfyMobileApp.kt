@@ -3883,14 +3883,15 @@ private fun ProjectCard(project: AiStudioProject, panel: AiStudioState, viewMode
 }
 
 /**
- * ComfyUI 连接卡片——默认收起，点开才出输入框。
+ * ComfyUI 连接卡片——**默认收起**，点开才出输入框。
  *
  * 以前这个表单是整页的，没填地址就进不了 App。现在它只是账号页里的一张卡片：
- * 已连接时显示当前服务器与状态，未连接时收起，不占视觉重心。
+ * 收起时只占一行，显示当前服务器与状态（未连接时文案会提示点开填地址），
+ * 不抢账号功能的视觉重心。
  */
 @Composable
 private fun ServerConnectionCard(state: AppUiState, viewModel: MainViewModel) {
-    var expanded by remember { mutableStateOf(state.activeServer == null) }
+    var expanded by remember { mutableStateOf(false) }
     val server = state.activeServer
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -3908,11 +3909,12 @@ private fun ServerConnectionCard(state: AppUiState, viewModel: MainViewModel) {
                         style = MaterialTheme.typography.titleSmall,
                     )
                     Text(
-                        when (state.status) {
-                            ConnectionStatus.CONNECTED -> "在线 · 队列 ${state.queueRemaining}"
-                            ConnectionStatus.CONNECTING -> "正在连接…"
-                            ConnectionStatus.RECONNECTING -> "正在重连"
-                            ConnectionStatus.ERROR -> "连接出错"
+                        when {
+                            server == null -> "点这里填地址，连接局域网或云端 ComfyUI"
+                            state.status == ConnectionStatus.CONNECTED -> "在线 · 队列 ${state.queueRemaining}"
+                            state.status == ConnectionStatus.CONNECTING -> "正在连接…"
+                            state.status == ConnectionStatus.RECONNECTING -> "正在重连"
+                            state.status == ConnectionStatus.ERROR -> "连接出错"
                             else -> state.connectionMessage
                         },
                         style = MaterialTheme.typography.labelSmall,
