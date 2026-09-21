@@ -50,9 +50,38 @@ class AiStudioClient {
     suspend fun fetchProfile(account: AiStudioAccount): JSONObject =
         request(account, AiStudioProtocol.PATH_PROFILE, "GET", null, "读取账号信息")
 
-    /** 签到。平台实际机制是"每日运行项目送算力"，这个接口是显式的签到入口。 */
-    suspend fun signIn(account: AiStudioAccount): JSONObject =
-        request(account, AiStudioProtocol.PATH_SIGN_IN, "GET", null, "签到")
+    /** 签到（社区积分）。平台另有「每日运行项目送算力卡」的机制，两者不同。 */
+    suspend fun signIn(account: AiStudioAccount): JSONObject {
+        // 积分签到走 /point/sign；拿不到时退回 /studio/user/signin 再试一次。
+        return runCatching {
+            request(account, AiStudioProtocol.PATH_POINT_SIGN, "POST", "", "签到")
+        }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            request(account, AiStudioProtocol.PATH_SIGN_IN, "GET", null, "签到")
+        }
+    }
+
+    /** 拉积分余额。 */
+    suspend fun fetchPoints(account: AiStudioAccount): Int? {
+        val result = runCatching {
+            request(account, AiStudioProtocol.PATH_POINT_INFO, "GET", null, "读取积分")
+        }.getOrNull() ?: return null
+        return AiStudioProtocol.parsePoints(result)
+    }
+
+    /** 拉算力卡余额。 */
+    suspend fun fetchComputeCard(account: AiStudioAccount): String? {
+        val result = runCatching {
+            request(account, AiStudioProtocol.PATH_RESOURCE_SUMMARY, "POST", "", "读取算力")
+        }.getOrNull() ?: return null
+        return AiStudioProtocol.parseComputeCard(result)
+    }
+
+    /** 领每日资源（算力）。 */
+    suspend fun receiveResource(account: AiStudioAccount): String {
+        request(account, AiStudioProtocol.PATH_RESOURCE_RECEIVE, "POST", "", "领取算力")
+        return "已提交领取请求"
+    }
 
     suspend fun listProjects(account: AiStudioAccount, page: Int = 1, pageSize: Int = 30): List<AiStudioProject> {
         val form = AiStudioProtocol.formEncode(

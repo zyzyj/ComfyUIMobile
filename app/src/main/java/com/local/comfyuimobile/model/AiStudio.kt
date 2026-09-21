@@ -75,6 +75,17 @@ data class AiStudioState(
     val signingIn: Boolean = false,
     val startingProjectId: String? = null,
     val stoppingProjectId: String? = null,
+    /**
+     * 社区积分。null 表示**没读到**，不是 0 —— 界面要显示「—」而不是编一个数。
+     * 平台接口改版是常态，把「未知」和「真的是 0」区分开才不会骗人。
+     */
+    val points: Int? = null,
+    /** 算力卡余额的可读文案（如 "32.5 点"）。null 同上。 */
+    val computeCard: String? = null,
+    /** A币余额。null 同上。 */
+    val aCoin: String? = null,
+    /** 今天是否已签到（本机记录 + 接口状态共同决定）。 */
+    val signedInToday: Boolean = false,
     val message: String? = null,
     val error: String? = null,
     /** 调试用：最近一次接口的原始响应摘要，方便真机把结构发回来校准解析。 */

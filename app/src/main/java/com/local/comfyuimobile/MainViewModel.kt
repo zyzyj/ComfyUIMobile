@@ -512,6 +512,69 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 刷新当前账号的资源数据（积分 / 算力卡）。
+     *
+     * 三个接口各自独立：任何一个失败都不影响其它两个——否则积分接口一改版，
+     * 算力卡也跟着显示不出来。失败只记日志，界面上对应那块显示「—」。
+     */
+    fun aiStudioRefreshAccount() {
+        val account = _state.value.aiStudio.activeAccount() ?: return
+        viewModelScope.launch {
+            val points = runCatching { aiStudio.fetchPoints(account) }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    AppLogger.warn("读取 AI Studio 积分失败", error)
+                }
+                .getOrNull()
+            val compute = runCatching { aiStudio.fetchComputeCard(account) }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    AppLogger.warn("读取 AI Studio 算力卡失败", error)
+                }
+                .getOrNull()
+            val lastSign = account.lastSignInAt
+            val signedToday = lastSign > 0L &&
+                java.util.Calendar.getInstance().apply { timeInMillis = lastSign }
+                    .get(java.util.Calendar.DAY_OF_YEAR) ==
+                java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_YEAR)
+            _state.update {
+                it.copy(
+                    aiStudio = it.aiStudio.copy(
+                        points = points,
+                        computeCard = compute,
+                        signedInToday = signedToday,
+                        lastRawResponse = aiStudio.lastRawResponse,
+                    ),
+                )
+            }
+            AppLogger.info("AI Studio 资源：积分=${points ?: "未知"}，算力卡=${compute ?: "未知"}")
+        }
+    }
+
+    /** 领每日算力资源。 */
+    fun aiStudioReceiveResource() {
+        val account = _state.value.aiStudio.activeAccount() ?: return
+        if (aiStudioJob?.isActive == true) return
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(error = null, message = null)) }
+        aiStudioJob = viewModelScope.launch {
+            runCatching { aiStudio.receiveResource(account) }
+                .onSuccess {
+                    AppLogger.info("AI Studio 领取算力已提交：${account.displayName()}")
+                    _state.update {
+                        it.copy(
+                            aiStudio = it.aiStudio.copy(
+                                message = "已提交领取请求",
+                                lastRawResponse = aiStudio.lastRawResponse,
+                            ),
+                        )
+                    }
+                    aiStudioRefreshAccount()
+                }
+                .onFailure { error -> failAiStudio("领取算力失败", error) }
+        }
+    }
+
     /** 拉当前账号的项目列表。 */
     fun aiStudioLoadProjects() {
         val account = _state.value.aiStudio.activeAccount() ?: return
