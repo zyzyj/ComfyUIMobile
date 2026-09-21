@@ -26,14 +26,36 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: 配置 Android SDK
-        uses: android-actions/setup-android@v3
+      # v0.1.90：不再用 android-actions/setup-android。
+      #
+      # GitHub 托管的 ubuntu runner **已预装完整 Android SDK**（官方 README 原话：
+      # "GitHub-hosted runners already include the Android SDK"，且 action 自己也承认它主要
+      # 面向 self-hosted runner）。继续用它只会多一步从 dl.google.com 下载命令行工具——
+      # 2026-08-20 上游 issue #536 正是这个下载因 URL 变化报 404；本地实测也复现了
+      # 连续两轮挂在“配置 Android SDK”且 15~32 秒就退出的现象。
+      # 直接用预装 SDK，少一个外部依赖，也就少一个失效点。
+      - name: 定位 Android SDK
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          # 预装的 cmdline-tools 在 latest 子目录下；兼容 runner 镜像换布局的情况。
+          for candidate in "$SDK/cmdline-tools/latest/bin" "$SDK/cmdline-tools/16.0/bin" "$SDK/tools/bin"; do
+            if [ -d "$candidate" ]; then
+              echo "$candidate" >> "$GITHUB_PATH"
+              echo "已加入 PATH：$candidate"
+            fi
+          done
+          ls "$SDK" || true
+          which sdkmanager || echo "警告：未找到 sdkmanager"
 
       - name: 安装所需 SDK 组件
         run: |
+          # 允许命令行工具缺省的场景：build-tools / platform 若已预装，Gradle 自己也能跑。
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;35.0.0"
-          sdkmanager --list_installed
+          sdkmanager --list_installed | tail -20
 
       - name: 赋予 gradlew 执行权限
         run: chmod +x gradlew
