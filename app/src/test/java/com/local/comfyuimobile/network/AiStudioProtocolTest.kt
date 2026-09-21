@@ -218,10 +218,12 @@ class AiStudioProtocolTest {
     }
 
     @Test
-    fun parsesComputeCardFromResourceTotal() {
-        assertEquals("32.5 点", AiStudioProtocol.parseComputeCard(JSONObject("""{"resourceTotal":32.5}""")))
-        // 整数不带小数尾巴
-        assertEquals("16 点", AiStudioProtocol.parseComputeCard(JSONObject("""{"resourceTotal":16.0}""")))
+    fun parsesComputeCardAsHours() {
+        // resourceTotal 单位是**分钟**，平台自己按 /60 显示成小时。
+        // 3761 分钟 -> 62.7 小时（真机日志里的实际值）。
+        assertEquals("62.7 小时", AiStudioProtocol.parseComputeCard(JSONObject("""{"resourceTotal":3761}""")))
+        assertEquals("12.7 小时", AiStudioProtocol.parseComputeCard(JSONObject("""{"resourceTotal":761}""")))
+        assertEquals("1 小时", AiStudioProtocol.parseComputeCard(JSONObject("""{"resourceTotal":60}""")))
     }
 
     @Test

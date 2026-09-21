@@ -474,8 +474,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             AppLogger.info("AI Studio 账号已保存：${account.displayName()}（UID=${account.uid.ifBlank { "未知" }}）")
-            aiStudioRefreshAccount()
-            aiStudioLoadProjects()
+            // 不在这里拉资源/项目：账号页的 LaunchedEffect(activeAccountId)
+            // 会在账号变成激活时自己拉一次。两处都调会重复请求（日志里每个
+            // 接口各出现两次就是这个原因）。
         }
     }
 
@@ -579,12 +580,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(aiStudio = it.aiStudio.copy(error = null, message = null)) }
         aiStudioJob = viewModelScope.launch {
             runCatching { aiStudio.receiveResource(account) }
-                .onSuccess {
-                    AppLogger.info("AI Studio 领取算力已提交：${account.displayName()}")
+                .onSuccess { result ->
+                    // receiveResource 把「今日已领过」当成正常结果返回，
+                    // 不是异常——所以这里可能拿到的是提示语而不是「领取成功」。
+                    AppLogger.info("AI Studio 领取算力：$result（${account.displayName()}）")
                     _state.update {
                         it.copy(
                             aiStudio = it.aiStudio.copy(
-                                message = "已提交领取请求",
+                                message = result,
                                 lastRawResponse = aiStudio.lastRawResponse,
                             ),
                         )
@@ -595,11 +598,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 拉当前账号的项目列表。 */
-    fun aiStudioLoadProjects() {
+    /**
+     * 拉当前账号的项目列表。
+     *
+     * @param silent true 时不显示 loading（给启动后的自动轮询用，
+     *   否则每几秒闪一下圈）。
+     */
+    fun aiStudioLoadProjects(silent: Boolean = false) {
         val account = _state.value.aiStudio.activeAccount() ?: return
         if (aiStudioJob?.isActive == true) return
-        _state.update { it.copy(aiStudio = it.aiStudio.copy(loadingProjects = true, error = null)) }
+        if (!silent) {
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(loadingProjects = true, error = null)) }
+        }
         aiStudioJob = viewModelScope.launch {
             runCatching { aiStudio.listProjects(account) }
                 .onSuccess { page ->
@@ -609,13 +619,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             aiStudio = it.aiStudio.copy(
                                 projects = page.projects,
                                 loadingProjects = false,
-                                message = if (page.projects.isEmpty()) "没有读到项目" else "共 ${page.total} 个项目",
+                                message = if (page.projects.isEmpty()) "没有读到项目" else null,
                                 lastRawResponse = aiStudio.lastRawResponse,
                             ),
                         )
                     }
                 }
                 .onFailure { error -> failAiStudio("读取项目列表失败", error) }
+        }
+    }
+
+    /**
+     * 启动后轮询项目状态，直到它变成运行中（或超时）。
+     *
+     * 平台分配 GPU 需要 1-2 分钟，刚提交完那一瞬项目仍是「已停止」——
+     * 用户会以为启动没生效。这里自动盯一会儿，状态一变就刷新界面。
+     */
+    private fun pollProjectRunning(projectId: String) {
+        viewModelScope.launch {
+            repeat(30) { attempt ->
+                delay(if (attempt < 5) 4_000 else 8_000)
+                val account = _state.value.aiStudio.activeAccount() ?: return@launch
+                val page = runCatching { aiStudio.listProjects(account) }.getOrNull() ?: return@repeat
+                val project = page.projects.firstOrNull { it.projectId == projectId } ?: return@repeat
+                _state.update { it.copy(aiStudio = it.aiStudio.copy(projects = page.projects)) }
+                if (project.running) {
+                    AppLogger.info("AI Studio 项目已运行：$projectId")
+                    _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "环境已就绪")) }
+                    return@launch
+                }
+            }
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "启动较慢，可稍后点「刷新」查看")) }
         }
     }
 
@@ -657,7 +691,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             ),
                         )
                     }
-                    aiStudioLoadProjects()
+                    aiStudioLoadProjects(silent = true)
+                    pollProjectRunning(projectId)
                 }
                 .onFailure { error -> failAiStudio("启动失败", error) { it.copy(startingProjectId = null) } }
         }
@@ -680,7 +715,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             ),
                         )
                     }
-                    aiStudioLoadProjects()
+                    aiStudioLoadProjects(silent = true)
                 }
                 .onFailure { error -> failAiStudio("停止失败", error) { it.copy(stoppingProjectId = null) } }
         }

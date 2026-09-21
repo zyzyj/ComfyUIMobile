@@ -76,7 +76,8 @@ object AiStudioProtocol {
         val code = root.optInt("errorCode", 0)
         if (code != 0) {
             val msg = root.optString("errorMsg").ifBlank { describeErrorCode(code) }
-            throw AiStudioException("$action 失败：$msg（错误码 $code）")
+            // 中文之间不要空格：之前是「领取算力 失败：…」，读着别扭。
+            throw AiStudioException("$action失败：$msg（错误码 $code）")
         }
         return root.optJSONObject("result") ?: root
     }
@@ -356,37 +357,31 @@ object AiStudioProtocol {
      * 平台的返回形态差异很大：可能是数字、可能是带单位的字符串，也可能压根没有
      * 这个字段。拿不到就返回 null。
      */
+    /**
+     * 算力卡余额。
+     *
+     * **单位是分钟，不是「点」**。平台前端自己就这么展示：
+     * `(resourceTotal / 60).toFixed(1)` 配标签「算力卡」。
+     * 所以 3761 应显示为「62.7 小时」，而不是「3761 点」——
+     * 直接吐原始数字会让人完全看不懂（真机反馈过这个问题）。
+     */
     fun parseComputeCard(result: JSONObject): String? {
-        // 前端读的是 resourceTotal（存量）/ resourceAlloc（配额），coinNum 是 A币。
-        listOf(
-            "resourceTotal", "computeCard", "resourceCard", "card",
-            "quota", "remain", "residue", "coinNum",
-        ).forEach { key ->
-            val value = result.opt(key)
-            when (value) {
-                is Number -> return "${trimNumber(value.toDouble())} 点"
-                is String -> if (value.isNotBlank()) return value.trim()
+        // resourceTotal = 存量（分钟）；resourceFree 作为兼容兜底。
+        val minutes = listOf("resourceTotal", "resourceFree", "resourceQuota")
+            .firstNotNullOfOrNull { key -> (result.opt(key) as? Number)?.toDouble() }
+        if (minutes != null) return "${trimNumber(minutes / 60.0)} 小时"
+        // 少数接口直接给带单位的字符串
+        listOf("computeCard", "resourceCard", "card", "quota", "remain")
+            .firstNotNullOfOrNull { key ->
+                (result.opt(key) as? String)?.takeIf { it.isNotBlank() }?.trim()
             }
-        }
-        // 也有把算力拆成「总/已用/剩余」几个数字的情况。
-        val remain = firstDouble(result, listOf("remain", "remaining", "left", "usable", "resourceAlloc"))
-        val total = firstDouble(result, listOf("resourceTotal", "total", "totalQuota", "amount"))
-        if (remain != null) return "${trimNumber(remain)} 点"
-        if (total != null) return "${trimNumber(total)} 点"
+            ?.let { return it }
         return null
     }
 
     /** 去掉无意义的小数尾巴：32.0 -> 32，32.5 保持 32.5。 */
     private fun trimNumber(value: Double): String =
         if (value == value.toLong().toDouble()) value.toLong().toString() else value.toString()
-
-    private fun firstDouble(root: JSONObject, keys: List<String>): Double? {
-        keys.forEach { key ->
-            val value = root.opt(key)
-            if (value is Number) return value.toDouble()
-        }
-        return null
-    }
 
     /**
      * 把 Cookie 收敛成平台域名下可用的一份。
