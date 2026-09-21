@@ -116,6 +116,7 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.Payments
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.automirrored.outlined.List
@@ -3684,6 +3685,13 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                             label = "算力卡",
                             value = panel.computeCard ?: "—",
                             hint = if (panel.computeCard == null) "未读到" else null,
+                        )
+                        ResourceTile(
+                            modifier = Modifier.weight(1f),
+                            icon = { Icon(Icons.Outlined.Payments, null, Modifier.size(20.dp)) },
+                            label = "A币",
+                            value = panel.aCoin ?: "—",
+                            hint = if (panel.aCoin == null) "未读到" else null,
                         )
                     }
                 }

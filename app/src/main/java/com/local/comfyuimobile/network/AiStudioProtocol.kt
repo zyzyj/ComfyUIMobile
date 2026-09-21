@@ -121,12 +121,29 @@ object AiStudioProtocol {
      * 平台分页返回的壳有几种可能：`result.list`、`result.records`、或 result 直接是数组。
      * 逐个兜底，任一命中即用；全都不是就返回空列表（不抛异常，界面显示"暂无项目"）。
      */
-    fun parseProjects(result: JSONObject): List<AiStudioProject> {
+    data class ProjectPage(val projects: List<AiStudioProject>, val total: Int)
+
+    /**
+     * 解析「我的项目」列表。
+     *
+     * 真实响应：`{errorCode, result: {data: [...], allCount, page, pageSize}}`
+     * —— 数组在 `result.data`，总数在 `result.allCount`（前端读的就是这两个）。
+     */
+    fun parseProjectPage(result: JSONObject): ProjectPage {
         val array = firstArray(
             result,
-            listOf("list", "records", "items", "data", "projectList", "rows"),
-        ) ?: return emptyList()
-        return buildList {
+            listOf("data", "list", "records", "items", "projectList", "rows"),
+        ) ?: return ProjectPage(emptyList(), 0)
+        val total = listOf("allCount", "totalCount", "total", "count")
+            .firstNotNullOfOrNull { key ->
+                val value = result.opt(key)
+                when (value) {
+                    is Number -> value.toInt()
+                    is String -> value.toIntOrNull()
+                    else -> null
+                }
+            } ?: array.length()
+        val projects = buildList {
             repeat(array.length()) { index ->
                 val item = array.optJSONObject(index) ?: return@repeat
                 val id = firstString(item, listOf("projectId", "id", "project_id"))
@@ -136,15 +153,19 @@ object AiStudioProtocol {
                         projectId = id,
                         name = firstString(item, listOf("projectName", "name", "title")),
                         description = firstString(item, listOf("projectAbs", "projectDesc", "description", "abs")),
-                        statusRaw = item.optInt("status", 0),
+                        statusRaw = item.optInt("projectState", item.optInt("status", 0)),
                         running = parseRunning(item),
-                        updatedAt = firstLong(item, listOf("updateTime", "updatedAt", "mtime", "update_time")),
+                        updatedAt = firstLong(item, listOf("updateTime", "updateTimeStamp", "updatedAt", "mtime")),
                         isNotebook = parseIsNotebook(item),
                     ),
                 )
             }
         }
+        return ProjectPage(projects, total)
     }
+
+    /** 只取项目列表（不需要总数时用）。 */
+    fun parseProjects(result: JSONObject): List<AiStudioProject> = parseProjectPage(result).projects
 
     /**
      * 判断项目是否在运行。
@@ -153,6 +174,13 @@ object AiStudioProtocol {
      * 数字 `status`（1 常表示运行中），还有 `runStatus` 字符串。任一命中即可，
      * 全都没有就按"未运行"处理——大不了让用户点一下启动，比误判成运行中而
      * 什么都不做要好。
+     */
+    /**
+     * 判断项目是否在运行。
+     *
+     * 平台真实字段：`running`（布尔，前端直接读它）。其余名字作为兜底。
+     * 全都没线索时按「未运行」处理——大不了让用户点一下启动，比误判成
+     * 运行中而什么都不做要好。
      */
     fun parseRunning(item: JSONObject): Boolean {
         listOf("running", "isRunning", "is_running").forEach { key ->
@@ -166,12 +194,9 @@ object AiStudioProtocol {
         val status = item.optString("runStatus")
         if (status.isNotBlank()) {
             val lowered = status.lowercase()
-            if (lowered.contains("run") || lowered.contains("running")) return true
+            if (lowered.contains("run")) return true
             if (lowered.contains("stop") || lowered.contains("idle")) return false
         }
-        // status 是数字时：1 = 运行中（平台惯用）。0/其他按未运行。
-        val numeric = item.opt("status")
-        if (numeric is Number) return numeric.toInt() == 1
         return false
     }
 
@@ -247,6 +272,20 @@ object AiStudioProtocol {
     private fun urlEncode(value: String): String =
         java.net.URLEncoder.encode(value, "UTF-8")
 
+    /**
+     * A币余额。平台真实字段：`GET /studio/trade/coin/residue` → `result.coinNumShow`。
+     */
+    fun parseACoin(result: JSONObject): String? {
+        listOf("coinNumShow", "coinNum", "aCoin", "coin").forEach { key ->
+            val value = result.opt(key)
+            when (value) {
+                is Number -> return trimNumber(value.toDouble())
+                is String -> if (value.isNotBlank()) return value.trim()
+            }
+        }
+        return null
+    }
+
     /** 从 Cookie 串里取某个键的值，取不到返回空串。 */
     fun cookieValue(cookie: String, name: String): String {
         cookie.split(';').forEach { segment ->
@@ -272,11 +311,15 @@ object AiStudioProtocol {
      * 字段名不定（points / point / available / residue 都可能），逐个兜底；
      * 全都取不到就返回 null，让界面显示「—」而不是 0。
      */
+    /**
+     * 从积分接口取剩余积分。
+     *
+     * 平台前端真实读法：`GET /point/user/info` → `result.totalPoint`。
+     * 其余名字作为兼容兜底。拿不到返回 null（界面显「—」），与「真的是 0」区分。
+     */
     fun parsePoints(result: JSONObject): Int? {
-        // 字段名以平台前端实际读取的为准（从 bundle 反查）：
-        // totalUserPoints / totalPoint / point，其余为兼容旧版或多端差异的兜底。
         val candidates = listOf(
-            "totalUserPoints", "totalPoint", "point", "points",
+            "totalPoint", "totalUserPoints", "point", "points",
             "available", "residue", "balance", "score", "value",
         )
         candidates.forEach { key ->
@@ -287,6 +330,24 @@ object AiStudioProtocol {
         val nested = result.optJSONObject("data")
             ?: result.optJSONObject("user") ?: return null
         return parsePoints(nested)
+    }
+
+    /**
+     * 今天是否已签到。平台真实字段：`isFinishSign`（`/point/user/info`）。
+     * 取不到返回 null，由调用方决定是否用本机记录兜底。
+     */
+    fun parseSignInDone(result: JSONObject): Boolean? {
+        listOf("isFinishSign", "signInStatus", "signed", "isSign").forEach { key ->
+            if (result.has(key)) {
+                val value = result.opt(key)
+                when (value) {
+                    is Boolean -> return value
+                    is Number -> return value.toInt() == 1
+                    is String -> return value == "1" || value.equals("true", true)
+                }
+            }
+        }
+        return null
     }
 
     /**

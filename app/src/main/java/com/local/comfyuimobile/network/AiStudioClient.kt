@@ -2,7 +2,6 @@ package com.local.comfyuimobile.network
 
 import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.model.AiStudioAccount
-import com.local.comfyuimobile.model.AiStudioProject
 import com.local.comfyuimobile.model.AiStudioSchedule
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -70,16 +69,7 @@ class AiStudioClient {
     }
 
     /** 拉积分余额。 */
-    suspend fun fetchPoints(account: AiStudioAccount): Int? {
-        val raw = runCatching {
-            request(account, AiStudioProtocol.PATH_POINT_INFO, "GET", null, "读取积分")
-        }.onFailure { error ->
-            if (error is CancellationException) throw error
-            AppLogger.warn("读取积分失败：${error.message.orEmpty()}")
-        }.getOrNull() ?: return null
-        logRaw("积分", raw.toString())
-        return AiStudioProtocol.parsePoints(raw)
-    }
+    suspend fun fetchPoints(account: AiStudioAccount): Int? = fetchPointsInfo(account).first
 
     /** 拉算力卡余额。 */
     suspend fun fetchComputeCard(account: AiStudioAccount): String? {
@@ -112,26 +102,53 @@ class AiStudioClient {
         return "已提交领取请求"
     }
 
-    suspend fun listProjects(account: AiStudioAccount, page: Int = 1, pageSize: Int = 30): List<AiStudioProject> {
+    suspend fun listProjects(account: AiStudioAccount, page: Int = 1, pageSize: Int = 30): AiStudioProtocol.ProjectPage {
         // 关键：/studio/project/self/list 前端用的是 `.type("json")`，
-        // 发表单体会被平台 500。这里必须发 JSON。
+        // 分页参数名是 **p**（不是 pageNo）。发错会被平台 500。
         val body = JSONObject()
-            .put("pageNo", page)
+            .put("p", page)
             .put("pageSize", pageSize)
             .toString()
         val primary = request(account, AiStudioProtocol.PATH_PROJECT_LIST, "POST_JSON", body, "读取项目列表")
         logRaw("项目列表", primary.toString())
-        val projects = AiStudioProtocol.parseProjects(primary)
-        if (projects.isNotEmpty()) return projects
+        val parsed = AiStudioProtocol.parseProjectPage(primary)
+        if (parsed.projects.isNotEmpty()) return parsed
         // 主入口读不到时试备用端点（同样是 JSON）。
         val fallback = runCatching {
             request(account, AiStudioProtocol.PATH_PROJECT_LIST_ALT, "POST_JSON", body, "读取项目列表")
         }.onFailure { error ->
             if (error is CancellationException) throw error
             AppLogger.warn("备用项目列表接口也不可用: ${error.message.orEmpty()}")
-        }.getOrNull() ?: return emptyList()
+        }.getOrNull() ?: return parsed
         logRaw("项目列表(备用)", fallback.toString())
-        return AiStudioProtocol.parseProjects(fallback)
+        return AiStudioProtocol.parseProjectPage(fallback)
+    }
+
+    /** A币余额（`/studio/trade/coin/residue` → `coinNumShow`）。 */
+    suspend fun fetchACoin(account: AiStudioAccount): String? {
+        val raw = runCatching {
+            request(account, AiStudioProtocol.PATH_COIN_RESIDUE, "GET", null, "读取A币")
+        }.onFailure { error ->
+            if (error is CancellationException) throw error
+            AppLogger.warn("读取 A币失败：${error.message.orEmpty()}")
+        }.getOrNull() ?: return null
+        logRaw("A币", raw.toString())
+        return AiStudioProtocol.parseACoin(raw)
+    }
+
+    /**
+     * 读积分信息。除了余额，还带「今天是否已登录」。
+     * 返回 Pair(积分, 今天已签到)；两者各自可能为 null。
+     */
+    suspend fun fetchPointsInfo(account: AiStudioAccount): Pair<Int?, Boolean?> {
+        val raw = runCatching {
+            request(account, AiStudioProtocol.PATH_POINT_INFO, "GET", null, "读取积分")
+        }.onFailure { error ->
+            if (error is CancellationException) throw error
+            AppLogger.warn("读取积分失败：${error.message.orEmpty()}")
+        }.getOrNull() ?: return null to null
+        logRaw("积分", raw.toString())
+        return AiStudioProtocol.parsePoints(raw) to AiStudioProtocol.parseSignInDone(raw)
     }
 
     /** 拿启动时可选的算力档位。 */
