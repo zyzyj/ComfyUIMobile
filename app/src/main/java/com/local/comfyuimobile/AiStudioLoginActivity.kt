@@ -228,12 +228,17 @@ class AiStudioLoginActivity : ComponentActivity() {
 
     private companion object {
         /**
-         * 直接进登录页。u= 参数（URL 编码）让登录成功后跳回 AI Studio。
-         * 不带 u 的话登录完会停在 passport 的默认回跳页，Cookie 虽然也有，
-         * 但用户会看到一个莫名的中间页。
+         * 移动版登录页。
+         *
+         * 踩过的坑：`passport.baidu.com/v2/?login&tpl=mn` 在**手机 UA** 下不渲染
+         * 登录表单，只给一个「赶快来登录」宣传页（真机截图已确认）。百度移动端
+         * 的登录表单在 `wappass.baidu.com/passport/`，它会跳到 `#/insert_account`，
+         * 页面就是一个「请输入手机号/用户名/邮箱」输入框 + 下一步——正是我们要的。
+         *
+         * `u=` 参数让登录成功后回跳 AI Studio，Cookie 才会落到对应域下。
          */
         const val LOGIN_URL =
-            "https://passport.baidu.com/v2/?login&u=" +
+            "https://wappass.baidu.com/passport/?login&u=" +
                 "https%3A%2F%2Faistudio.baidu.com%2F"
     }
 }
