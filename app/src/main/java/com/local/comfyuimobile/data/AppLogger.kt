@@ -39,7 +39,10 @@ object AppLogger {
     }
 
     fun isEnabled(value: Context): Boolean =
-        value.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(ENABLED, false)
+        // v0.1.91：默认**开启**。日志的唯一价值就在出问题的那一刻，而那一刻用户
+        // 往往已经无法复现——以前默认关，等用户打开开关再复现，日志里早错过了。
+        // 记录内容本身已排除提示词、工作流正文与图片，隐私风险可控。
+        value.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(ENABLED, true)
 
     fun setEnabled(value: Context, valueEnabled: Boolean) {
         if (!valueEnabled && enabled) info("用户关闭诊断日志")

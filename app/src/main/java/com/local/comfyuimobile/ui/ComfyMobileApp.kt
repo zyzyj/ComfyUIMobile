@@ -522,25 +522,37 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
     }
     Scaffold(
         topBar = {
+            // v0.1.91：账号/控制台页显示页面标题（它们不是「连接到某台 ComfyUI」
+            // 的功能页，服务器状态在账号页的连接卡片里更完整）；其余页面保持原有
+            // 的服务器状态栏。这样不再出现截图里“尚未连接”顶栏套在新页面标题上的
+            // 双层结构。
             TopAppBar(
                 title = {
-                    Column {
-                        Text(state.activeServer?.name.orEmpty(), style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            if (state.activeJobId != null && state.generationProgress != 1f &&
-                                state.generationMessage.isNotBlank() && !state.generationMessage.startsWith("生成失败")
-                            ) {
-                                state.generationMessage
-                            } else when (state.status) {
-                                ConnectionStatus.CONNECTED -> "在线 · 队列 ${state.queueRemaining} · ${state.systemStats?.comfyVersion.orEmpty()}"
-                                ConnectionStatus.RECONNECTING -> "正在重连"
-                                else -> state.connectionMessage
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                        )
+                    when (page) {
+                        MainPage.ACCOUNT -> Text("账号", style = MaterialTheme.typography.titleMedium)
+                        MainPage.CONSOLE -> Text("控制台", style = MaterialTheme.typography.titleMedium)
+                        else -> Column {
+                            Text(state.activeServer?.name.orEmpty(), style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                if (state.activeJobId != null && state.generationProgress != 1f &&
+                                    state.generationMessage.isNotBlank() && !state.generationMessage.startsWith("生成失败")
+                                ) {
+                                    state.generationMessage
+                                } else when (state.status) {
+                                    ConnectionStatus.CONNECTED -> "在线 · 队列 ${state.queueRemaining} · ${state.systemStats?.comfyVersion.orEmpty()}"
+                                    ConnectionStatus.RECONNECTING -> "正在重连"
+                                    else -> state.connectionMessage
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
                     }
                 },
-                navigationIcon = { Icon(Icons.Default.Wifi, null, Modifier.padding(start = 12.dp), tint = MaterialTheme.colorScheme.secondary) },
+                navigationIcon = {
+                    if (page != MainPage.ACCOUNT && page != MainPage.CONSOLE) {
+                        Icon(Icons.Default.Wifi, null, Modifier.padding(start = 12.dp), tint = MaterialTheme.colorScheme.secondary)
+                    }
+                },
                 actions = {
                     IconButton(onClick = viewModel::disconnect) {
                         Icon(Icons.Default.CloudOff, "切换服务器")
@@ -701,6 +713,24 @@ private fun WorkflowScreen(state: AppUiState, viewModel: MainViewModel, onOpenPa
         }
         val filtered = WorkflowBrowser.entries(state.workflows, currentFolder, search)
         LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // v0.1.91：未连接时给一条明确引导。以前这里只有一片空白，
+            // 用户不知道参数页在哪、也不知道下一步该干嘛。
+            if (state.activeServer == null) {
+                item {
+                    OutlinedCard(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("还没连接 ComfyUI", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "先去「账号」页连接一台 ComfyUI（局域网或云端均可）。\n" +
+                                    "连接后这里会列出服务器上的工作流；\n" +
+                                    "选中工作流点「打开参数」即可进入参数页编辑并生成。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
             items(filtered, key = { it.path }) { entry ->
                 WorkflowRow(
                     entry = entry,
@@ -3608,15 +3638,14 @@ private fun previewUrl(media: ResultMedia): String =
 /**
  * 账号页——App 的新首页。
  *
- * 设计上刻意不做成「一堆相同圆角卡片堆下来」：最上面是账号身份条（有账号时
- * 直接显示身份，没有就给一个明确的登录入口），中间是积分与算力两块数据，
- * 再往下才是项目与服务器连接。信息按「我是谁 → 我有什么 → 我能做什么」排。
+ * v0.1.91：不再自带 Scaffold/TopAppBar——外层 ConnectedApp 已统一提供标题栏，
+ * 页内只负责内容。之前每页套一层 Scaffold，截图里出现了双层标题栏。
+ * 布局按「我是谁 → 我有什么 → 我能做什么」排：身份条、积分与算力、项目、
+ * 服务器连接。
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
     val panel = state.aiStudio
-    var showLogin by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val loginLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) viewModel.onAiStudioLoggedIn()
@@ -3625,27 +3654,11 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
         if (panel.activeAccount() != null) viewModel.aiStudioRefreshAccount()
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text("账号", style = MaterialTheme.typography.headlineSmall)
-                },
-                actions = {
-                    if (panel.activeAccount() != null) {
-                        IconButton(onClick = { viewModel.aiStudioRefreshAccount() }) {
-                            Icon(Icons.Outlined.Refresh, "刷新账号数据")
-                        }
-                    }
-                },
-            )
-        },
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
             // —— 身份条 ——
             item {
                 AccountIdentityCard(panel = panel, onLogin = { loginLauncher.launch(Intent(context, AiStudioLoginActivity::class.java)) })
@@ -3737,8 +3750,6 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
             }
         }
     }
-    if (showLogin) Unit
-}
 
 @Composable
 private fun AccountIdentityCard(panel: AiStudioState, onLogin: () -> Unit) {
@@ -4007,20 +4018,16 @@ private fun RawResponseCard(raw: String, context: Context) {
  * 对应「启动项目后那个终端」。这里刻意**不做一个真的终端模拟器**——
  * 手机上敲命令行是折磨。取而代之：上半部分是常用操作（启动/停止/装环境），
  * 下半部分是这些操作的输出回显。想看结果，看这里就够了。
+ *
+ * v0.1.91：标题栏由外层 ConnectedApp 统一提供，本页不再自带 Scaffold。
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
-    Scaffold(
-        topBar = {
-            TopAppBar(title = { Text("控制台", style = MaterialTheme.typography.headlineSmall) })
-        },
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
             item {
                 OutlinedCard(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -4074,7 +4081,6 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
             }
         }
     }
-}
 
 @Composable
 private fun ConsoleRow(label: String, value: String) {
