@@ -126,9 +126,34 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+      - name: 编译错误写进 job summary（诊断）
+        # v0.1.90：原来只在 main/master 把错误写成仓库文件（build-errors-*.log），
+        # 但那是需要认证才能看的日志的替代品，结果 dev 分支反而无诊断可看。
+        # job summary 无需登录即可在 Actions 页面直接阅读，也不污染仓库历史。
+        if: ${{ failure() }}
+        run: |
+          {
+            echo '### 构建失败诊断'
+            echo ''
+            if [ -s /tmp/gradle-debug.log ]; then
+              echo '#### Kotlin / 编译错误行'
+              echo '```'
+              grep -aE "^e: |FAILED|What went wrong|Caused by:|Execution failed|OutOfMemory|Killed|error:" /tmp/gradle-debug.log 2>/dev/null | head -80 || true
+              echo '```'
+              echo ''
+              echo '<details><summary>日志前 80 行</summary>'
+              echo ''
+              echo '```'
+              head -80 /tmp/gradle-debug.log 2>/dev/null || true
+              echo '```'
+              echo '</details>'
+            else
+              echo 'gradle-debug.log 为空。'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: 上报编译错误到仓库文件（诊断）
-        # 只在正式分支上报：dev 是日常迭代分支，构建失败看 Actions 日志即可，
-        # 不该把错误日志提交进仓库污染历史。
+        # 只在正式分支上报：dev 是日常迭代分支，失败诊断走 job summary 与 artifact。
         if: ${{ failure() && (github.ref_name == 'main' || github.ref_name == 'master') }}
         run: |
           if [ -s /tmp/gradle-debug.log ] || [ -s /tmp/gradle-release.log ]; then
