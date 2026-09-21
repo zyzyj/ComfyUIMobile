@@ -126,36 +126,36 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-      - name: 编译错误写进 job summary（诊断）
-        # v0.1.90：原来只在 main/master 把错误写成仓库文件（build-errors-*.log），
-        # 但那是需要认证才能看的日志的替代品，结果 dev 分支反而无诊断可看。
-        # job summary 无需登录即可在 Actions 页面直接阅读，也不污染仓库历史。
+      - name: 编译错误公开诊断（annotation + summary）
+        # v0.1.90：Actions 的运行日志与 job summary 都要登录才能看，而本仓库的
+        # 诊断文件写入又依赖 gh api（可能静默失败）。用 ::error:: 把编译错误行
+        # 打成 annotation —— 它出现在 run 页面的 Annotations 区，公开可读，
+        # 也不需要在仓库里留下任何文件。
         if: ${{ failure() }}
         run: |
-          {
-            echo '### 构建失败诊断'
-            echo ''
-            if [ -s /tmp/gradle-debug.log ]; then
-              echo '#### Kotlin / 编译错误行'
+          set +e
+          if [ -s /tmp/gradle-debug.log ]; then
+            echo "::group::Kotlin / 编译错误行"
+            grep -aE "^e: |FAILED|What went wrong|Caused by:|Execution failed|OutOfMemory|Killed|error:" \
+              /tmp/gradle-debug.log 2>/dev/null | head -60 |
+              while IFS= read -r line; do
+                echo "::error title=编译错误::$line"
+              done
+            echo "::endgroup::"
+            {
+              echo '### 构建失败诊断'
               echo '```'
-              grep -aE "^e: |FAILED|What went wrong|Caused by:|Execution failed|OutOfMemory|Killed|error:" /tmp/gradle-debug.log 2>/dev/null | head -80 || true
+              grep -aE "^e: |FAILED" /tmp/gradle-debug.log 2>/dev/null | head -60
               echo '```'
-              echo ''
-              echo '<details><summary>日志前 80 行</summary>'
-              echo ''
-              echo '```'
-              head -80 /tmp/gradle-debug.log 2>/dev/null || true
-              echo '```'
-              echo '</details>'
-            else
-              echo 'gradle-debug.log 为空。'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error title=构建失败::gradle-debug.log 为空，无法定位编译错误"
+          fi
 
       - name: 上报编译错误到仓库文件（诊断）
-        # 只在正式分支、或明确要求时上报：dev 日常迭代用 job summary 就够了。
-        # 需要免登录拿到完整日志时（本仓库日志本身要认证），把 REF 条件去掉一次即可。
-        if: ${{ failure() }}
+        # 只在正式分支上报：dev 用上一步的 annotation 就够了，不该把错误日志
+        # 提交进仓库污染开发分支的历史。
+        if: ${{ failure() && (github.ref_name == 'main' || github.ref_name == 'master') }}
         run: |
           if [ -s /tmp/gradle-debug.log ] || [ -s /tmp/gradle-release.log ]; then
             {
