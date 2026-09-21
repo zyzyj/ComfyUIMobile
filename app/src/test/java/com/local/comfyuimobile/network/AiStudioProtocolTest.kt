@@ -75,20 +75,22 @@ class AiStudioProtocolTest {
     // ===== 项目列表解析 =====
 
     @Test
-    fun parsesProjectsFromListField() {
+    fun parsesProjectsFromDataField() {
+        // 平台真实响应：result.data 是数组，allCount 是总数
         val json = JSONObject(
             """
-            {"list":[
-              {"projectId":"1","projectName":"ComfyUI","projectAbs":"说明","status":1},
+            {"data":[
+              {"projectId":"1","projectName":"ComfyUI","projectAbs":"说明","running":true},
               {"projectId":"2","projectName":"另一个"}
-            ]}
+            ],"allCount":2}
             """.trimIndent(),
         )
-        val projects = AiStudioProtocol.parseProjects(json)
-        assertEquals(2, projects.size)
-        assertEquals("ComfyUI", projects[0].name)
-        assertTrue("status=1 应判为运行中", projects[0].running)
-        assertFalse(projects[1].running)
+        val page = AiStudioProtocol.parseProjectPage(json)
+        assertEquals(2, page.projects.size)
+        assertEquals(2, page.total)
+        assertEquals("ComfyUI", page.projects[0].name)
+        assertTrue("running=true 应判为运行中", page.projects[0].running)
+        assertFalse(page.projects[1].running)
     }
 
     @Test
@@ -101,7 +103,7 @@ class AiStudioProtocolTest {
 
     @Test
     fun skipsProjectWithoutId() {
-        val json = JSONObject("""{"list":[{"projectName":"没有 id"},{"projectId":"3"}]}""")
+        val json = JSONObject("""{"data":[{"projectName":"没有 id"},{"projectId":"3"}]}""")
         val projects = AiStudioProtocol.parseProjects(json)
         assertEquals(1, projects.size)
         assertEquals("3", projects[0].projectId)
@@ -118,9 +120,26 @@ class AiStudioProtocolTest {
         assertTrue(AiStudioProtocol.parseRunning(JSONObject("""{"isRunning":1}""")))
         assertTrue(AiStudioProtocol.parseRunning(JSONObject("""{"runStatus":"running"}""")))
         assertFalse(AiStudioProtocol.parseRunning(JSONObject("""{"runStatus":"stopped"}""")))
-        assertFalse(AiStudioProtocol.parseRunning(JSONObject("""{"status":0}""")))
+        assertFalse(AiStudioProtocol.parseRunning(JSONObject("""{"running":false}""")))
         // 什么线索都没有时按未运行处理：让用户点一下启动，好过误判成运行中而卡住。
         assertFalse(AiStudioProtocol.parseRunning(JSONObject("{}")))
+    }
+
+    @Test
+    fun parsesSignInStateFromIsFinishSign() {
+        assertEquals(true, AiStudioProtocol.parseSignInDone(JSONObject("""{"isFinishSign":true}""")))
+        assertEquals(false, AiStudioProtocol.parseSignInDone(JSONObject("""{"isFinishSign":false}""")))
+        assertEquals(true, AiStudioProtocol.parseSignInDone(JSONObject("""{"isFinishSign":1}""")))
+        // 没有该字段时返回 null，由调用方退退回本机记录
+        org.junit.Assert.assertNull(AiStudioProtocol.parseSignInDone(JSONObject("{}")))
+    }
+
+    @Test
+    fun parsesACoinFromCoinNumShow() {
+        // 平台真实字段：/studio/trade/coin/residue -> coinNumShow
+        assertEquals("88", AiStudioProtocol.parseACoin(JSONObject("""{"coinNumShow":88}""")))
+        assertEquals("12.5", AiStudioProtocol.parseACoin(JSONObject("""{"coinNumShow":12.5}""")))
+        org.junit.Assert.assertNull(AiStudioProtocol.parseACoin(JSONObject("{}")))
     }
 
     // ===== 算力档位 =====

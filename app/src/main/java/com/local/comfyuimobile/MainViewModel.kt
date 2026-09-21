@@ -533,20 +533,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun aiStudioRefreshAccount() {
         val account = _state.value.aiStudio.activeAccount() ?: return
         viewModelScope.launch {
-            val points = runCatching { aiStudio.fetchPoints(account) }
+            val (points, signedTodayFromApi) = runCatching { aiStudio.fetchPointsInfo(account) }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
                     AppLogger.warn("读取 AI Studio 积分失败", error)
                 }
-                .getOrNull()
+                .getOrDefault(null to null)
             val compute = runCatching { aiStudio.fetchComputeCard(account) }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
                     AppLogger.warn("读取 AI Studio 算力卡失败", error)
                 }
                 .getOrNull()
+            val aCoin = runCatching { aiStudio.fetchACoin(account) }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    AppLogger.warn("读取 AI Studio A币失败", error)
+                }
+                .getOrNull()
+            // 签到状态优先用平台返回的 isFinishSign；拿不到才退回本机记录的日期。
             val lastSign = account.lastSignInAt
-            val signedToday = lastSign > 0L &&
+            val signedTodayLocal = lastSign > 0L &&
                 java.util.Calendar.getInstance().apply { timeInMillis = lastSign }
                     .get(java.util.Calendar.DAY_OF_YEAR) ==
                 java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_YEAR)
@@ -555,12 +562,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     aiStudio = it.aiStudio.copy(
                         points = points,
                         computeCard = compute,
-                        signedInToday = signedToday,
+                        aCoin = aCoin,
+                        signedInToday = signedTodayFromApi ?: signedTodayLocal,
                         lastRawResponse = aiStudio.lastRawResponse,
                     ),
                 )
             }
-            AppLogger.info("AI Studio 资源：积分=${points ?: "未知"}，算力卡=${compute ?: "未知"}")
+            AppLogger.info("AI Studio 资源：积分=${points ?: "未知"}，算力卡=${compute ?: "未知"}，A币=${aCoin ?: "未知"}")
         }
     }
 
@@ -594,14 +602,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(aiStudio = it.aiStudio.copy(loadingProjects = true, error = null)) }
         aiStudioJob = viewModelScope.launch {
             runCatching { aiStudio.listProjects(account) }
-                .onSuccess { projects ->
-                    AppLogger.info("AI Studio 项目列表：${projects.size} 个")
+                .onSuccess { page ->
+                    AppLogger.info("AI Studio 项目列表：${page.projects.size} 个（共 ${page.total}）")
                     _state.update {
                         it.copy(
                             aiStudio = it.aiStudio.copy(
-                                projects = projects,
+                                projects = page.projects,
                                 loadingProjects = false,
-                                message = if (projects.isEmpty()) "没有读到项目" else "共 ${projects.size} 个项目",
+                                message = if (page.projects.isEmpty()) "没有读到项目" else "共 ${page.total} 个项目",
                                 lastRawResponse = aiStudio.lastRawResponse,
                             ),
                         )
