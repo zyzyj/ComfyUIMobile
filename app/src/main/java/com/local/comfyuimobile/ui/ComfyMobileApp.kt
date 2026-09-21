@@ -116,11 +116,8 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Memory
-import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.StopCircle
-import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -252,8 +249,8 @@ private const val IME_RELOCATION_SUPPRESSION_MILLIS = 700L
  * 占着一格只是让底栏更挤。
  */
 private enum class MainPage(val label: String, val icon: ImageVector) {
-    ACCOUNT("账号", Icons.Outlined.Person),
-    CONSOLE("控制台", Icons.Outlined.Terminal),
+    ACCOUNT("账号", Icons.Outlined.AccountCircle),
+    CONSOLE("控制台", Icons.Outlined.Computer),
     WORKFLOWS("工作流", Icons.Outlined.Folder),
     RESULTS("结果", Icons.Outlined.Image),
     TASKS("任务", Icons.AutoMirrored.Outlined.List),
