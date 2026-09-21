@@ -87,19 +87,31 @@ class AiStudioClient {
     /**
      * 领每日资源（算力）。
      *
-     * 真实调用是 `POST /studio/user/center/resource/receive?isInfoComplete=1`
-     * 且**不带 body**。之前当成普通表单 POST 发，平台回「用户信息不完整 500」——
-     * `isInfoComplete=1` 正是绕过那份“完善信息”校验的开关。
+     * 真实调用：`POST /studio/user/center/resource/receive?isInfoComplete=1`，**无 body**。
+     *
+     * 不预先去猜 check 接口的响应结构（字段名未知，猜错反而会误拦），而是直接领取；
+     * 平台在重复领取时回「无效操作」，把它翻译成「今日已领过」即可。
+     * 这样零猜测，拿不到真实响应也不会误判。
      */
     suspend fun receiveResource(account: AiStudioAccount): String {
-        request(
-            account,
-            AiStudioProtocol.PATH_RESOURCE_RECEIVE + "?isInfoComplete=1",
-            "POST_EMPTY",
-            null,
-            "领取算力",
-        )
-        return "已提交领取请求"
+        return try {
+            request(
+                account,
+                AiStudioProtocol.PATH_RESOURCE_RECEIVE + "?isInfoComplete=1",
+                "POST_EMPTY",
+                null,
+                "领取算力",
+            )
+            "领取成功"
+        } catch (error: AiStudioException) {
+            val message = error.message.orEmpty()
+            if (message.contains("无效操作") || message.contains("已领取")) {
+                // 今日已领过：这是正常状态，不是错误。
+                "今日已领过，明天再来"
+            } else {
+                throw error
+            }
+        }
     }
 
     suspend fun listProjects(account: AiStudioAccount, page: Int = 1, pageSize: Int = 30): AiStudioProtocol.ProjectPage {
@@ -265,21 +277,21 @@ class AiStudioClient {
             client.newCall(builder.build()).execute()
         } catch (error: Exception) {
             if (error is CancellationException) throw error
-            throw AiStudioException("$action 失败：网络不可达（${error.message.orEmpty()}）")
+            throw AiStudioException("$action失败：网络不可达（${error.message.orEmpty()}）")
         }
         response.use { resp ->
             val raw = resp.body?.string().orEmpty()
             lastRawResponse = raw.take(4000)
             when {
                 resp.code == 302 || resp.code == 301 -> throw AiStudioException(
-                    "$action 失败：登录已失效，请重新登录 AI Studio",
+                    "$action失败：登录已失效，请重新登录 AI Studio",
                 )
                 !resp.isSuccessful -> throw AiStudioException(
-                    "$action 失败：HTTP ${resp.code}",
+                    "$action失败：HTTP ${resp.code}",
                 )
                 // 偶尔会返回登录页 HTML（百度网关的登录墙）
                 raw.trimStart().startsWith("<") -> throw AiStudioException(
-                    "$action 失败：登录已失效，请重新登录 AI Studio",
+                    "$action失败：登录已失效，请重新登录 AI Studio",
                 )
             }
             AiStudioProtocol.unwrap(raw, action)
