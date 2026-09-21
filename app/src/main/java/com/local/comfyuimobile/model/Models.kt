@@ -283,4 +283,7 @@ data class AppUiState(
      * 有些节点存在于运行时却不在 object_info 里，一刀切禁掉会误伤。
      */
     val missingNodes: List<String> = emptyList(),
+    // ===== v0.1.90 AI Studio 平台 =====
+    /** 百度 AI Studio 面板状态（账号、项目、算力）。 */
+    val aiStudio: AiStudioState = AiStudioState(),
 )

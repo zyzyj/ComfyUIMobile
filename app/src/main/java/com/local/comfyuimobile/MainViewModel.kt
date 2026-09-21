@@ -15,6 +15,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.local.comfyuimobile.bridge.ComfyBridge
+import com.local.comfyuimobile.bridge.AiStudioLoginSession
 import com.local.comfyuimobile.bridge.CookieParser
 import com.local.comfyuimobile.bridge.FieldValue
 import com.local.comfyuimobile.bridge.AdvancedEditorSession
@@ -34,6 +35,9 @@ import com.local.comfyuimobile.data.WorkflowFormat
 import com.local.comfyuimobile.data.WorkflowContentCache
 import com.local.comfyuimobile.data.WorkflowSnapshotStore
 import com.local.comfyuimobile.model.AppUiState
+import com.local.comfyuimobile.model.AiStudioAccount
+import com.local.comfyuimobile.model.AiStudioProject
+import com.local.comfyuimobile.model.AiStudioSchedule
 import com.local.comfyuimobile.model.AppDestination
 import com.local.comfyuimobile.model.AppNavigationRequest
 import com.local.comfyuimobile.model.AiAssistMode
@@ -61,6 +65,9 @@ import com.local.comfyuimobile.model.WorkflowEntry
 import com.local.comfyuimobile.model.WorkflowNode
 import com.local.comfyuimobile.network.ActiveJobRecovery
 import com.local.comfyuimobile.network.ComfyClient
+import com.local.comfyuimobile.network.AiStudioClient
+import com.local.comfyuimobile.network.AiStudioException
+import com.local.comfyuimobile.network.AiStudioProtocol
 import com.local.comfyuimobile.network.ExecutionNodeResolver
 import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.network.LanScanner
@@ -186,6 +193,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var aiAssistJob: Job? = null
     // v0.1.89：服务器已注册的节点类型集合，来自 /object_info，用于缺失预检。
     @Volatile private var knownNodeTypes: Set<String>? = null
+    // ===== v0.1.90 AI Studio 平台 =====
+    private val aiStudio = AiStudioClient()
+    private var aiStudioJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -232,6 +242,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         saveFolderUri = stored.saveFolderUri.ifBlank { null },
                         serverInput = resolvedServerInput,
                         llmConfig = stored.llmConfig,
+                        aiStudio = _state.value.aiStudio.copy(
+                            accounts = stored.aiStudioAccounts,
+                            activeAccountId = stored.aiStudioActiveId.ifBlank { null },
+                        ),
                     )
                 }
                 if (submittedJobsChanged && _state.value.activeServer != null) {
@@ -402,6 +416,224 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return profiles.firstOrNull {
             runCatching { LanAddress.normalize(it.baseUrl) }.getOrDefault(it.baseUrl) == target
         }?.cookie.orEmpty()
+    }
+
+    // ===== v0.1.90 AI Studio 平台 =====
+
+    /**
+     * 保存刚登录得到的账号。
+     *
+     * 以 UID 为身份键：同一账号重复登录只更新凭据，不会在列表里堆出第二条。
+     * UID 拿不到时退回昵称/Cookie 散列（见 [AiStudioProtocol.accountKey]）。
+     */
+    fun onAiStudioLoggedIn() {
+        val result = AiStudioLoginSession.consume() ?: return
+        viewModelScope.launch {
+            val existing = _state.value.aiStudio
+            // 先拉一次资料，既确认登录态有效，又能把 UID/昵称补上。
+            val provisional = AiStudioProtocol.newAccount(
+                cookie = result.cookie,
+                bdToken = result.bdToken,
+                uid = "",
+                nickname = "",
+                now = System.currentTimeMillis(),
+            )
+            val profile = runCatching { aiStudio.fetchProfile(provisional) }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    AppLogger.warn("读取 AI Studio 账号信息失败（仍按登录成功保存）", error)
+                }
+                .getOrNull()
+            val account = AiStudioProtocol.newAccount(
+                cookie = result.cookie,
+                bdToken = result.bdToken,
+                uid = profile?.let { AiStudioProtocol.parseUid(it) }.orEmpty(),
+                nickname = profile?.let { AiStudioProtocol.parseNickname(it) }.orEmpty(),
+                now = System.currentTimeMillis(),
+            )
+            val merged = existing.accounts.filterNot { it.id == account.id } + account
+            persistAiStudio(merged, account.id)
+            _state.update {
+                it.copy(
+                    aiStudio = it.aiStudio.copy(
+                        accounts = merged,
+                        activeAccountId = account.id,
+                        error = null,
+                        message = "已登录：${account.displayName()}",
+                    ),
+                )
+            }
+            AppLogger.info("AI Studio 账号已保存：${account.displayName()}（UID=${account.uid.ifBlank { "未知" }}）")
+        }
+    }
+
+    fun selectAiStudioAccount(accountId: String) {
+        persistAiStudio(_state.value.aiStudio.accounts, accountId)
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(activeAccountId = accountId, projects = emptyList())) }
+    }
+
+    fun removeAiStudioAccount(accountId: String) {
+        val remaining = _state.value.aiStudio.accounts.filterNot { it.id == accountId }
+        val nextActive = _state.value.aiStudio.activeAccountId
+            ?.takeIf { id -> remaining.any { it.id == id } }
+            ?: remaining.firstOrNull()?.id
+        persistAiStudio(remaining, nextActive)
+        _state.update {
+            it.copy(aiStudio = it.aiStudio.copy(accounts = remaining, activeAccountId = nextActive, projects = emptyList()))
+        }
+    }
+
+    /** 签到。多个账号时需要逐个切过去分别签——这里只签当前选中的那个。 */
+    fun aiStudioSignIn() {
+        val account = _state.value.aiStudio.activeAccount() ?: return
+        if (aiStudioJob?.isActive == true) return
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(signingIn = true, error = null, message = null)) }
+        aiStudioJob = viewModelScope.launch {
+            runCatching { aiStudio.signIn(account) }
+                .onSuccess {
+                    val at = System.currentTimeMillis()
+                    val accounts = _state.value.aiStudio.accounts.map {
+                        if (it.id == account.id) it.copy(lastSignInAt = at) else it
+                    }
+                    persistAiStudio(accounts, account.id)
+                    AppLogger.info("AI Studio 签到成功：${account.displayName()}")
+                    _state.update {
+                        it.copy(
+                            aiStudio = it.aiStudio.copy(
+                                accounts = accounts,
+                                signingIn = false,
+                                message = "已签到：${account.displayName()}",
+                                lastRawResponse = aiStudio.lastRawResponse,
+                            ),
+                        )
+                    }
+                }
+                .onFailure { error -> failAiStudio("签到失败", error) }
+        }
+    }
+
+    /** 拉当前账号的项目列表。 */
+    fun aiStudioLoadProjects() {
+        val account = _state.value.aiStudio.activeAccount() ?: return
+        if (aiStudioJob?.isActive == true) return
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(loadingProjects = true, error = null)) }
+        aiStudioJob = viewModelScope.launch {
+            runCatching { aiStudio.listProjects(account) }
+                .onSuccess { projects ->
+                    AppLogger.info("AI Studio 项目列表：${projects.size} 个")
+                    _state.update {
+                        it.copy(
+                            aiStudio = it.aiStudio.copy(
+                                projects = projects,
+                                loadingProjects = false,
+                                message = if (projects.isEmpty()) "没有读到项目" else "共 ${projects.size} 个项目",
+                                lastRawResponse = aiStudio.lastRawResponse,
+                            ),
+                        )
+                    }
+                }
+                .onFailure { error -> failAiStudio("读取项目列表失败", error) }
+        }
+    }
+
+    /** 拉某个项目的可用算力档位。 */
+    fun aiStudioLoadSchedules(projectId: String) {
+        val account = _state.value.aiStudio.activeAccount() ?: return
+        aiStudioJob = viewModelScope.launch {
+            runCatching { aiStudio.listSchedules(account, projectId) }
+                .onSuccess { schedules ->
+                    AppLogger.info("AI Studio 可用算力：${schedules.joinToString { it.displayName() }}")
+                    _state.update {
+                        it.copy(
+                            aiStudio = it.aiStudio.copy(
+                                schedules = schedules,
+                                lastRawResponse = aiStudio.lastRawResponse,
+                            ),
+                        )
+                    }
+                }
+                .onFailure { error -> failAiStudio("读取可用算力失败", error) }
+        }
+    }
+
+    /** 启动项目环境。scheduleName 为空时用平台默认调度。 */
+    fun aiStudioStartProject(projectId: String, scheduleName: String) {
+        val account = _state.value.aiStudio.activeAccount() ?: return
+        if (aiStudioJob?.isActive == true) return
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(startingProjectId = projectId, error = null, message = null)) }
+        aiStudioJob = viewModelScope.launch {
+            runCatching { aiStudio.startProject(account, projectId, scheduleName) }
+                .onSuccess {
+                    AppLogger.info("AI Studio 启动请求已提交：项目=$projectId，算力=${scheduleName.ifBlank { "默认" }}")
+                    _state.update {
+                        it.copy(
+                            aiStudio = it.aiStudio.copy(
+                                startingProjectId = null,
+                                message = "已提交启动请求，等平台分配机器（可能要 1-2 分钟）",
+                                lastRawResponse = aiStudio.lastRawResponse,
+                            ),
+                        )
+                    }
+                    aiStudioLoadProjects()
+                }
+                .onFailure { error -> failAiStudio("启动失败", error) { it.copy(startingProjectId = null) } }
+        }
+    }
+
+    fun aiStudioStopProject(projectId: String) {
+        val account = _state.value.aiStudio.activeAccount() ?: return
+        if (aiStudioJob?.isActive == true) return
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(stoppingProjectId = projectId, error = null, message = null)) }
+        aiStudioJob = viewModelScope.launch {
+            runCatching { aiStudio.stopProject(account, projectId) }
+                .onSuccess {
+                    AppLogger.info("AI Studio 停止请求已提交：项目=$projectId")
+                    _state.update {
+                        it.copy(
+                            aiStudio = it.aiStudio.copy(
+                                stoppingProjectId = null,
+                                message = "已提交停止请求，机器将在 1-2 分钟内回收",
+                                lastRawResponse = aiStudio.lastRawResponse,
+                            ),
+                        )
+                    }
+                    aiStudioLoadProjects()
+                }
+                .onFailure { error -> failAiStudio("停止失败", error) { it.copy(stoppingProjectId = null) } }
+        }
+    }
+
+    fun clearAiStudioMessage() {
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(message = null, error = null)) }
+    }
+
+    private fun persistAiStudio(accounts: List<AiStudioAccount>, activeId: String?) {
+        viewModelScope.launch {
+            runCatching { preferences.saveAiStudioAccounts(accounts, activeId.orEmpty()) }
+                .onFailure { AppLogger.error("保存 AI Studio 账号失败", it) }
+        }
+    }
+
+    private fun failAiStudio(
+        prefix: String,
+        error: Throwable,
+        extra: (com.local.comfyuimobile.model.AiStudioState) -> com.local.comfyuimobile.model.AiStudioState = { it },
+    ) {
+        if (error is CancellationException) throw error
+        AppLogger.error(prefix, error)
+        val detail = (error as? AiStudioException)?.message ?: error.message ?: error.javaClass.simpleName
+        _state.update {
+            it.copy(
+                aiStudio = extra(
+                    it.aiStudio.copy(
+                        loadingProjects = false,
+                        signingIn = false,
+                        error = "$prefix：$detail",
+                        lastRawResponse = aiStudio.lastRawResponse,
+                    ),
+                ),
+            )
+        }
     }
 
     fun clearMessage() = _state.update { it.copy(error = null, notice = null) }
