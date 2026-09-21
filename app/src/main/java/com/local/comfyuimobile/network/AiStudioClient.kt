@@ -171,31 +171,29 @@ class AiStudioClient {
     /**
      * 启动项目环境。
      *
-     * 先取通行码（[AiStudioProtocol.PATH_REQUIRE_GRAPHIC]）；免费环境通常返回空，
-     * 拿不到也不阻断——真需要校验时平台会用错误码 8307 明确拒绝，界面再提示用户。
+     * 启动前先问一次「是否需要人机校验」（[AiStudioProtocol.PATH_REQUIRE_GRAPHIC]，
+     * POST 无 body）。注意：这个接口返回的是**是否需要校验的标记**，不是 tk/ds —— tk/ds
+     * 是校验弹窗完成后才产生的一次性凭证。免费环境通常不需要校验，直接启动；
+     * 真需要时平台会用错误码 8307 明确拒绝，届时提示用户去网页完成校验。
      */
     suspend fun startProject(
         account: AiStudioAccount,
         projectId: String,
         scheduleName: String,
     ): String {
-        var tk = ""
-        var ds = ""
         runCatching {
-            val graphic = request(
+            request(
                 account,
                 AiStudioProtocol.PATH_REQUIRE_GRAPHIC,
-                "POST",
-                AiStudioProtocol.formEncode(mapOf("projectId" to projectId)),
-                "获取启动校验",
+                "POST_EMPTY",
+                null,
+                "检查启动校验",
             )
-            tk = graphic.optString("tk")
-            ds = graphic.optString("ds")
         }.onFailure { error ->
             if (error is CancellationException) throw error
-            AppLogger.warn("获取启动通行码失败（按免校验继续）: ${error.message.orEmpty()}")
+            AppLogger.warn("启动校验预检失败（按免校验继续）: ${error.message.orEmpty()}")
         }
-        val body = AiStudioProtocol.runProjectBody(projectId, scheduleName, tk, ds)
+        val body = AiStudioProtocol.runProjectBody(projectId, scheduleName)
         request(
             account,
             AiStudioProtocol.PATH_PROJECT_RUNNING,
