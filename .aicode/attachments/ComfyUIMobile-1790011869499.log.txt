@@ -1,0 +1,64 @@
+2026-09-22 01:30:09.539 [信息] 应用启动，日志记录=开启
+2026-09-22 01:30:09.818 [信息] WebView 运行时（初始化）：包=com.google.android.webview，版本=151.0.7922.170
+2026-09-22 01:30:28.661 [信息] AI Studio 登录完成：Cookie 长度=658，bdToken=已取到
+2026-09-22 01:30:29.071 [信息] AI Studio 账号已保存：未命名账号（UID=未知）
+2026-09-22 01:30:29.707 [信息] AI Studio 资源：积分=未知，算力卡=未知
+2026-09-22 01:30:29.918 [信息] 检查更新 开始
+2026-09-22 01:30:31.065 [信息] 检查更新 完成
+2026-09-22 01:30:33.625 [信息] AI Studio 签到成功：未命名账号
+2026-09-22 01:30:43.760 [错误] 读取项目列表失败
+com.local.comfyuimobile.network.AiStudioException: 读取项目列表 失败：系统错误（错误码 500）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:79)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:230)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-22 01:30:51.952 [信息] AI Studio 签到成功：未命名账号
+2026-09-22 01:30:52.808 [错误] 领取算力失败
+com.local.comfyuimobile.network.AiStudioException: 领取算力 失败：用户信息不完整（错误码 500）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:79)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:230)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-22 01:30:55.353 [信息] AI Studio 资源：积分=未知，算力卡=未知
+2026-09-22 01:30:56.591 [信息] AI Studio 资源：积分=未知，算力卡=未知
+2026-09-22 01:30:57.623 [错误] 领取算力失败
+com.local.comfyuimobile.network.AiStudioException: 领取算力 失败：用户信息不完整（错误码 500）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:79)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:230)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-22 01:30:58.976 [信息] AI Studio 签到成功：未命名账号
+2026-09-22 01:31:02.693 [错误] 领取算力失败
+com.local.comfyuimobile.network.AiStudioException: 领取算力 失败：用户信息不完整（错误码 500）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:79)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:230)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+

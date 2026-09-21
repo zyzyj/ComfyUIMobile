@@ -430,25 +430,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val result = AiStudioLoginSession.consume() ?: return
         viewModelScope.launch {
             val existing = _state.value.aiStudio
-            // 先拉一次资料，既确认登录态有效，又能把 UID/昵称补上。
-            val provisional = AiStudioProtocol.newAccount(
-                cookie = result.cookie,
-                bdToken = result.bdToken,
-                uid = "",
-                nickname = "",
-                now = System.currentTimeMillis(),
-            )
-            val profile = runCatching { aiStudio.fetchProfile(provisional) }
-                .onFailure { error ->
-                    if (error is CancellationException) throw error
-                    AppLogger.warn("读取 AI Studio 账号信息失败（仍按登录成功保存）", error)
+            // v0.1.93：优先用登录页从 `window.aiStudio.userInfo` 直接读到的
+            // uid/昵称（最准）；读不到才退回调资料接口。之前只依赖资料接口，
+            // 接口一变就退化成「未命名账号 / UID 未知」。
+            var uid = result.uid
+            var nickname = result.nickname
+            if (uid.isBlank()) {
+                val provisional = AiStudioProtocol.newAccount(
+                    cookie = result.cookie,
+                    bdToken = result.bdToken,
+                    uid = "",
+                    nickname = "",
+                    now = System.currentTimeMillis(),
+                )
+                val profile = runCatching { aiStudio.fetchProfile(provisional) }
+                    .onFailure { error ->
+                        if (error is CancellationException) throw error
+                        AppLogger.warn("读取 AI Studio 账号信息失败（仍按登录成功保存）", error)
+                    }
+                    .getOrNull()
+                if (profile != null) {
+                    uid = AiStudioProtocol.parseUid(profile)
+                    nickname = AiStudioProtocol.parseNickname(profile)
                 }
-                .getOrNull()
+            }
             val account = AiStudioProtocol.newAccount(
                 cookie = result.cookie,
                 bdToken = result.bdToken,
-                uid = profile?.let { AiStudioProtocol.parseUid(it) }.orEmpty(),
-                nickname = profile?.let { AiStudioProtocol.parseNickname(it) }.orEmpty(),
+                uid = uid,
+                nickname = nickname,
                 now = System.currentTimeMillis(),
             )
             val merged = existing.accounts.filterNot { it.id == account.id } + account
@@ -464,6 +474,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             AppLogger.info("AI Studio 账号已保存：${account.displayName()}（UID=${account.uid.ifBlank { "未知" }}）")
+            aiStudioRefreshAccount()
+            aiStudioLoadProjects()
         }
     }
 
@@ -684,14 +696,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         if (error is CancellationException) throw error
         AppLogger.error(prefix, error)
-        val detail = (error as? AiStudioException)?.message ?: error.message ?: error.javaClass.simpleName
+        // AiStudioException 的 message 已经自带「动作 + 失败：原因」的完整表述，
+        // 再拼一次 prefix 会变成「领取算力失败：领取算力 失败：…」。
+        val detail = (error as? AiStudioException)?.message
+            ?: (error.message ?: error.javaClass.simpleName)
+        val shown = if (detail.contains(prefix.removeSuffix("失败"))) detail else "$prefix：$detail"
         _state.update {
             it.copy(
                 aiStudio = extra(
                     it.aiStudio.copy(
                         loadingProjects = false,
                         signingIn = false,
-                        error = "$prefix：$detail",
+                        error = shown,
                         lastRawResponse = aiStudio.lastRawResponse,
                     ),
                 ),

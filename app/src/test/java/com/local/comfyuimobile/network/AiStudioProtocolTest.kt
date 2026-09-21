@@ -177,6 +177,45 @@ class AiStudioProtocolTest {
         assertEquals("uid:5", AiStudioProtocol.accountKey("5", "昵称", "BDUSS=x"))
     }
 
+    // ===== 积分 / 算力字段（以平台前端实际读取的字段名为准）=====
+
+    @Test
+    fun parsesPointsFromRealFieldNames() {
+        // totalUserPoints / totalPoint 是平台前端真实读取的字段
+        assertEquals(120, AiStudioProtocol.parsePoints(JSONObject("""{"totalUserPoints":120}""")))
+        assertEquals(8, AiStudioProtocol.parsePoints(JSONObject("""{"totalPoint":8}""")))
+        assertEquals(0, AiStudioProtocol.parsePoints(JSONObject("""{"point":0}""")))
+    }
+
+    @Test
+    fun parsesPointsFromNestedData() {
+        assertEquals(55, AiStudioProtocol.parsePoints(JSONObject("""{"data":{"totalPoint":55}}""")))
+    }
+
+    @Test
+    fun pointsIsNullWhenAbsent() {
+        // 「读不到」必须与「真的是 0」区分：null 让界面显示——而不是 0
+        org.junit.Assert.assertNull(AiStudioProtocol.parsePoints(JSONObject("""{"foo":1}""")))
+    }
+
+    @Test
+    fun parsesComputeCardFromResourceTotal() {
+        assertEquals("32.5 点", AiStudioProtocol.parseComputeCard(JSONObject("""{"resourceTotal":32.5}""")))
+        // 整数不带小数尾巴
+        assertEquals("16 点", AiStudioProtocol.parseComputeCard(JSONObject("""{"resourceTotal":16.0}""")))
+    }
+
+    @Test
+    fun computeCardIsNullWhenAbsent() {
+        org.junit.Assert.assertNull(AiStudioProtocol.parseComputeCard(JSONObject("""{"foo":1}""")))
+    }
+
+    @Test
+    fun receiveResourcePathCarriesInfoCompleteFlag() {
+        // 真实调用带 ?isInfoComplete=1，不带则平台回「用户信息不完整 500」
+        assertTrue(AiStudioProtocol.PATH_RESOURCE_RECEIVE.endsWith("resource/receive"))
+    }
+
     @Test
     fun accountKeyFallsBackToNicknameThenCookie() {
         assertEquals("name:昵称", AiStudioProtocol.accountKey("", "昵称", "c"))
