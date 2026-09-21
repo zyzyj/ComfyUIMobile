@@ -105,7 +105,7 @@ import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material.LocalContentColor
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.ChevronRight
@@ -241,20 +241,30 @@ import kotlin.random.Random
 private const val IME_RELOCATION_SUPPRESSION_MILLIS = 700L
 
 /**
- * v0.1.90：底栏页签。
+ * v0.1.90：页面。
  *
- * 「账号」提到第一位——这个 App 现在既能直连 ComfyUI，也能从 AI Studio 拉起
+ * 「账号」放第一位——这个 App 现在既能直连 ComfyUI，也能从 AI Studio 拉起
  * 云端算力，两种用法都不该被「先填一个服务器地址」挡在门外。
- * 「参数」从底栏去掉：它本来就是从工作流列表点进去的（见 MainPage 跳转逻辑），
- * 占着一格只是让底栏更挤。
+ *
+ * PARAMETERS 仍是有效页面（从工作流列表点进去），但**不进底栏**：
+ * 它不是一个常驻入口，占着底栏一格只会让常用页更挤。底栏只渲染
+ * [MainPage.bottomBarEntries]。
  */
-private enum class MainPage(val label: String, val icon: ImageVector) {
+private enum class MainPage(val label: String, val icon: ImageVector, val inBottomBar: Boolean = true) {
     ACCOUNT("账号", Icons.Outlined.AccountCircle),
     CONSOLE("控制台", Icons.Outlined.Computer),
     WORKFLOWS("工作流", Icons.Outlined.Folder),
     RESULTS("结果", Icons.Outlined.Image),
     TASKS("任务", Icons.AutoMirrored.Outlined.List),
     QUICK("快捷", Icons.Outlined.PlayArrow),
+    // 图标沿用本文件已验证可用的 Icons.Default.Tune（Outlined 版不确定存在）；
+    // 它不进底栏，实际不会渲染，这里只为保持枚举完整。
+    PARAMETERS("参数", Icons.Default.Tune, inBottomBar = false),
+    ;
+
+    companion object {
+        val bottomBarEntries: List<MainPage> = entries.filter { it.inBottomBar }
+    }
 }
 
 private enum class ResultLayout { ALL, ALBUMS }
@@ -547,7 +557,7 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
         },
         bottomBar = {
             NavigationBar {
-                MainPage.entries.forEach { target ->
+                MainPage.bottomBarEntries.forEach { target ->
                     NavigationBarItem(
                         selected = page == target,
                         onClick = { page = target },
@@ -563,7 +573,7 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
             when (page) {
                 MainPage.ACCOUNT -> AccountScreen(state, viewModel)
                 MainPage.CONSOLE -> ConsoleScreen(state, viewModel)
-                MainPage.WORKFLOWS -> WorkflowScreen(state, viewModel, onOpenParameters = { page = MainPage.WORKFLOWS })
+                MainPage.WORKFLOWS -> WorkflowScreen(state, viewModel, onOpenParameters = { page = MainPage.PARAMETERS })
                 MainPage.PARAMETERS -> ParameterScreen(state, viewModel)
                 MainPage.RESULTS -> ResultScreen(
                     state = state,
@@ -3796,7 +3806,10 @@ private fun ResourceTile(
     OutlinedCard(modifier = modifier) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary) { icon() }
+                CompositionLocalProvider(
+                    LocalContentColor provides MaterialTheme.colorScheme.primary,
+                    content = icon,
+                )
                 Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Text(value, style = MaterialTheme.typography.headlineSmall)
