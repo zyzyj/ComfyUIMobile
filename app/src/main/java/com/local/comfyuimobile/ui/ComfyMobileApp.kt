@@ -46,6 +46,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -93,7 +94,6 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
@@ -105,6 +105,23 @@ import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material.LocalContentColor
+import androidx.compose.material.icons.outlined.AccountCircle
+import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Computer
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.StopCircle
+import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -226,12 +243,21 @@ import kotlin.random.Random
 
 private const val IME_RELOCATION_SUPPRESSION_MILLIS = 700L
 
+/**
+ * v0.1.90：底栏页签。
+ *
+ * 「账号」提到第一位——这个 App 现在既能直连 ComfyUI，也能从 AI Studio 拉起
+ * 云端算力，两种用法都不该被「先填一个服务器地址」挡在门外。
+ * 「参数」从底栏去掉：它本来就是从工作流列表点进去的（见 MainPage 跳转逻辑），
+ * 占着一格只是让底栏更挤。
+ */
 private enum class MainPage(val label: String, val icon: ImageVector) {
-    WORKFLOWS("工作流", Icons.Default.Folder),
-    PARAMETERS("参数", Icons.Default.Tune),
-    RESULTS("结果", Icons.Default.Image),
-    TASKS("任务", Icons.AutoMirrored.Filled.List),
-    QUICK("快捷", Icons.Default.PlayArrow),
+    ACCOUNT("账号", Icons.Outlined.Person),
+    CONSOLE("控制台", Icons.Outlined.Terminal),
+    WORKFLOWS("工作流", Icons.Outlined.Folder),
+    RESULTS("结果", Icons.Outlined.Image),
+    TASKS("任务", Icons.AutoMirrored.Outlined.List),
+    QUICK("快捷", Icons.Outlined.PlayArrow),
 }
 
 private enum class ResultLayout { ALL, ALBUMS }
@@ -276,11 +302,10 @@ fun ComfyMobileApp(viewModel: MainViewModel, bridge: ComfyBridge) {
     }
 
     Box(Modifier.fillMaxSize()) {
-        if (state.activeServer == null) {
-            ConnectionPage(state, viewModel, snackbar)
-        } else {
-            ConnectedApp(state, viewModel, snackbar)
-        }
+        // v0.1.90：不再以「有没有连上服务器」决定进哪个页面。以前未连接就只能停在
+        // 连接页，账号与控制台这类功能全被挡住。现在有服务器地址就走完整界面，
+        // 连接表单收进账号页的可展开卡片里。
+        ConnectedApp(state, viewModel, snackbar)
         // v0.1.88：AI 提示词助手挂在最外层，参数页和快捷页都能弹出来。
         if (state.aiAssistTarget != null) AiAssistDialog(state, viewModel)
         key(bridge.webView) {
@@ -539,7 +564,9 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when (page) {
-                MainPage.WORKFLOWS -> WorkflowScreen(state, viewModel, onOpenParameters = { page = MainPage.PARAMETERS })
+                MainPage.ACCOUNT -> AccountScreen(state, viewModel)
+                MainPage.CONSOLE -> ConsoleScreen(state, viewModel)
+                MainPage.WORKFLOWS -> WorkflowScreen(state, viewModel, onOpenParameters = { page = MainPage.WORKFLOWS })
                 MainPage.PARAMETERS -> ParameterScreen(state, viewModel)
                 MainPage.RESULTS -> ResultScreen(
                     state = state,
@@ -3188,14 +3215,6 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
     var confirmDeleteLocal by remember { mutableStateOf(false) }
     var confirmClearDrafts by remember { mutableStateOf(false) }
     var showDiagnosticLog by remember { mutableStateOf(false) }
-    // v0.1.90：AI Studio 平台面板与登录。
-    var aiStudioOpen by remember { mutableStateOf(false) }
-    val aiStudioLoginLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            viewModel.onAiStudioLoggedIn()
-            aiStudioOpen = true
-        }
-    }
     // v0.1.88：AI 提示词助手配置区默认收起 —— 设置页已经很长了，
     // 不玩 AI 的人不该被三个输入框往下顶。
     var llmExpanded by remember { mutableStateOf(false) }
@@ -3213,15 +3232,6 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
         if (uri != null) viewModel.setSaveFolder(uri)
     }
     LaunchedEffect(Unit) { viewModel.refreshLocalDraftCount() }
-    if (aiStudioOpen) {
-        AiStudioPanelDialog(
-            state = state,
-            viewModel = viewModel,
-            onLogin = { aiStudioLoginLauncher.launch(Intent(context, AiStudioLoginActivity::class.java)) },
-            onDismiss = { aiStudioOpen = false },
-        )
-        return
-    }
     if (showDiagnosticLog) {
         AlertDialog(
             onDismissRequest = { showDiagnosticLog = false },
@@ -3285,11 +3295,12 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                     onTest = viewModel::testLlmConnection,
                 )
                 HorizontalDivider()
-                AiStudioSettingsRow(
-                    state = state,
-                    onOpen = { aiStudioOpen = true },
-                    onLogin = { aiStudioLoginLauncher.launch(Intent(context, AiStudioLoginActivity::class.java)) },
-                )                HorizontalDivider()
+                Text(
+                    "AI Studio 账号在「账号」页管理",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                HorizontalDivider()
                 Text("图片保存位置", style = MaterialTheme.typography.titleSmall)
                 Text(
                     if (state.saveFolderUri != null) {
@@ -3585,177 +3596,241 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 private fun previewUrl(media: ResultMedia): String =
     if (media.kind == MediaKind.IMAGE && media.source == ResultSource.CLOUD) "${media.url}&preview=webp;90" else media.url
 
+// ===================== v0.1.90：账号页 =====================
+
 /**
- * v0.1.90：AI Studio 面板。
+ * 账号页——App 的新首页。
  *
- * 把手机浏览器里那些难受的操作（登录、翻项目、选算力、点启动、签到）收进 App：
- * 全部走平台接口，不需要用户看到任何网页。
- *
- * 底部「原始响应」是刻意留的：平台接口会改版，万一解析抓不到字段，用户能把
- * 真实结构一并反馈，而不必重新反查一遍前端。
+ * 设计上刻意不做成「一堆相同圆角卡片堆下来」：最上面是账号身份条（有账号时
+ * 直接显示身份，没有就给一个明确的登录入口），中间是积分与算力两块数据，
+ * 再往下才是项目与服务器连接。信息按「我是谁 → 我有什么 → 我能做什么」排。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AiStudioPanelDialog(
-    state: AppUiState,
-    viewModel: MainViewModel,
-    onLogin: () -> Unit,
-    onDismiss: () -> Unit,
-) {
+private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
     val panel = state.aiStudio
-    val account = panel.activeAccount()
+    var showLogin by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    LaunchedEffect(account?.id) {
-        if (account != null && panel.projects.isEmpty() && !panel.loadingProjects) {
-            viewModel.aiStudioLoadProjects()
-        }
+    val loginLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) viewModel.onAiStudioLoggedIn()
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Public, null, tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(8.dp))
-                Text("百度 AI Studio")
-            }
-        },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (panel.accounts.isEmpty()) {
-                    Text(
-                        "还没登录。登录一次就好，以后不用再去浏览器复制 Cookie。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    Text("账号", style = MaterialTheme.typography.titleSmall)
-                    panel.accounts.forEach { item ->
-                        val selected = item.id == panel.activeAccountId
-                        OutlinedCard(
-                            modifier = Modifier.fillMaxWidth().clickable { viewModel.selectAiStudioAccount(item.id) },
-                            border = BorderStroke(
-                                if (selected) 2.dp else 1.dp,
-                                if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                            ),
-                        ) {
-                            Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(item.displayName(), style = MaterialTheme.typography.titleSmall)
-                                    Text(
-                                        if (item.uid.isNotBlank()) "UID ${item.uid}" else "UID 未知",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                if (selected) {
-                                    Icon(Icons.Default.CheckCircle, null, tint = MaterialTheme.colorScheme.primary)
-                                }
-                                IconButton(onClick = { viewModel.removeAiStudioAccount(item.id) }) {
-                                    Icon(Icons.Default.Delete, "删除账号")
-                                }
-                            }
+    LaunchedEffect(panel.activeAccountId) {
+        if (panel.activeAccount() != null) viewModel.aiStudioRefreshAccount()
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text("账号", style = MaterialTheme.typography.headlineSmall)
+                },
+                actions = {
+                    if (panel.activeAccount() != null) {
+                        IconButton(onClick = { viewModel.aiStudioRefreshAccount() }) {
+                            Icon(Icons.Outlined.Refresh, "刷新账号数据")
                         }
                     }
+                },
+            )
+        },
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            // —— 身份条 ——
+            item {
+                AccountIdentityCard(panel = panel, onLogin = { loginLauncher.launch(Intent(context, AiStudioLoginActivity::class.java)) })
+            }
+
+            // —— 积分与算力 ——
+            if (panel.activeAccount() != null) {
+                item {
+                    Text("账号资源", style = MaterialTheme.typography.titleMedium)
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onLogin, modifier = Modifier.weight(1f)) {
-                        Text(if (panel.accounts.isEmpty()) "登录" else "添加账号")
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        ResourceTile(
+                            modifier = Modifier.weight(1f),
+                            icon = { Icon(Icons.Outlined.Bolt, null, Modifier.size(20.dp)) },
+                            label = "积分",
+                            value = panel.points?.toString() ?: "—",
+                            hint = if (panel.points == null) "未读到" else null,
+                        )
+                        ResourceTile(
+                            modifier = Modifier.weight(1f),
+                            icon = { Icon(Icons.Outlined.Memory, null, Modifier.size(20.dp)) },
+                            label = "算力卡",
+                            value = panel.computeCard ?: "—",
+                            hint = if (panel.computeCard == null) "未读到" else null,
+                        )
                     }
-                    Button(
-                        onClick = { viewModel.aiStudioSignIn() },
-                        modifier = Modifier.weight(1f),
-                        enabled = account != null && !panel.signingIn,
-                    ) { Text(if (panel.signingIn) "签到中" else "签到") }
                 }
-                if (account != null) {
-                    HorizontalDivider()
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { viewModel.aiStudioSignIn() },
+                            modifier = Modifier.weight(1f),
+                            enabled = !panel.signingIn,
+                        ) {
+                            if (panel.signingIn) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            } else {
+                                Text(if (panel.signedInToday) "今日已签到" else "签到")
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = { viewModel.aiStudioReceiveResource() },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("领算力") }
+                    }
+                }
+
+                // —— 项目 ——
+                item {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("我的项目", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        Text("我的项目", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                         if (panel.loadingProjects) {
-                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         } else {
                             TextButton(onClick = { viewModel.aiStudioLoadProjects() }) { Text("刷新") }
                         }
                     }
-                    if (panel.projects.isEmpty() && !panel.loadingProjects) {
-                        Text(
-                            "没有读到项目",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    panel.projects.forEach { project ->
-                        AiStudioProjectRow(project, panel, viewModel)
-                    }
-                    if (panel.schedules.isNotEmpty()) {
-                        Text(
-                            "可用算力：${panel.schedules.joinToString { it.displayName() }}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
                 }
-                panel.message?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                if (panel.projects.isEmpty() && !panel.loadingProjects) {
+                    item { Text("没有读到项目", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
-                panel.error?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                }
-                panel.lastRawResponse?.takeIf { it.isNotBlank() }?.let { raw ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "原始响应（排查解析用）",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                        )
-                        IconButton(onClick = {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("AI Studio 响应", raw))
-                        }) { Icon(Icons.Default.ContentCopy, "复制原始响应") }
-                    }
-                    Text(
-                        raw.take(600),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                items(panel.projects, key = { it.projectId }) { project ->
+                    ProjectCard(project = project, panel = panel, viewModel = viewModel)
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
-    )
+
+            // —— ComfyUI 连接（可展开卡片）——
+            item {
+                Text("ComfyUI 服务器", style = MaterialTheme.typography.titleMedium)
+            }
+            item {
+                ServerConnectionCard(state = state, viewModel = viewModel)
+            }
+
+            panel.error?.let { error ->
+                item {
+                    Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+            }
+            panel.message?.let { message ->
+                item {
+                    Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                }
+            }
+            // 平台接口会改版：解析抓不到字段时，用户能把真实响应复制出来反馈。
+            panel.lastRawResponse?.takeIf { it.isNotBlank() }?.let { raw ->
+                item { RawResponseCard(raw = raw, context = context) }
+            }
+        }
+    }
+    if (showLogin) Unit
 }
 
 @Composable
-private fun AiStudioProjectRow(
-    project: AiStudioProject,
-    panel: AiStudioState,
-    viewModel: MainViewModel,
+private fun AccountIdentityCard(panel: AiStudioState, onLogin: () -> Unit) {
+    val account = panel.activeAccount()
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (account == null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.AccountCircle, null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("未登录 AI Studio", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "登录后可以签到、看项目、选算力启动云端 ComfyUI",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Button(onClick = onLogin, modifier = Modifier.fillMaxWidth()) { Text("登录百度 AI Studio") }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.AccountCircle, null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(account.displayName(), style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (account.uid.isNotBlank()) "UID ${account.uid}" else "UID 未知",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                if (panel.accounts.size > 1) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        panel.accounts.forEach { item ->
+                            val selected = item.id == panel.activeAccountId
+                            if (selected) {
+                                Button(onClick = { }, modifier = Modifier.height(36.dp)) { Text(item.displayName()) }
+                            } else {
+                                OutlinedButton(onClick = { }, modifier = Modifier.height(36.dp)) { Text(item.displayName()) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 一块数据瓦片。
+ *
+ * 拿不到值时显示「—」而不是编一个数字——平台接口改版是常态，宁可留白
+ * 也不能用假数据骗人。
+ */
+@Composable
+private fun ResourceTile(
+    modifier: Modifier = Modifier,
+    icon: @Composable () -> Unit,
+    label: String,
+    value: String,
+    hint: String?,
 ) {
+    OutlinedCard(modifier = modifier) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary) { icon() }
+                Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text(value, style = MaterialTheme.typography.headlineSmall)
+            hint?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
+    }
+}
+
+@Composable
+private fun ProjectCard(project: AiStudioProject, panel: AiStudioState, viewModel: MainViewModel) {
     val starting = panel.startingProjectId == project.projectId
     val stopping = panel.stoppingProjectId == project.projectId
     var expanded by remember(project.projectId) { mutableStateOf(false) }
     OutlinedCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable {
-                viewModel.aiStudioLoadSchedules(project.projectId)
-                expanded = !expanded
-            },
+        modifier = Modifier.fillMaxWidth(),
+        onClick = {
+            viewModel.aiStudioLoadSchedules(project.projectId)
+            expanded = !expanded
+        },
     ) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(project.displayName(), style = MaterialTheme.typography.titleSmall)
                     Text(
                         if (project.running) "运行中" else "已停止",
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (project.running) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (project.running) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (starting || stopping) {
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                }
+                if (starting || stopping) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             }
             if (expanded) {
                 if (panel.schedules.isEmpty()) {
@@ -3786,25 +3861,215 @@ private fun AiStudioProjectRow(
     }
 }
 
-/** v0.1.90：设置页里的 AI Studio 入口行。 */
+/**
+ * ComfyUI 连接卡片——默认收起，点开才出输入框。
+ *
+ * 以前这个表单是整页的，没填地址就进不了 App。现在它只是账号页里的一张卡片：
+ * 已连接时显示当前服务器与状态，未连接时收起，不占视觉重心。
+ */
 @Composable
-private fun AiStudioSettingsRow(state: AppUiState, onOpen: () -> Unit, onLogin: () -> Unit) {
-    val panel = state.aiStudio
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("百度 AI Studio", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    if (panel.accounts.isEmpty()) "未登录 —— 登录后可签到、看项目、选算力启动"
-                    else "已登录 ${panel.accounts.size} 个账号 · 当前 ${panel.activeAccount()?.displayName().orEmpty()}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+private fun ServerConnectionCard(state: AppUiState, viewModel: MainViewModel) {
+    var expanded by remember { mutableStateOf(state.activeServer == null) }
+    val server = state.activeServer
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Link, null, Modifier.size(20.dp))
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        server?.name ?: "未连接",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        when (state.status) {
+                            ConnectionStatus.CONNECTED -> "在线 · 队列 ${state.queueRemaining}"
+                            ConnectionStatus.CONNECTING -> "正在连接…"
+                            ConnectionStatus.RECONNECTING -> "正在重连"
+                            ConnectionStatus.ERROR -> "连接出错"
+                            else -> state.connectionMessage
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Icon(
+                    if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    if (expanded) "收起" else "展开",
                 )
             }
-            TextButton(onClick = onOpen) { Text("管理") }
+            if (expanded) {
+                HorizontalDivider()
+                OutlinedTextField(
+                    value = LanAddress.withoutCredentials(state.serverInput),
+                    onValueChange = viewModel::setServerInput,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("ComfyUI 地址") },
+                    placeholder = { Text("http://192.168.1.10:8188") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = state.serverCookie,
+                    onValueChange = viewModel::setServerCookie,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("认证 Cookie（可选）") },
+                    minLines = 2,
+                    maxLines = 4,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { viewModel.connect() },
+                        modifier = Modifier.weight(1f),
+                        enabled = !state.loading,
+                    ) { Text("连接") }
+                    OutlinedButton(
+                        onClick = viewModel::scanLan,
+                        modifier = Modifier.weight(1f),
+                        enabled = !state.scanning,
+                    ) { Text("扫描局域网") }
+                }
+                if (server != null) {
+                    OutlinedButton(onClick = viewModel::disconnect, modifier = Modifier.fillMaxWidth()) {
+                        Text("断开当前服务器")
+                    }
+                }
+                if (state.savedServers.isNotEmpty()) {
+                    Text("已保存", style = MaterialTheme.typography.labelMedium)
+                    state.savedServers.forEach { profile ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    viewModel.setServerInput(profile.baseUrl)
+                                    viewModel.setServerCookie(profile.cookie)
+                                    viewModel.connect(profile.baseUrl)
+                                }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Outlined.Computer, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(profile.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                            Icon(Icons.Outlined.ChevronRight, null, Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
         }
-        if (panel.accounts.isEmpty()) {
-            OutlinedButton(onClick = onLogin, modifier = Modifier.fillMaxWidth()) { Text("登录 AI Studio") }
+    }
+}
+
+@Composable
+private fun RawResponseCard(raw: String, context: Context) {
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "原始响应（解析异常时反馈用）",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("AI Studio 响应", raw))
+                }) { Icon(Icons.Default.ContentCopy, "复制原始响应") }
+            }
+            Text(
+                raw.take(500),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
+    }
+}
+
+// ===================== v0.1.90：控制台页 =====================
+
+/**
+ * 控制台页。
+ *
+ * 对应「启动项目后那个终端」。这里刻意**不做一个真的终端模拟器**——
+ * 手机上敲命令行是折磨。取而代之：上半部分是常用操作（启动/停止/装环境），
+ * 下半部分是这些操作的输出回显。想看结果，看这里就够了。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
+    Scaffold(
+        topBar = {
+            TopAppBar(title = { Text("控制台", style = MaterialTheme.typography.headlineSmall) })
+        },
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            item {
+                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("这一版还没接上内核通道", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "地基已探明：BML Codelab 底层是 JupyterLab 3.0，启动环境后拿到的 " +
+                                "{baseUrl, token} 可直接走标准 Jupyter 接口执行命令。\n" +
+                                "下一版会把「在内核里跑命令 → 回显输出」接进来，届时这里就是真正的控制台。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            item { Text("当前状态", style = MaterialTheme.typography.titleMedium) }
+            item {
+                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ConsoleRow("AI Studio 账号", state.aiStudio.activeAccount()?.displayName() ?: "未登录")
+                        ConsoleRow("运行中项目", state.aiStudio.projects.count { it.running }.toString())
+                        ConsoleRow("ComfyUI", state.activeServer?.name ?: "未连接")
+                        ConsoleRow(
+                            "连接状态",
+                            when (state.status) {
+                                ConnectionStatus.CONNECTED -> "在线"
+                                ConnectionStatus.CONNECTING -> "连接中"
+                                ConnectionStatus.RECONNECTING -> "重连中"
+                                ConnectionStatus.ERROR -> "出错"
+                                else -> "未连接"
+                            },
+                        )
+                    }
+                }
+            }
+            state.aiStudio.lastRawResponse?.takeIf { it.isNotBlank() }?.let { raw ->
+                item { Text("最近一次输出", style = MaterialTheme.typography.titleMedium) }
+                item {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Text(
+                            raw.take(1500),
+                            modifier = Modifier.padding(12.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConsoleRow(label: String, value: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+        Text(value, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

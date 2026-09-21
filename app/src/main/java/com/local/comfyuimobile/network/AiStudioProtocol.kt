@@ -27,6 +27,20 @@ object AiStudioProtocol {
     const val PATH_PROFILE = "/studio/user/index/profile"
     const val PATH_SIGN_IN = "/studio/user/signin"
 
+    // ===== 积分 / 算力 =====
+    /** 社区积分：另一套接口（不带 /studio 前缀），签到就是签这个。 */
+    const val PATH_POINT_SIGN = "/point/sign"
+    const val PATH_POINT_INFO = "/point/user/info"
+    /** 算力卡与资源配额。 */
+    const val PATH_RESOURCE_SUMMARY = "/studio/resource/user/summary"
+    const val PATH_RESOURCE_QUOTA = "/studio/resource/quota"
+    /** A币余额。 */
+    const val PATH_COIN_RESIDUE = "/studio/trade/coin/residue"
+    /** SDK Token 余额。 */
+    const val PATH_TOKEN_BALANCE = "/studio/trade/token/my/balance"
+    /** 领取每日资源（算力）。 */
+    const val PATH_RESOURCE_RECEIVE = "/studio/user/center/resource/receive"
+
     // ===== 项目 =====
     const val PATH_PROJECT_LIST = "/studio/project/self/list"
     /** 备用项目列表入口。平台在不同页面用了两套，主入口读不到时再试这个。 */
@@ -251,6 +265,55 @@ object AiStudioProtocol {
      * 其余 Cookie（BAIDUID 等）匿名访问也会有，不能作为依据。
      */
     fun looksLoggedIn(cookie: String): Boolean = cookieValue(cookie, "BDUSS").isNotBlank()
+
+    /**
+     * 从积分接口里取「剩余/可用积分」。
+     *
+     * 字段名不定（points / point / available / residue 都可能），逐个兜底；
+     * 全都取不到就返回 null，让界面显示「—」而不是 0。
+     */
+    fun parsePoints(result: JSONObject): Int? {
+        val direct = result.opt("points")
+        if (direct is Number) return direct.toInt()
+        listOf("point", "available", "residue", "balance", "value").forEach { key ->
+            val value = result.opt(key)
+            if (value is Number) return value.toInt()
+            if (value is String) value.trim().toIntOrNull()?.let { return it }
+        }
+        val nested = result.optJSONObject("data")
+            ?: result.optJSONObject("user") ?: return null
+        return parsePoints(nested)
+    }
+
+    /**
+     * 把算力卡余额整理成一句人话（如 "32.5 点"）。
+     *
+     * 平台的返回形态差异很大：可能是数字、可能是带单位的字符串，也可能压根没有
+     * 这个字段。拿不到就返回 null。
+     */
+    fun parseComputeCard(result: JSONObject): String? {
+        listOf("computeCard", "resourceCard", "card", "quota", "remain", "residue").forEach { key ->
+            val value = result.opt(key)
+            when (value) {
+                is Number -> return "${value.toDouble()} 点"
+                is String -> if (value.isNotBlank()) return value.trim()
+            }
+        }
+        // 也有把算力拆成「总/已用/剩余」三个数字的情况。
+        val total = firstDouble(result, listOf("total", "totalQuota", "amount"))
+        val remain = firstDouble(result, listOf("remain", "remaining", "left", "usable"))
+        if (remain != null) return "$remain 点"
+        if (total != null) return "$total 点"
+        return null
+    }
+
+    private fun firstDouble(root: JSONObject, keys: List<String>): Double? {
+        keys.forEach { key ->
+            val value = root.opt(key)
+            if (value is Number) return value.toDouble()
+        }
+        return null
+    }
 
     /**
      * 把 Cookie 收敛成平台域名下可用的一份。
