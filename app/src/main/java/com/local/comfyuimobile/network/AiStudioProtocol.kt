@@ -1,6 +1,7 @@
 package com.local.comfyuimobile.network
 
 import com.local.comfyuimobile.model.AiStudioAccount
+import com.local.comfyuimobile.model.AiStudioPointAction
 import com.local.comfyuimobile.model.AiStudioProject
 import com.local.comfyuimobile.model.AiStudioSchedule
 import org.json.JSONArray
