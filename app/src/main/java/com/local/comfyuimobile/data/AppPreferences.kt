@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.local.comfyuimobile.model.ServerProfile
 import com.local.comfyuimobile.model.CacheOutputRule
+import com.local.comfyuimobile.model.AiStudioAccount
 import com.local.comfyuimobile.model.LlmConfig
 import com.local.comfyuimobile.model.LlmPreset
 import kotlinx.coroutines.flow.Flow
@@ -33,6 +34,9 @@ data class StoredSettings(
     val quickEnabledParamsByWorkflow: Map<String, List<String>> = emptyMap(),
     // v0.1.88：AI 提示词助手所用的外部大模型配置。
     val llmConfig: LlmConfig = LlmConfig(),
+    // v0.1.90：AI Studio 平台账号（Cookie 即凭证）。
+    val aiStudioAccounts: List<AiStudioAccount> = emptyList(),
+    val aiStudioActiveId: String = "",
 )
 
 class AppPreferences(private val context: Context) {
@@ -52,6 +56,8 @@ class AppPreferences(private val context: Context) {
         val saveFolderUri = stringPreferencesKey("save_folder_uri")
         val quickEnabledParams = stringPreferencesKey("quick_enabled_params")
         val llmConfig = stringPreferencesKey("llm_config")
+        val aiStudioAccounts = stringPreferencesKey("ai_studio_accounts")
+        val aiStudioActiveId = stringPreferencesKey("ai_studio_active_id")
     }
 
     val settings: Flow<StoredSettings> = context.dataStore.data.map { preferences ->
@@ -72,6 +78,8 @@ class AppPreferences(private val context: Context) {
             saveFolderUri = preferences[Keys.saveFolderUri].orEmpty(),
             quickEnabledParamsByWorkflow = decodeQuickParams(preferences[Keys.quickEnabledParams].orEmpty()),
             llmConfig = decodeLlmConfig(preferences[Keys.llmConfig].orEmpty()),
+            aiStudioAccounts = decodeAiStudioAccounts(preferences[Keys.aiStudioAccounts].orEmpty()),
+            aiStudioActiveId = preferences[Keys.aiStudioActiveId].orEmpty(),
         )
     }
 
@@ -198,6 +206,55 @@ class AppPreferences(private val context: Context) {
             temperature = LlmConfig.normalizeTemperature(item.optDouble("temperature", LlmConfig.DEFAULT_TEMPERATURE.toDouble()).toFloat()),
         )
     }.getOrDefault(LlmConfig())
+
+    suspend fun saveAiStudioAccounts(accounts: List<AiStudioAccount>, activeId: String) {
+        context.dataStore.edit { preferences ->
+            preferences[Keys.aiStudioAccounts] = JSONArray().apply {
+                accounts.forEach { account ->
+                    put(
+                        JSONObject()
+                            .put("id", account.id)
+                            .put("nickname", account.nickname)
+                            .put("uid", account.uid)
+                            .put("cookie", account.cookie)
+                            .put("bdToken", account.bdToken)
+                            .put("lastUsedAt", account.lastUsedAt)
+                            .put("lastSignInAt", account.lastSignInAt),
+                    )
+                }
+            }.toString()
+            preferences[Keys.aiStudioActiveId] = activeId
+        }
+    }
+
+    /**
+     * 逐条解析，坏数据只跳过那一条。
+     *
+     * 与 [decodeProfiles] 同样的理由：一条记录缺字段不应该让全部账号凭空消失
+     * （那等于让用户把所有账号重新登录一遍）。
+     */
+    private fun decodeAiStudioAccounts(raw: String): List<AiStudioAccount> = runCatching {
+        val array = JSONArray(raw.ifBlank { "[]" })
+        buildList {
+            repeat(array.length()) { index ->
+                val item = array.optJSONObject(index) ?: return@repeat
+                val id = item.optString("id")
+                val cookie = item.optString("cookie")
+                if (id.isBlank() || cookie.isBlank()) return@repeat
+                add(
+                    AiStudioAccount(
+                        id = id,
+                        nickname = item.optString("nickname"),
+                        uid = item.optString("uid"),
+                        cookie = cookie,
+                        bdToken = item.optString("bdToken"),
+                        lastUsedAt = item.optLong("lastUsedAt"),
+                        lastSignInAt = item.optLong("lastSignInAt"),
+                    ),
+                )
+            }
+        }
+    }.getOrDefault(emptyList())
 
     private fun decodeQuickParams(raw: String): Map<String, List<String>> = runCatching {
         val array = JSONArray(raw.ifBlank { "[]" })

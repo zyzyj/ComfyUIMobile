@@ -3,7 +3,8 @@ name: Build APK
 "on":
   workflow_dispatch:
   push:
-    branches: [ main, master ]
+    # dev 也构建，但只产出 artifact 供真机测试，不发 Release（见下方发布步骤的条件）。
+    branches: [ main, master, dev ]
   pull_request:
     branches: [ main, master ]
 
@@ -104,7 +105,9 @@ jobs:
           retention-days: 30
 
       - name: 上报编译错误到仓库文件（诊断）
-        if: ${{ failure() }}
+        # 只在正式分支上报：dev 是日常迭代分支，构建失败看 Actions 日志即可，
+        # 不该把错误日志提交进仓库污染历史。
+        if: ${{ failure() && (github.ref_name == 'main' || github.ref_name == 'master') }}
         run: |
           if [ -s /tmp/gradle-debug.log ] || [ -s /tmp/gradle-release.log ]; then
             {
@@ -154,13 +157,15 @@ jobs:
 
       - name: 发布 Release
         # 仅 PR 跳过；push 与手动触发都发布，确保有免登录的公开下载链接。
+        # v0.1.90：dev 分支的推送**不发布**——它只用于出测试包（走 artifact），
+        # 免得开发中的版本抢掉"检查更新"所认的正式 Release。
         #
         # 发布两个标签，各司其职：
         #  · v<版本号>：正式 Release。App 内"检查更新"只认这种（GitHub 的
         #    /releases/latest 端点会跳过 draft 与 prerelease，这也是以前标记成
         #    --prerelease 时检查更新永远返回 404 的原因）。
         #  · latest：固定下载链接，每次构建覆盖，标为 prerelease 免得抢掉上面的位置。
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ github.event_name != 'pull_request' && (github.event_name == 'workflow_dispatch' || github.ref_name == 'main' || github.ref_name == 'master') }}
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.value }}"

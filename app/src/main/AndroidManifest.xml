@@ -65,6 +65,13 @@
             android:exported="false"
             android:screenOrientation="unspecified" />
 
+        <activity
+            android:name=".AiStudioLoginActivity"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|smallestScreenSize"
+            android:exported="false"
+            android:screenOrientation="unspecified"
+            android:windowSoftInputMode="adjustResize" />
+
         <service
             android:name=".service.JobMonitorService"
             android:exported="false"
