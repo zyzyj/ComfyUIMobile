@@ -2,6 +2,7 @@ package com.local.comfyuimobile.network
 
 import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.model.AiStudioAccount
+import com.local.comfyuimobile.model.AiStudioPointAction
 import com.local.comfyuimobile.model.AiStudioSchedule
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -71,17 +72,41 @@ class AiStudioClient {
     /** 拉积分余额。 */
     suspend fun fetchPoints(account: AiStudioAccount): Int? = fetchPointsInfo(account).first
 
-    /** 拉算力卡余额。 */
-    suspend fun fetchComputeCard(account: AiStudioAccount): String? {
-        // 该接口前端未指定 type，按 JSON 发；form 体会被拒。
+    /**
+     * 拉资源与任务信息。
+     *
+     * @return computeCardMinutes 算力卡原始分钟数（null=未读到）；
+     *         computeCard 展示文案；weekQuota 本周各档剩余；actions 积分任务。
+     */
+    data class ResourceSnapshot(
+        val computeCardMinutes: Double?,
+        val computeCard: String?,
+        val weekQuota: Map<String, Double>,
+        val actions: List<AiStudioPointAction>,
+    )
+
+    /** 拉算力卡与本周各档剩余（`/studio/resource/user/summary`）。 */
+    suspend fun fetchResources(account: AiStudioAccount): ResourceSnapshot {
         val raw = runCatching {
             request(account, AiStudioProtocol.PATH_RESOURCE_SUMMARY, "POST_JSON", "{}", "读取算力")
         }.onFailure { error ->
             if (error is CancellationException) throw error
             AppLogger.warn("读取算力卡失败：${error.message.orEmpty()}")
-        }.getOrNull() ?: return null
-        logRaw("算力卡", raw.toString())
-        return AiStudioProtocol.parseComputeCard(raw)
+        }.getOrNull()
+        val actions = runCatching {
+            request(account, AiStudioProtocol.PATH_POINT_ACTION, "GET", null, "读取积分任务")
+        }.onFailure { error ->
+            if (error is CancellationException) throw error
+            AppLogger.warn("读取积分任务失败：${error.message.orEmpty()}")
+        }.getOrNull()
+        if (raw != null) logRaw("算力卡", raw.toString())
+        if (actions != null) logRaw("积分任务", actions.toString())
+        return ResourceSnapshot(
+            computeCardMinutes = raw?.let { AiStudioProtocol.parseComputeCardMinutes(it) },
+            computeCard = raw?.let { AiStudioProtocol.parseComputeCard(it) },
+            weekQuota = raw?.let { AiStudioProtocol.parseWeekQuotaMap(it) } ?: emptyMap(),
+            actions = actions?.let { AiStudioProtocol.parsePointActions(it) } ?: emptyList(),
+        )
     }
 
     /**

@@ -51,19 +51,40 @@ data class AiStudioProject(
 /**
  * 启动环境时可选的一档算力。
  *
- * scheduleName 是接口里真正要传的值（形如 `normalSchedule` 或某档 GPU 的调度名），
- * label 是给人看的（如 `V100 16G`），两者都可能为空——平台用哪套命名会变，
- * 所以界面上优先显示 label，为空时退回 scheduleName。
+ * scheduleName 是接口里真正要传的值（平台枚举固定，见 [AiStudioProtocol.SCHEDULE_*]），
+ * label 是给人看的（如 `V100 16GB`）。
+ *
+ * costPerHour 是**这档每小时消耗多少算力卡**（平台展示 `costPerHour/100` 后配
+ * 「算力卡/小时」）。同一份算力卡余额，换成不同显卡能跑的小时数完全不同，
+ * 所以界面上要跟看消耗速度一起看。
  */
 data class AiStudioSchedule(
     val scheduleName: String,
     val label: String = "",
     val gpuType: String = "",
-    /** 该档位是否可用/有余额。未知为 true，不要因为解析不到就禁用。 */
+    /** 每小时消耗的算力卡（分）。null = 未知。 */
+    val costPerHour: Double? = null,
+    /** 该档归属的配额类型（如 V100 / A100），用于显示本周剩余。 */
+    val weekQuotaType: String = "",
+    /** 该档本周剩余可用（分钟）。null = 未知。 */
+    val weekRemainingMinutes: Double? = null,
+    /** 该档是否可用/有余额。未知为 true，不要因为解析不到就禁用。 */
     val available: Boolean = true,
 ) {
     fun displayName(): String = label.ifBlank { gpuType.ifBlank { scheduleName } }
 }
+
+/**
+ * 积分的每日任务项。平台：`GET /point/user/action`。
+ *
+ * 字段名未经真机证实（该接口还没实际调到），所以解析全部走 opt + 兜底，
+ * 拿不准的就不显示——宁可空着也不编。
+ */
+data class AiStudioPointAction(
+    val name: String,
+    val points: Int? = null,
+    val done: Boolean = false,
+)
 
 /** AI Studio 面板的整体状态，挂在 AppUiState 下。 */
 data class AiStudioState(
@@ -80,10 +101,22 @@ data class AiStudioState(
      * 平台接口改版是常态，把「未知」和「真的是 0」区分开才不会骗人。
      */
     val points: Int? = null,
-    /** 算力卡余额的可读文案（如 "32.5 点"）。null 同上。 */
+    /**
+     * 算力卡余额 **原始值（分钟）**。
+     *
+     * 刻意同时保留原文与「折算小时」：平台自身把它展示为「算力卡」标签 + 折算小时，
+     * 因为它是**按基础版折算的可用时长**；换成 V100/A100 消耗速度不同，能跑的小时数
+     * 也不同。只报小时会让人误以为「什么显卡都能跑这么久」，所以两个都给。
+     */
+    val computeCardMinutes: Double? = null,
+    /** 算力卡余额的展示文案（如 "62.7 小时（按基础版折算）"）。null 同上。 */
     val computeCard: String? = null,
     /** A币余额。null 同上。 */
     val aCoin: String? = null,
+    /** 本周各档配额剩余（key 如 V100/A100/DCU/DEV，值=分钟）。 */
+    val weekQuota: Map<String, Double> = emptyMap(),
+    /** 积分任务列表（未读到则为空）。 */
+    val pointActions: List<AiStudioPointAction> = emptyList(),
     /** 今天是否已签到（本机记录 + 接口状态共同决定）。 */
     val signedInToday: Boolean = false,
     val message: String? = null,

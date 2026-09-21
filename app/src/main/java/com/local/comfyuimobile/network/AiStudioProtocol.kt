@@ -31,6 +31,8 @@ object AiStudioProtocol {
     /** 社区积分：另一套接口（不带 /studio 前缀），签到就是签这个。 */
     const val PATH_POINT_SIGN = "/point/sign"
     const val PATH_POINT_INFO = "/point/user/info"
+    /** 积分任务列表（任务名/多少分/是否完成）。 */
+    const val PATH_POINT_ACTION = "/point/user/action"
     /** 算力卡与资源配额。 */
     const val PATH_RESOURCE_SUMMARY = "/studio/resource/user/summary"
     const val PATH_RESOURCE_QUOTA = "/studio/resource/quota"
@@ -213,24 +215,30 @@ object AiStudioProtocol {
     /**
      * 解析启动时可选的算力档位。
      *
-     * 平台返回的每项字段名不定（scheduleName / name / gpuType / displayName），
-     * 逐个兜底。scheduleName 是启动时真正要传的值，取不到就跳过这一项。
+     * 平台把可选环境放在 `result.scheduleList`，每项形如：
+     * `{scheduleName, displayName, gpuType, costPerHour, available, weekQuotaType, ...}`
+     * 其中 `costPerHour` 是该档每小时消耗的算力卡（分），`available` 1=可 2=不可 3=算力不足。
      */
     fun parseSchedules(result: JSONObject): List<AiStudioSchedule> {
         val array = firstArray(
             result,
-            listOf("list", "records", "items", "scheduleList", "clusterList", "data"),
+            listOf("scheduleList", "list", "records", "items", "clusterList", "data"),
         ) ?: return emptyList()
         return buildList {
             repeat(array.length()) { index ->
                 val item = array.optJSONObject(index) ?: return@repeat
                 val scheduleName = firstString(item, listOf("scheduleName", "name", "schedule"))
                 if (scheduleName.isBlank()) return@repeat
+                val fallbackLabel = SCHEDULE_LABELS[scheduleName]
                 add(
                     AiStudioSchedule(
                         scheduleName = scheduleName,
-                        label = firstString(item, listOf("label", "displayName", "showName", "desc")),
+                        // 平台给的 displayName 优先，没有就用本地已知枚举名，最后查 scheduleName。
+                        label = firstString(item, listOf("displayName", "label", "showName"))
+                            .ifBlank { fallbackLabel.orEmpty() },
                         gpuType = firstString(item, listOf("gpuType", "gpu", "resourceType", "cardType")),
+                        costPerHour = (item.opt("costPerHour") as? Number)?.toDouble(),
+                        weekQuotaType = firstString(item, listOf("weekQuotaType")),
                         available = parseScheduleAvailable(item),
                     ),
                 )
@@ -238,16 +246,63 @@ object AiStudioProtocol {
         }
     }
 
+    /**
+     * 平台固定的环境枚举名 → 显示名。
+     *
+     * 取自前端枚举（不同 chunk 里都一致）。接口不给 displayName 时用它兜底。
+     */
+    private val SCHEDULE_LABELS = mapOf(
+        "normalSchedule" to "基础版（CPU）",
+        "resourceSugonDcuSchedule" to "异构算力 16GB（DCU）",
+        "resourceCardVGpuSchedule" to "高级版 V100 16GB",
+        "resourceCardSchedule" to "高级版 V100 32GB",
+        "resourceCardA100Schedule" to "至尊版 A100 40GB",
+        "resourceMultiCardsSchedule" to "V100 四卡",
+        "resourceDevGpuSchedule" to "二次开发 V100 版",
+    )
+
+    /** available 字段：1=可、2=不可、3=算力不足。 */
     private fun parseScheduleAvailable(item: JSONObject): Boolean {
         listOf("available", "enable", "enabled", "canUse").forEach { key ->
             if (item.has(key)) {
                 val value = item.opt(key)
                 if (value is Boolean) return value
                 if (value is Number) return value.toInt() == 1
+                if (value is String) return value == "1" || value.equals("true", true)
             }
         }
         // 没有可用性字段时不要禁用——宁可让用户点了收到服务器报错。
         return true
+    }
+
+    /** 签到的每日任务列表。平台：`GET /point/user/action`。 */
+    fun parsePointActions(result: JSONObject): List<AiStudioPointAction> {
+        val array = firstArray(result, listOf("actionList", "data", "list", "actions", "items", "records"))
+            ?: return emptyList()
+        return buildList {
+            repeat(array.length()) { index ->
+                val item = array.optJSONObject(index) ?: return@repeat
+                val name = firstString(item, listOf("actionName", "name", "title", "desc", "actionDesc"))
+                if (name.isBlank()) return@repeat
+                val done = listOf("isFinish", "finished", "isDone", "status", "actionStatus")
+                    .firstNotNullOfOrNull { key ->
+                        when (val value = item.opt(key)) {
+                            is Boolean -> value
+                            is Number -> value.toInt() == 1
+                            is String -> value == "1" || value.equals("true", true)
+                            else -> null
+                        }
+                    } ?: false
+                add(
+                    AiStudioPointAction(
+                        name = name,
+                        points = (item.opt("point") as? Number)?.toInt()
+                            ?: (item.opt("points") as? Number)?.toInt(),
+                        done = done,
+                    ),
+                )
+            }
+        }
     }
 
     /** 启动环境的表单体。tk/ds 来自通行码流程，免费环境可为空。 */
@@ -358,25 +413,35 @@ object AiStudioProtocol {
      * 这个字段。拿不到就返回 null。
      */
     /**
-     * 算力卡余额。
+     * 算力卡余额展示文案。
      *
-     * **单位是分钟，不是「点」**。平台前端自己就这么展示：
-     * `(resourceTotal / 60).toFixed(1)` 配标签「算力卡」。
-     * 所以 3761 应显示为「62.7 小时」，而不是「3761 点」——
-     * 直接吐原始数字会让人完全看不懂（真机反馈过这个问题）。
+     * 平台自身展示为：数值 `(resourceTotal/60).toFixed(1)` + 标签「算力卡」。
+     * 它是**按基础版（CPU）折算的可用时长**，不是“所有显卡都能跑这么久” ——
+     * 高级版/V100/A100 每小时消耗不同，能跑的小时数会少很多。
+     * 所以文案里明确写出「按基础版折算」，避免误解。
      */
     fun parseComputeCard(result: JSONObject): String? {
-        // resourceTotal = 存量（分钟）；resourceFree 作为兼容兜底。
-        val minutes = listOf("resourceTotal", "resourceFree", "resourceQuota")
+        val minutes = parseComputeCardMinutes(result) ?: return null
+        return "${trimNumber(minutes / 60.0)} 小时（按基础版折算）"
+    }
+
+    /** 算力卡余额原始值（分钟）。 */
+    fun parseComputeCardMinutes(result: JSONObject): Double? =
+        listOf("resourceTotal", "resourceFree", "resourceQuota")
             .firstNotNullOfOrNull { key -> (result.opt(key) as? Number)?.toDouble() }
-        if (minutes != null) return "${trimNumber(minutes / 60.0)} 小时"
-        // 少数接口直接给带单位的字符串
-        listOf("computeCard", "resourceCard", "card", "quota", "remain")
-            .firstNotNullOfOrNull { key ->
-                (result.opt(key) as? String)?.takeIf { it.isNotBlank() }?.trim()
+
+    /**
+     * 本周各配额类型（V100 / A100 / DCU / DEV）剩余分钟数。
+     * 平台字段：`result.resourceWeekQuotaMap`。
+     */
+    fun parseWeekQuotaMap(result: JSONObject): Map<String, Double> {
+        val map = result.optJSONObject("resourceWeekQuotaMap") ?: return emptyMap()
+        return buildMap {
+            map.keys().forEach { key ->
+                val value = (map.opt(key) as? Number)?.toDouble() ?: return@forEach
+                put(key, value)
             }
-            ?.let { return it }
-        return null
+        }
     }
 
     /** 去掉无意义的小数尾巴：32.0 -> 32，32.5 保持 32.5。 */

@@ -118,6 +118,7 @@ import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Payments
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material3.AlertDialog
@@ -3631,6 +3632,19 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     else -> null
 }
 
+/** 去掉无意义的小数尾巴：32.0 -> 32，32.5 保持 32.5。 */
+private fun trimNumber(value: Double): String =
+    if (value == value.toLong().toDouble()) value.toLong().toString() else value.toString()
+
+/** 配额类型（平台 key）→ 人话。 */
+private fun quotaTypeLabel(type: String): String = when (type.uppercase()) {
+    "DEV" -> "基础版（CPU）"
+    "DCU" -> "异构算力 DCU"
+    "V100" -> "高级版 V100"
+    "A100" -> "至尊版 A100"
+    else -> type
+}
+
 private fun previewUrl(media: ResultMedia): String =
     if (media.kind == MediaKind.IMAGE && media.source == ResultSource.CLOUD) "${media.url}&preview=webp;90" else media.url
 
@@ -3683,8 +3697,10 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                             modifier = Modifier.weight(1f),
                             icon = { Icon(Icons.Outlined.Memory, null, Modifier.size(20.dp)) },
                             label = "算力卡",
-                            value = panel.computeCard ?: "—",
-                            hint = if (panel.computeCard == null) "未读到" else null,
+                            // 单位是平台自己的「算力卡」，不是小时——
+                            // 小时会误导（不同显卡消耗速度不同，能跑的小时数也不同）。
+                            value = panel.computeCardMinutes?.let { "${trimNumber(it)}" } ?: "—",
+                            hint = if (panel.computeCardMinutes == null) "未读到" else "分钟（基础版）",
                         )
                         ResourceTile(
                             modifier = Modifier.weight(1f),
@@ -3731,6 +3747,78 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                 }
                 items(panel.projects, key = { it.projectId }) { project ->
                     ProjectCard(project = project, panel = panel, viewModel = viewModel)
+                }
+            }
+
+            // —— 本周各档剩余（平台：高级GPU环境使用时间本周剩余）——
+            if (panel.weekQuota.isNotEmpty()) {
+                item {
+                    Text("本周算力剩余", style = MaterialTheme.typography.titleMedium)
+                }
+                item {
+                    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            panel.weekQuota.forEach { (type, minutes) ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        quotaTypeLabel(type),
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                    Text(
+                                        "${trimNumber(minutes / 60.0)} 小时",
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
+                                }
+                            }
+                            Text(
+                                "同一份算力卡换成不同显卡，能跑的小时数不一样",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+
+            // —— 积分任务 ——
+            if (panel.pointActions.isNotEmpty()) {
+                item {
+                    Text("积分任务", style = MaterialTheme.typography.titleMedium)
+                }
+                item {
+                    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            panel.pointActions.forEach { action ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (action.done) {
+                                        Icon(
+                                            Icons.Default.CheckCircle,
+                                            null,
+                                            Modifier.size(16.dp),
+                                            tint = MaterialTheme.colorScheme.primary,
+                                        )
+                                    } else {
+                                        Icon(
+                                            Icons.Outlined.RadioButtonUnchecked,
+                                            null,
+                                            Modifier.size(16.dp),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        action.name,
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                    action.points?.let {
+                                        Text("+$it", style = MaterialTheme.typography.labelMedium)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -3870,7 +3958,14 @@ private fun ProjectCard(project: AiStudioProject, panel: AiStudioState, viewMode
                             onClick = { viewModel.aiStudioStartProject(project.projectId, schedule.scheduleName) },
                             modifier = Modifier.fillMaxWidth(),
                             enabled = !starting && !stopping && schedule.available,
-                        ) { Text("启动 · ${schedule.displayName()}") }
+                        ) {
+                            // 档位名 + 每小时消耗，让用户看得出不同显卡花销不同。
+                            val cost = schedule.costPerHour
+                                ?.takeIf { it > 0 }
+                                ?.let { " · ${trimNumber(it / 100.0)}/小时" }
+                                .orEmpty()
+                            Text(schedule.displayName() + cost)
+                        }
                     }
                 }
             }
