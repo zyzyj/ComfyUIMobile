@@ -77,7 +77,7 @@ object AiStudioProtocol {
         if (code != 0) {
             val msg = root.optString("errorMsg").ifBlank { describeErrorCode(code) }
             // 中文之间不要空格：之前是「领取算力 失败：…」，读着别扭。
-            throw AiStudioException("$action失败：$msg（错误码 $code）")
+            throw AiStudioException("${action}失败：$msg（错误码 $code）")
         }
         return root.optJSONObject("result") ?: root
     }

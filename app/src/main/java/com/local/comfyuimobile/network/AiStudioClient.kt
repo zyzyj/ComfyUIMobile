@@ -277,21 +277,21 @@ class AiStudioClient {
             client.newCall(builder.build()).execute()
         } catch (error: Exception) {
             if (error is CancellationException) throw error
-            throw AiStudioException("$action失败：网络不可达（${error.message.orEmpty()}）")
+            throw AiStudioException("${action}失败：网络不可达（${error.message.orEmpty()}）")
         }
         response.use { resp ->
             val raw = resp.body?.string().orEmpty()
             lastRawResponse = raw.take(4000)
             when {
                 resp.code == 302 || resp.code == 301 -> throw AiStudioException(
-                    "$action失败：登录已失效，请重新登录 AI Studio",
+                    "${action}失败：登录已失效，请重新登录 AI Studio",
                 )
                 !resp.isSuccessful -> throw AiStudioException(
-                    "$action失败：HTTP ${resp.code}",
+                    "${action}失败：HTTP ${resp.code}",
                 )
                 // 偶尔会返回登录页 HTML（百度网关的登录墙）
                 raw.trimStart().startsWith("<") -> throw AiStudioException(
-                    "$action失败：登录已失效，请重新登录 AI Studio",
+                    "${action}失败：登录已失效，请重新登录 AI Studio",
                 )
             }
             AiStudioProtocol.unwrap(raw, action)
