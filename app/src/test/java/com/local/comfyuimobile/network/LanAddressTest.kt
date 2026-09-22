@@ -35,6 +35,12 @@ class LanAddressTest {
         assertFalse(LanAddress.isTrustedHost(""))
     }
 
+    @Test fun normalizesFullWidthPunctuationFromChineseIme() {
+        // 中文输入法会把冒号自动转成全角（真机实测），不做归一化就会"看着地址没错却连不上"。
+        assertEquals("http://127.0.0.1:8188", LanAddress.normalize("http：//127.0.0.1：8188"))
+        assertEquals("http://127.0.0.1:8188", LanAddress.normalize("http：／／127.0.0.1：8188"))
+    }
+
     @Test fun keepsReverseProxyCredentials() {
         assertEquals(
             "https://user:pass@comfy.example.com:443",
