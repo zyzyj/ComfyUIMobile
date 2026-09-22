@@ -66,6 +66,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
@@ -171,6 +172,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Color
@@ -185,11 +187,13 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogWindowProvider
@@ -4171,7 +4175,6 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
     val panel = state.aiStudio
     var input by remember { mutableStateOf("comfyui") }
     val terminalState = rememberLazyListState()
-    val focusRequester = remember { FocusRequester() }
 
     // 新输出到了就滚到底，不然用户看不到刚跑出来的日志。
     LaunchedEffect(panel.terminalLines.size) {
@@ -4181,98 +4184,74 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.Computer, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.width(8.dp))
-                    Text("云端终端", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                    Text(
-                        if (panel.consoleConnected) "已连接" else "未连接",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (panel.consoleConnected) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Text(
-                    "连上运行中的项目后，在下面输入命令启动 ComfyUI。检测到 ComfyUI 就绪会自动连上，不用手填地址。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = {
-                            if (panel.consoleConnected) viewModel.aiStudioDisconnectConsole()
-                            else viewModel.aiStudioConnectConsole()
-                        },
-                        modifier = Modifier.weight(1f),
-                        enabled = !panel.consoleBusy,
-                    ) {
-                        if (panel.consoleBusy) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        } else {
-                            Text(if (panel.consoleConnected) "断开" else "连接终端")
-                        }
-                    }
-                    OutlinedButton(
-                        onClick = { viewModel.aiStudioClearConsole() },
-                        enabled = panel.consoleConnected,
-                    ) { Text("清屏") }
-                }
+        // 状态与操作压成一行，不再用整张卡片占屏幕（用户反馈卡片太高）。
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                Modifier.size(8.dp).clip(CircleShape).background(
+                    if (panel.consoleConnected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.outline,
+                ),
+            )
+            Text(
+                if (panel.consoleConnected) "终端已连接" else "未连接终端",
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.weight(1f),
+            )
+            if (panel.consoleBusy) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
             }
+            TextButton(
+                onClick = {
+                    if (panel.consoleConnected) viewModel.aiStudioDisconnectConsole()
+                    else viewModel.aiStudioConnectConsole()
+                },
+                enabled = !panel.consoleBusy,
+            ) { Text(if (panel.consoleConnected) "断开" else "连接") }
+            TextButton(
+                onClick = { viewModel.aiStudioClearConsole() },
+                enabled = panel.consoleConnected,
+            ) { Text("清屏") }
         }
 
-        // ComfyUI 地址：连上终端后就能算出来，一键填到服务器地址。
-        panel.comfyUiUrl?.let { url ->
-            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("ComfyUI 地址", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        url,
-                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { viewModel.connectAiStudioComfyUi(url) },
-                            modifier = Modifier.weight(1f),
-                        ) { Text("连接") }
-                        OutlinedButton(
-                            onClick = { viewModel.aiStudioRefreshComfyUi() },
-                        ) { Text("刷新") }
-                    }
-                }
-            }
-        }
-
-        // 终端输出。等宽字体、深色背景，像真的终端。
+        // 终端输出：等宽 + 大字号，支持长按选择复制。
         Surface(
             modifier = Modifier.fillMaxWidth().weight(1f),
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(10.dp),
             color = MaterialTheme.colorScheme.surfaceVariant,
         ) {
             if (panel.terminalLines.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
                         if (panel.consoleConnected) "终端已就绪，输入命令回车执行" else "尚未连接终端",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             } else {
                 LazyColumn(
                     state = terminalState,
-                    modifier = Modifier.fillMaxSize().padding(12.dp),
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 8.dp),
                 ) {
                     items(panel.terminalLines) { line ->
-                        Text(
-                            line.ifEmpty { " " },
-                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        // 逐行包 SelectionContainer：既支持长按选择复制，又不干扰
+                        // LazyColumn 自身的滚动（整块包住会让选中时的自动滚动变碍）。
+                        SelectionContainer {
+                            Text(
+                                line.ifEmpty { " " },
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    // 行高收紧一点，同屏能看更多行。
+                                    lineHeight = 20.sp,
+                                ),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
@@ -4283,7 +4262,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },
-                modifier = Modifier.weight(1f).focusRequester(focusRequester),
+                modifier = Modifier.weight(1f),
                 singleLine = true,
                 enabled = panel.consoleConnected,
                 placeholder = { Text("输入命令，如 bash run.sh") },
@@ -4296,6 +4275,30 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                 },
                 enabled = panel.consoleConnected && input.isNotBlank(),
             ) { Text("发送") }
+        }
+
+        // ComfyUI 地址：连上终端后算出来。做成紧凑一行，可点「连接」或「刷新」。
+        panel.comfyUiUrl?.let { url ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    "ComfyUI",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    url,
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { viewModel.aiStudioRefreshComfyUi() }) { Text("刷新") }
+                TextButton(onClick = { viewModel.connectAiStudioComfyUi(url) }) { Text("连接") }
+            }
         }
 
         panel.message?.let { msg ->
