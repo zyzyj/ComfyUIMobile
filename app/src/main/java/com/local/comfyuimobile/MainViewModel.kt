@@ -873,10 +873,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private suspend fun ensureAiStudioProjectCookies(servingUrl: String): Boolean {
         if (kernelClient.hasProjectCookies()) return true
-        val account = _state.value.aiStudio.activeAccount()
+        // App 冷启动时 DataStore 的账号可能还没推送出来。直接放弃就等于带着旧 Cookie
+        // 去撞登录墙（真机 23:44 实测），所以这里轮询等它就绪，最多 6 秒。
+        var account = _state.value.aiStudio.activeAccount()
+        repeat(20) { attempt ->
+            if (account != null) return@repeat
+            delay(300)
+            account = _state.value.aiStudio.activeAccount()
+        }
         if (account == null) {
-            // App 刚启动时 DataStore 的账号可能尚未加载完成，此时没法调平台接口。
-            AppLogger.warn("补取项目级 Cookie 跳过：AI Studio 账号尚未就绪")
+            AppLogger.warn("补取项目级 Cookie 失败：等待 6 秒后 AI Studio 账号仍未就绪")
             return false
         }
         // 直接从 api_serving 地址解析项目 ID（/user/{uid}/{pid}/api_serving/{port}）。
@@ -887,11 +893,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return false
         }
         return runCatching {
-            val endpoint = kernelClient.fetchEndpoint(account, pid, "")
-            val existing = kernelClient.listTerminals(account, endpoint)
-            val name = existing.firstOrNull() ?: kernelClient.createTerminal(account, endpoint)
-            kernelEndpoint = endpoint
-            kernelClient.warmUpProjectCookies(account, endpoint)
+            // 实例刚启动时 baseinfo 可能短暂返回空（环境未分配完），重试几次再放弃。
+            var endpoint: AiStudioKernelClient.KernelEndpoint? = null
+            repeat(3) { attempt ->
+                if (attempt > 0) delay(2_000L)
+                endpoint = kernelClient.fetchEndpoint(account!!, pid, "")
+                if (endpoint?.isUsable() == true) return@repeat
+            }
+            val resolved = endpoint?.takeIf { it.isUsable() }
+                ?: throw AiStudioException("补取项目级 Cookie 失败：平台未返回环境地址")
+            val existing = kernelClient.listTerminals(account!!, resolved)
+            val name = existing.firstOrNull() ?: kernelClient.createTerminal(account!!, resolved)
+            kernelEndpoint = resolved
+            kernelClient.warmUpProjectCookies(account!!, resolved)
             AppLogger.info("ComfyUI 连接前已补取项目级 Cookie（终端 $name）：[${kernelClient.cookieNames().joinToString()}]")
             kernelClient.hasProjectCookies()
         }.onFailure { error ->
