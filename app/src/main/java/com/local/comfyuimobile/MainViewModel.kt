@@ -873,11 +873,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private suspend fun ensureAiStudioProjectCookies(servingUrl: String): Boolean {
         if (kernelClient.hasProjectCookies()) return true
-        val account = _state.value.aiStudio.activeAccount() ?: return false
+        val account = _state.value.aiStudio.activeAccount()
+        if (account == null) {
+            // App 刚启动时 DataStore 的账号可能尚未加载完成，此时没法调平台接口。
+            AppLogger.warn("补取项目级 Cookie 跳过：AI Studio 账号尚未就绪")
+            return false
+        }
         // 直接从 api_serving 地址解析项目 ID（/user/{uid}/{pid}/api_serving/{port}）。
         // 不依赖项目列表——App 刚启动时列表往往还没加载完，靠它会在连接时静默跳过。
         val pid = Regex("/user/\\d+/(\\d+)/").find(servingUrl)?.groupValues?.get(1)
-            ?: return false
+        if (pid == null) {
+            AppLogger.warn("补取项目级 Cookie 跳过：地址里解析不出项目 ID（$servingUrl）")
+            return false
+        }
         return runCatching {
             val endpoint = kernelClient.fetchEndpoint(account, pid, "")
             val existing = kernelClient.listTerminals(account, endpoint)
