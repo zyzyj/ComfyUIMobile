@@ -667,6 +667,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
                 .onSuccess { (endpoint, name) ->
                     kernelEndpoint = endpoint
+                    // 新一次连接：允许再自动连一次 ComfyUI（上次的失败不带到这次）。
+                    autoConnectAttempted = false
                     openTerminalSocket(account, endpoint, name)
                     _state.update {
                         it.copy(
@@ -687,13 +689,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun openTerminalSocket(account: AiStudioAccount, endpoint: AiStudioKernelClient.KernelEndpoint, name: String) {
+    private var terminalReconnectJob: Job? = null
+    private var terminalManualClose = false
+    /** 终端里是否已尝试过自动连接 ComfyUI（只自动连一次，不刷屏）。 */
+    private var autoConnectAttempted = false
+
+    /**
+     * 打开终端 socket，并在意外断开时自动重连。
+     *
+     * 用户要的是「使用时不能断」：网络抖一下、平台网关掐一次，都不该让终端直接死掉。
+     * 这里区分「用户主动断开」与「意外断开」——前者不重连，后者退避重试（终端本身
+     * 是 PTY 会话，重连后仍然接着原来那个 shell，不会丢掉已跑的命令）。
+     */
+    private fun openTerminalSocket(
+        account: AiStudioAccount,
+        endpoint: AiStudioKernelClient.KernelEndpoint,
+        name: String,
+        attempt: Int = 0,
+    ) {
         kernelClient.openTerminal(
             account = account,
             endpoint = endpoint,
             name = name,
             onOutput = { chunk -> appendTerminal(chunk) },
             onOpen = {
+                terminalManualClose = false
                 AppLogger.info("控制台：终端已连接 $name")
                 _state.update {
                     it.copy(
@@ -709,8 +729,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _state.update {
                     it.copy(aiStudio = it.aiStudio.copy(consoleConnected = false, message = "终端断开：$reason"))
                 }
+                if (!terminalManualClose) scheduleTerminalReconnect(account, endpoint, name, attempt)
             },
         )
+    }
+
+    private fun scheduleTerminalReconnect(
+        account: AiStudioAccount,
+        endpoint: AiStudioKernelClient.KernelEndpoint,
+        name: String,
+        attempt: Int,
+    ) {
+        if (terminalReconnectJob?.isActive == true) return
+        if (attempt >= TERMINAL_RECONNECT_DELAYS_MS.size) {
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "终端多次重连失败，可手动重连")) }
+            return
+        }
+        terminalReconnectJob = viewModelScope.launch {
+            delay(TERMINAL_RECONNECT_DELAYS_MS[attempt])
+            if (terminalManualClose) return@launch
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "终端重连中…")) }
+            // 终端名可能因项目重启而失效，重连前重新确认一次。
+            val fresh = runCatching {
+                kernelClient.listTerminals(account, endpoint).firstOrNull()
+                    ?: kernelClient.createTerminal(account, endpoint)
+            }.getOrNull()
+            if (fresh == null) {
+                scheduleTerminalReconnect(account, endpoint, name, attempt + 1)
+                return@launch
+            }
+            openTerminalSocket(account, endpoint, fresh, attempt + 1)
+        }
     }
 
     /**
@@ -746,8 +795,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(aiStudio = it.aiStudio.copy(terminalLines = emptyList())) }
     }
 
-    /** 控制台：断开终端。 */
+    /** 控制台：断开终端（主动断开，不再自动重连）。 */
     fun aiStudioDisconnectConsole() {
+        terminalManualClose = true
+        terminalReconnectJob?.cancel()
         kernelClient.closeTerminal()
         kernelEndpoint = null
         _state.update {
@@ -779,6 +830,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 buffer.toList()
             }
             current.copy(aiStudio = current.aiStudio.copy(terminalLines = trimmed))
+        }
+        maybeAutoConnectComfyUi(chunk)
+    }
+
+    /**
+     * 终端输出里出现 ComfyUI 启动完成的标志时，自动探测并连上它。
+     *
+     * 用户要的是「在终端里跑起 ComfyUI 就自动连上，不用手填地址」。ComfyUI 启动成功
+     * 会打印 `To see the GUI go to: http://0.0.0.0:8188`（旧版）或 `Starting server`，
+     * 这两个特征足以判定；一旦看到就去探 `{baseUrl}api_serving/8188`，通了直接连。
+     *
+     * 只自动连一次（[autoConnectAttempted]），失败后不反复重试——否则用户敲错命令、
+     * 或 ComfyUI 没装，会看到日志里刷屏。
+     */
+    private fun maybeAutoConnectComfyUi(chunk: String) {
+        if (autoConnectAttempted) return
+        if (!COMFY_READY_HINTS.any { chunk.contains(it, ignoreCase = true) }) return
+        val panel = _state.value.aiStudio
+        val url = panel.comfyUiUrl ?: return
+        autoConnectAttempted = true
+        AppLogger.info("终端输出检测到 ComfyUI 启动特征，准备自动连接 $url")
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "检测到 ComfyUI 启动，正在自动连接…")) }
+        viewModelScope.launch {
+            // api_serving 是平台反代，探测也得带 AI Studio 登录 Cookie。
+            val cookie = _state.value.aiStudio.activeAccount()?.cookie.orEmpty()
+            // ComfyUI 刚打印就绪日志时，端口可能还没真正 listen，给它几秒。
+            repeat(AUTO_CONNECT_PROBES) { attempt ->
+                if (attempt > 0) delay(2_000L)
+                val reachable = runCatching {
+                    client.setAuthCookie(cookie)
+                    client.probe(url)
+                }.isSuccess
+                if (reachable) {
+                    AppLogger.info("ComfyUI 已就绪，自动连接")
+                    connectAiStudioComfyUi(url)
+                    return@launch
+                }
+            }
+            AppLogger.info("ComfyUI 地址暂时不可达，已停止自动连接（可手动点「用这个地址连接」）")
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "未探测到 ComfyUI，可手动连接")) }
         }
     }
 
@@ -4612,5 +4703,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val BATCH_ITEM_TIMEOUT_MS = 20 * 60_000L
         /** 控制台终端最多保留的行数：长时间跑命令（如装依赖）也会刷出成千上万行。 */
         const val TERMINAL_MAX_LINES = 2_000
+        /** 控制台终端断线重连退避（毫秒）。最后一次失败后不再自动重试，提示手动重连。 */
+        val TERMINAL_RECONNECT_DELAYS_MS = longArrayOf(2_000L, 5_000L, 10_000L, 20_000L)
+        /** ComfyUI 启动完成时终端会打印的特征行（命中即尝试自动连接）。 */
+        val COMFY_READY_HINTS = listOf("To see the GUI go to", "Starting server")
+        /** 自动连接前的探测次数：刚打印就绪日志时端口可能还没 listen。 */
+        const val AUTO_CONNECT_PROBES = 5
     }
 }

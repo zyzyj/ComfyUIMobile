@@ -515,6 +515,33 @@ object AiStudioProtocol {
         }
         return 0L
     }
+
+    // ===== Jupyter 终端（terminado）WebSocket 帧 =====
+    //
+    // 协议是 **JSON 数组**，不是对象：发送 ["stdin", "命令"]，
+    // 接收 ["stdout", "输出"]，尺寸 ["set_size", rows, cols]。
+    // 平台终端就是 Jupyter 的 terminado，源码 websocket.py 里用 command[0] 取类型。
+    // 以前发的是 {"type":"stdin",...}，服务器当成畸形消息直接掉线。
+
+    /** 构造向终端发送命令的帧：`["stdin", "命令\r"]`。 */
+    fun terminalStdinFrame(command: String): String =
+        JSONArray().put("stdin").put(command + "\r").toString()
+
+    /** 构造终端尺寸帧：`["set_size", rows, cols]`（注意 rows 在前）。 */
+    fun terminalResizeFrame(rows: Int, cols: Int): String =
+        JSONArray().put("set_size").put(rows).put(cols).toString()
+
+    /**
+     * 从终端帧中提取 stdout 输出。
+     *
+     * 只处理 `["stdout", "..."]`；`["setup", {}]`、`["disconnect", n]` 等返回 null。
+     * 帧不是数组（或非法 JSON）也返回 null——宁可少显示一行，也不能让解析异常把连接搞断。
+     */
+    fun parseTerminalOutput(frame: String): String? {
+        val array = runCatching { JSONArray(frame) }.getOrNull() ?: return null
+        if (array.optString(0) != "stdout") return null
+        return array.optString(1).takeIf { it.isNotEmpty() }
+    }
 }
 
 /** AI Studio 接口调用失败。message 一律是可以直接展示给用户的中文。 */

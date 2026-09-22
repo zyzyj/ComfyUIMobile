@@ -134,7 +134,8 @@ class JobMonitorService : Service() {
             val keepServer = intent.getStringExtra(EXTRA_BASE_URL).orEmpty().trimEnd('/')
             val keepName = intent.getStringExtra(EXTRA_SERVER_NAME).orEmpty()
             if (keepServer.isBlank()) {
-                // 空地址即"断开连接"，撤掉保活；还有任务在跑的话 stopIfIdle 会保留前台。
+                // 空地址即"断开连接"，撤掉保活；还有任务在跑的话 stopIfIdle 会保留前台，
+                // 并只在彻底停下时才释放 CPU/WiFi 锁。
                 keepAliveServer = ""
                 keepAliveName = ""
                 stopIfIdle()
@@ -143,6 +144,10 @@ class JobMonitorService : Service() {
             keepAliveServer = keepServer
             keepAliveName = keepName
             startForeground(FOREGROUND_ID, keepAliveNotification(keepName, keepServer))
+            // 保活不只是「留个前台通知」：还得拿住 CPU 与 WiFi 锁，否则 App 切到后台后
+            // CPU 休眠 / WiFi 省电会直接把长连接（生图进度 WebSocket、云端终端）掐断，
+            // 用户看到的就是“用着用着就断了”。这两个锁在断开连接时才释放。
+            holdBackgroundLocks()
             AppLogger.info("连接保活已建立：${keepName.ifBlank { keepServer }}")
             return START_STICKY
         }
