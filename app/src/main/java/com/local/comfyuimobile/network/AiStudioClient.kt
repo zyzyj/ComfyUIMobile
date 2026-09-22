@@ -266,6 +266,43 @@ class AiStudioClient {
             "查询项目状态",
         )
 
+    /** 新建 Notebook 项目，返回新项目 id。 */
+    suspend fun createProject(account: AiStudioAccount, name: String, description: String = ""): String {
+        val result = request(
+            account,
+            AiStudioProtocol.PATH_PROJECT_ADD,
+            "POST",
+            AiStudioProtocol.formEncode(AiStudioProtocol.createProjectBody(name, description)),
+            "新建项目",
+        )
+        // 前端拿到的是 result.projectId
+        val id = result.optString("projectId").ifBlank { result.optString("id") }
+        if (id.isBlank()) throw AiStudioException("新建项目失败：响应里没有 projectId")
+        return id
+    }
+
+    /** 把项目设为公开。 */
+    suspend fun publishProject(account: AiStudioAccount, projectId: String) {
+        request(
+            account,
+            AiStudioProtocol.PATH_PROJECT_PUBLIC,
+            "POST",
+            AiStudioProtocol.formEncode(mapOf("projectId" to projectId)),
+            "设为公开",
+        )
+    }
+
+    /** 删除项目。 */
+    suspend fun deleteProject(account: AiStudioAccount, projectId: String) {
+        request(
+            account,
+            AiStudioProtocol.PATH_PROJECT_DELETE,
+            "POST",
+            AiStudioProtocol.formEncode(mapOf("projectId" to projectId)),
+            "删除项目",
+        )
+    }
+
     // ===== 内部 =====
 
     private suspend fun request(

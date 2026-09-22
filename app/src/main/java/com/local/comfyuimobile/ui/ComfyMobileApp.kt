@@ -556,14 +556,18 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                     }
                 },
                 actions = {
-                    IconButton(onClick = viewModel::disconnect) {
-                        Icon(Icons.Default.CloudOff, "切换服务器")
-                    }
-                    IconButton(onClick = viewModel::refreshOrReconnect) {
-                        Icon(
-                            Icons.Default.Refresh,
-                            if (state.status == ConnectionStatus.CONNECTED) "刷新" else "重新连接",
-                        )
+                    // v0.1.97：账号/控制台页只留「设置」。断开连接、刷新都是
+                    // ComfyUI 连接语境的按钮，摆在这两页既无意义又显杂（用户反馈）。
+                    if (page != MainPage.ACCOUNT && page != MainPage.CONSOLE) {
+                        IconButton(onClick = viewModel::disconnect) {
+                            Icon(Icons.Default.CloudOff, "切换服务器")
+                        }
+                        IconButton(onClick = viewModel::refreshOrReconnect) {
+                            Icon(
+                                Icons.Default.Refresh,
+                                if (state.status == ConnectionStatus.CONNECTED) "刷新" else "重新连接",
+                            )
+                        }
                     }
                     IconButton(onClick = { settings = true }) { Icon(Icons.Default.Settings, "设置") }
                 },
@@ -3632,9 +3636,11 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     else -> null
 }
 
-/** 去掉无意义的小数尾巴：32.0 -> 32，32.5 保持 32.5。 */
-private fun trimNumber(value: Double): String =
-    if (value == value.toLong().toDouble()) value.toLong().toString() else value.toString()
+/** 去掉无意义的小数尾巴，并保留至多 1 位小数：32.0 → 32，62.6833 → 62.7。 */
+private fun trimNumber(value: Double): String {
+    val rounded = Math.round(value * 10.0) / 10.0
+    return if (rounded == rounded.toLong().toDouble()) rounded.toLong().toString() else rounded.toString()
+}
 
 /** 配额类型（平台 key）→ 人话。 */
 private fun quotaTypeLabel(type: String): String = when (type.uppercase()) {
@@ -3697,10 +3703,9 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                             modifier = Modifier.weight(1f),
                             icon = { Icon(Icons.Outlined.Memory, null, Modifier.size(20.dp)) },
                             label = "算力卡",
-                            // 单位是平台自己的「算力卡」，不是小时——
-                            // 小时会误导（不同显卡消耗速度不同，能跑的小时数也不同）。
-                            value = panel.computeCardMinutes?.let { "${trimNumber(it)}" } ?: "—",
-                            hint = if (panel.computeCardMinutes == null) "未读到" else "分钟（基础版）",
+                            // 平台口径就是「多少算力卡」，直接显示点数。
+                            value = panel.computeCardMinutes?.let { trimNumber(it) } ?: "—",
+                            hint = if (panel.computeCardMinutes == null) "未读到" else null,
                         )
                         ResourceTile(
                             modifier = Modifier.weight(1f),
@@ -3729,6 +3734,22 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                             modifier = Modifier.weight(1f),
                         ) { Text("领算力") }
                     }
+                }
+                item {
+                    // 积分任务：建项目→公开→删除。属模拟平台行为的自动化，
+                    // 有被平台判定异常的风险，所以单独一个按钮并配说明，不混在常规操作里。
+                    OutlinedButton(
+                        onClick = { viewModel.aiStudioRunPublishPointTask() },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("做「发布项目」积分任务") }
+                }
+                item {
+                    Text(
+                        "发布项目任务：自动新建一个临时项目、设为公开后删除。\n" +
+                            "这是模拟网页上的操作，平台有反作弊，请自行评估账号风险。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
 
                 // —— 项目 ——
@@ -3768,8 +3789,7 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                                     Text(
                                         "${trimNumber(minutes / 60.0)} 小时",
                                         style = MaterialTheme.typography.labelMedium,
-                                    )
-                                }
+                                    )                                }
                             }
                             Text(
                                 "同一份算力卡换成不同显卡，能跑的小时数不一样",
@@ -3971,10 +3991,15 @@ private fun ProjectCard(project: AiStudioProject, panel: AiStudioState, viewMode
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
-                    onClick = { viewModel.aiStudioStartProject(project.projectId, "") },
+                    // v0.1.97：不再“盲目默认启动”。点它先把可选 GPU 档位拉出来并展开，
+                    // 由用户选具体用哪档——以前一点就用平台默认，用户根本没机会选显卡。
+                    onClick = {
+                        viewModel.aiStudioLoadSchedules(project.projectId)
+                        expanded = true
+                    },
                     modifier = Modifier.weight(1f),
                     enabled = !starting && !stopping,
-                ) { Text("快速启动") }
+                ) { Text(if (expanded && panel.schedules.isNotEmpty()) "选档位启动" else "选择 GPU 启动") }
                 OutlinedButton(
                     onClick = { viewModel.aiStudioStopProject(project.projectId) },
                     modifier = Modifier.weight(1f),

@@ -195,7 +195,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var knownNodeTypes: Set<String>? = null
     // ===== v0.1.90 AI Studio 平台 =====
     private val aiStudio = AiStudioClient()
-    private var aiStudioJob: Job? = null
+    /**
+     * v0.1.97：拆成三个独立 Job。
+     *
+     * 之前所有 AI Studio 操作共用一个 aiStudioJob，而每个入口都有
+     * `if (aiStudioJob?.isActive == true) return`。后果是：登录后刷新账号资源的
+     * 任务一跑，紧接着的「拉项目列表」就直接被挡掉返回——“登录后项目不自动刷新”
+     * 就是这么来的；同理，点“刷新”时若有别的操作在跑也毫无反应。
+     * 三者互不依赖，各用各的 Job。
+     */
+    private var aiStudioResourceJob: Job? = null
+    private var aiStudioProjectJob: Job? = null
+    private var aiStudioActionJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -474,9 +485,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             AppLogger.info("AI Studio 账号已保存：${account.displayName()}（UID=${account.uid.ifBlank { "未知" }}）")
-            // 不在这里拉资源/项目：账号页的 LaunchedEffect(activeAccountId)
-            // 会在账号变成激活时自己拉一次。两处都调会重复请求（日志里每个
-            // 接口各出现两次就是这个原因）。
+            // v0.1.97：登录后**主动拉一次**资源与项目。
+            // 不能只指望账号页的 LaunchedEffect(activeAccountId)：重复登录同一账号时
+            // activeAccountId 没变，effect 不会重跑，界面就永远停在旧数据。
+            aiStudioRefreshAccount()
+            aiStudioLoadProjects()
         }
     }
 
@@ -499,9 +512,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 签到。多个账号时需要逐个切过去分别签——这里只签当前选中的那个。 */
     fun aiStudioSignIn() {
         val account = _state.value.aiStudio.activeAccount() ?: return
-        if (aiStudioJob?.isActive == true) return
+        if (aiStudioActionJob?.isActive == true) return
         _state.update { it.copy(aiStudio = it.aiStudio.copy(signingIn = true, error = null, message = null)) }
-        aiStudioJob = viewModelScope.launch {
+        aiStudioActionJob = viewModelScope.launch {
             runCatching { aiStudio.signIn(account) }
                 .onSuccess {
                     val at = System.currentTimeMillis()
@@ -582,9 +595,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 领每日算力资源。 */
     fun aiStudioReceiveResource() {
         val account = _state.value.aiStudio.activeAccount() ?: return
-        if (aiStudioJob?.isActive == true) return
+        if (aiStudioActionJob?.isActive == true) return
         _state.update { it.copy(aiStudio = it.aiStudio.copy(error = null, message = null)) }
-        aiStudioJob = viewModelScope.launch {
+        aiStudioActionJob = viewModelScope.launch {
             runCatching { aiStudio.receiveResource(account) }
                 .onSuccess { result ->
                     // receiveResource 把「今日已领过」当成正常结果返回，
@@ -605,6 +618,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
+     * 【风险自负】自动完成「发布项目」积分任务。
+     *
+     * 流程：建一个项目 → 设为公开 → 删掉。这是**模拟平台上的“发布项目”任务**，
+     * 不是平台官方提供的接口。平台有反作弊，批量建删可能被判定异常，
+     * 后果（限制/封号）由账号承担。所以：**每次只做一轮、不循环、不并发**，
+     * 每一步都写进日志。
+     */
+    fun aiStudioRunPublishPointTask() {
+        val account = _state.value.aiStudio.activeAccount() ?: return
+        if (aiStudioActionJob?.isActive == true) return
+        _state.update {
+            it.copy(aiStudio = it.aiStudio.copy(error = null, message = "正在执行积分任务…"))
+        }
+        aiStudioActionJob = viewModelScope.launch {
+            // 项目名带时间戳，避免与已有项目重名。
+            val name = "tmp-" + java.text.SimpleDateFormat("MMdd-HHmmss", java.util.Locale.US)
+                .format(java.util.Date())
+            var createdId: String? = null
+            val result = runCatching {
+                AppLogger.info("积分任务：开始建项目 $name")
+                val id = aiStudio.createProject(account, name)
+                createdId = id
+                AppLogger.info("积分任务：已建项目 id=$id")
+                aiStudio.publishProject(account, id)
+                AppLogger.info("积分任务：已设为公开 id=$id")
+                id
+            }
+            if (result.isFailure) {
+                val error = result.exceptionOrNull()
+                if (error is CancellationException) throw error
+                failAiStudio("积分任务失败", error ?: AiStudioException("未知错误"))
+                // 失败时尽量把半成品删掉，不在账号里留垃圾。
+                createdId?.let { id ->
+                    runCatching { aiStudio.deleteProject(account, id) }
+                        .onFailure { AppLogger.warn("清理临时项目失败 id=$id", it) }
+                }
+                return@launch
+            }
+            // 公开后稍等，让平台的积分结算跑完，再删除。
+            delay(3_000)
+            createdId?.let { id ->
+                runCatching { aiStudio.deleteProject(account, id) }
+                    .onFailure { error -> AppLogger.warn("删除临时项目失败 id=$id", error) }
+                    .onSuccess { AppLogger.info("积分任务：已删除临时项目 id=$id") }
+            }
+            _state.update {
+                it.copy(aiStudio = it.aiStudio.copy(message = "积分任务已执行，稍后刷新看积分变化"))
+            }
+            aiStudioRefreshAccount()
+        }
+    }
+
+    /**
      * 拉当前账号的项目列表。
      *
      * @param silent true 时不显示 loading（给启动后的自动轮询用，
@@ -612,11 +678,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun aiStudioLoadProjects(silent: Boolean = false) {
         val account = _state.value.aiStudio.activeAccount() ?: return
-        if (aiStudioJob?.isActive == true) return
+        if (aiStudioProjectJob?.isActive == true) return
         if (!silent) {
             _state.update { it.copy(aiStudio = it.aiStudio.copy(loadingProjects = true, error = null)) }
         }
-        aiStudioJob = viewModelScope.launch {
+        aiStudioProjectJob = viewModelScope.launch {
             runCatching { aiStudio.listProjects(account) }
                 .onSuccess { page ->
                     AppLogger.info("AI Studio 项目列表：${page.projects.size} 个（共 ${page.total}）")
@@ -662,7 +728,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 拉某个项目的可用算力档位。 */
     fun aiStudioLoadSchedules(projectId: String) {
         val account = _state.value.aiStudio.activeAccount() ?: return
-        aiStudioJob = viewModelScope.launch {
+        aiStudioProjectJob = viewModelScope.launch {
             runCatching { aiStudio.listSchedules(account, projectId) }
                 .onSuccess { schedules ->
                     AppLogger.info("AI Studio 可用算力：${schedules.joinToString { it.displayName() }}")
@@ -682,9 +748,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 启动项目环境。scheduleName 为空时用平台默认调度。 */
     fun aiStudioStartProject(projectId: String, scheduleName: String) {
         val account = _state.value.aiStudio.activeAccount() ?: return
-        if (aiStudioJob?.isActive == true) return
+        if (aiStudioActionJob?.isActive == true) return
         _state.update { it.copy(aiStudio = it.aiStudio.copy(startingProjectId = projectId, error = null, message = null)) }
-        aiStudioJob = viewModelScope.launch {
+        aiStudioActionJob = viewModelScope.launch {
             runCatching { aiStudio.startProject(account, projectId, scheduleName) }
                 .onSuccess {
                     AppLogger.info("AI Studio 启动请求已提交：项目=$projectId，算力=${scheduleName.ifBlank { "默认" }}")
@@ -706,9 +772,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun aiStudioStopProject(projectId: String) {
         val account = _state.value.aiStudio.activeAccount() ?: return
-        if (aiStudioJob?.isActive == true) return
+        if (aiStudioActionJob?.isActive == true) return
         _state.update { it.copy(aiStudio = it.aiStudio.copy(stoppingProjectId = projectId, error = null, message = null)) }
-        aiStudioJob = viewModelScope.launch {
+        aiStudioActionJob = viewModelScope.launch {
             runCatching { aiStudio.stopProject(account, projectId) }
                 .onSuccess {
                     AppLogger.info("AI Studio 停止请求已提交：项目=$projectId")
@@ -851,14 +917,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 AuthCookieProvider.current = cookie
 
                 setConnectionStep(2, "地址检查通过，正在读取服务器版本和显卡信息")
+                AppLogger.info("连接：开始探测服务器 $normalized（/system_stats）")
                 val (stats, profile) = client.probe(normalized)
+                AppLogger.info(
+                    "连接：探测成功 ComfyUI=${stats.comfyVersion} 前端=${stats.frontendVersion} " +
+                        "设备=${stats.devices.joinToString { it.name }}",
+                )
 
                 bridgeOperationMutex.withLock {
                     setConnectionStep(3, "服务器接口正常，正在打开 ComfyUI 网页")
+                    AppLogger.info("连接：加载网页 $normalized")
                     activeBridge.loadServer(normalized)
 
                     setConnectionStep(4, "网页已经打开，正在初始化 ComfyUI 前端")
+                    AppLogger.info("连接：等待前端就绪")
                     activeBridge.awaitReady()
+                    AppLogger.info("连接：前端已就绪")
                 }
 
                 // v0.1.85：这里以前是 client.features() + client.objectInfo()，而后者是
