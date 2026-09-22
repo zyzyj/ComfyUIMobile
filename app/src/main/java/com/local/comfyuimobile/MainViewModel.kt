@@ -3718,6 +3718,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun scheduleReconnect() {
         if (_state.value.activeServer == null || reconnectJob?.isActive == true) return
         reconnectJob = viewModelScope.launch {
+            // 先用 HTTP 判断是真掉线还是只是 WebSocket 被反代抬：
+            // AI Studio 的 api_serving 反代会周期性抬断长连接（真机 00:14 起反复
+            // 「已连接→正在重连」循环，而 /system_stats 始终 200）。这种情况下状态
+            // 不能翻成"正在重连"——那会让顶栏和 ComfyUI 卡片跟着闪烁，用户看着
+            // 像掉线了，其实生图功能一切正常。静默重开 WebSocket 即可。
+            val httpAlive = runCatching { client.systemStats() }.isSuccess
+            if (httpAlive) {
+                delay(2_000L)
+                if (_state.value.activeServer == null) return@launch
+                AppLogger.info("ComfyUI WebSocket 被反代抬断（HTTP 正常），静默重开")
+                openSocket()
+                return@launch
+            }
             _state.update {
                 it.copy(
                     status = ConnectionStatus.RECONNECTING,
