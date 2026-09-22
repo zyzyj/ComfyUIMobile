@@ -272,7 +272,10 @@ class AiStudioKernelClient {
                 override fun onOpen(webSocket: WebSocket, response: Response) = onOpen()
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
-                    AiStudioProtocol.parseTerminalOutput(text)?.let(onOutput)
+                    val raw = AiStudioProtocol.parseTerminalOutput(text) ?: return
+                    // 剥掉 ANSI 控制序列与不可见控制字符，否则界面上是一堆乱码。
+                    val clean = AiStudioProtocol.stripControlChars(AiStudioProtocol.stripAnsi(raw))
+                    if (clean.isNotEmpty()) onOutput(clean)
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {

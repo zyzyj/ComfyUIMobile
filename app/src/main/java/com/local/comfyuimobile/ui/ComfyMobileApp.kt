@@ -4235,10 +4235,15 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                         style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Button(
-                        onClick = { viewModel.connectAiStudioComfyUi(url) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("用这个地址连接") }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { viewModel.connectAiStudioComfyUi(url) },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("连接") }
+                        OutlinedButton(
+                            onClick = { viewModel.aiStudioRefreshComfyUi() },
+                        ) { Text("刷新") }
+                    }
                 }
             }
         }
