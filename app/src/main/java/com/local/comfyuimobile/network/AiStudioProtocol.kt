@@ -452,13 +452,18 @@ object AiStudioProtocol {
     /**
      * 算力卡余额展示文案。
      *
-     * 平台口径就是「多少算力卡」—— 用户看的是数字本身（如 3761 算力卡）。
-     * 不再换算成小时：resourceTotal 虽是分钟，但不同显卡每小时扣的数量不同，
-     * 换成小时会让人误以为“什么卡都能跑这么久”（已被真机反馈过）。
+     * 口径完全按平台自己的展示：`(resourceTotal / 60).toFixed(1)`。
+     * 平台源码（1629.js）：`i({ num: +(r.resourceTotal/60).toFixed(1), linkText: "算力卡" })`。
+     * resourceTotal 原始单位是**分钟**（3761），官网展示成 62.7。
+     * 以前直接显示 3761 会和官网对不上，用户一看就迷惑。
+     *
+     * 单位不叫「小时」而叫「算力卡」：平台在环境选择处写的是
+     * 「高级GPU环境使用时间本周剩余 X 小时」，它是**按基础版（CPU）折算**的
+     * 等价时长，换 V100/A100 消耗更快、实际能跑的小时数更少。
      */
     fun parseComputeCard(result: JSONObject): String? {
-        val value = parseComputeCardMinutes(result) ?: return null
-        return "${trimNumber(value)} 算力卡"
+        val minutes = parseComputeCardMinutes(result) ?: return null
+        return trimNumber(minutes / 60.0)
     }
 
     /** 算力卡余额原始值（分钟）。 */
