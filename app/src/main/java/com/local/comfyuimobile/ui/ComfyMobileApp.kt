@@ -4198,7 +4198,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     )
                 }
                 Text(
-                    "连上运行中的项目后，在下面输入命令启动 ComfyUI。启动后回到「账号」页填地址即可。",
+                    "连上运行中的项目后，在下面输入命令启动 ComfyUI。检测到 ComfyUI 就绪会自动连上，不用手填地址。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

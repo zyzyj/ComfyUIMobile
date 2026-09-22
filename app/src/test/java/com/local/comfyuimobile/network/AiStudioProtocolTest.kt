@@ -295,4 +295,34 @@ class AiStudioProtocolTest {
         val second = AiStudioProtocol.newAccount("BDUSS=b; X=2", "t2", "88", "小明改了名", 2L)
         assertEquals(first.id, second.id)
     }
+
+    // ===== Jupyter 终端（terminado）帧 =====
+    // 之前这里发的是 {"type":"stdin",...} 对象，terminado 用 command[0] 取类型，
+    // 拿到 undefined 就把连接掉了（现象：一连上、一输命令就断开）。
+    // 锁住"必须是数组"这条。
+
+    @Test
+    fun terminalStdinFrameIsJsonArray() {
+        assertEquals("""["stdin","ls\r"]""", AiStudioProtocol.terminalStdinFrame("ls"))
+    }
+
+    @Test
+    fun terminalResizeFrameIsRowsThenCols() {
+        // terminado: command[1:3] → (rows, cols)，顺序不能反。
+        assertEquals("""["set_size",24,80]""", AiStudioProtocol.terminalResizeFrame(24, 80))
+    }
+
+    @Test
+    fun parsesStdoutFrame() {
+        assertEquals("hello\n", AiStudioProtocol.parseTerminalOutput("""["stdout","hello\n"]"""))
+    }
+
+    @Test
+    fun ignoresNonStdoutFrames() {
+        org.junit.Assert.assertNull(AiStudioProtocol.parseTerminalOutput("""["setup",{}]"""))
+        org.junit.Assert.assertNull(AiStudioProtocol.parseTerminalOutput("""["disconnect",1]"""))
+        org.junit.Assert.assertNull(AiStudioProtocol.parseTerminalOutput("""["stdout",""]"""))
+        // 非法帧不能抛异常，否则会把 WebSocket 的 onMessage 搞崩。
+        org.junit.Assert.assertNull(AiStudioProtocol.parseTerminalOutput("not json"))
+    }
 }

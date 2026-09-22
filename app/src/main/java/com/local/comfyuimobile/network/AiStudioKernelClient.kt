@@ -199,10 +199,7 @@ class AiStudioKernelClient {
                 override fun onOpen(webSocket: WebSocket, response: Response) = onOpen()
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
-                    val frame = runCatching { JSONArray(text) }.getOrNull() ?: return
-                    // 帧形如 ["stdout", "..."]，也可能是 ["setup", {}] / ["disconnect", n]。
-                    if (frame.optString(0) != "stdout") return
-                    frame.optString(1).takeIf { it.isNotEmpty() }?.let(onOutput)
+                    AiStudioProtocol.parseTerminalOutput(text)?.let(onOutput)
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -221,14 +218,13 @@ class AiStudioKernelClient {
     /** 向终端发一条命令（自动补回车）。协议帧：`["stdin", "...\r"]`。 */
     fun sendInput(command: String): Boolean {
         val socket = terminalSocket ?: return false
-        val payload = JSONArray().put("stdin").put(command + "\r")
-        return socket.send(payload.toString())
+        return socket.send(AiStudioProtocol.terminalStdinFrame(command))
     }
 
     /** 告知终端窗口尺寸，避免输出错行。协议帧：`["set_size", rows, cols]`（注意顺序）。 */
     fun resize(cols: Int, rows: Int) {
         val socket = terminalSocket ?: return
-        socket.send(JSONArray().put("set_size").put(rows).put(cols).toString())
+        socket.send(AiStudioProtocol.terminalResizeFrame(rows, cols))
     }
 
     fun closeTerminal() {
