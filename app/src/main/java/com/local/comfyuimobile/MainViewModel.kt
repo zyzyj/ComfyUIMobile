@@ -801,6 +801,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return secured.trimEnd('/') + "/api_serving/8188"
     }
 
+    /**
+     * 手动重新探测并连接 ComfyUI（供「刷新」按钮用）。
+     *
+     * 自动连接只试一次；失败后再启动 ComfyUI 就不会自动重试了，用户点这个按钮
+     * 可以重新探测。会重置 [autoConnectAttempted]，让后续自动连接仍能生效。
+     */
+    fun aiStudioRefreshComfyUi() {
+        val url = _state.value.aiStudio.comfyUiUrl
+        if (url.isNullOrBlank()) {
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(error = "先连上终端才能探测 ComfyUI")) }
+            return
+        }
+        autoConnectAttempted = false
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "正在探测 ComfyUI…", error = null)) }
+        val cookie = _state.value.aiStudio.activeAccount()?.cookie.orEmpty()
+        viewModelScope.launch {
+            val reachable = runCatching {
+                client.setAuthCookie(cookie)
+                client.probe(url)
+            }.isSuccess
+            if (reachable) {
+                AppLogger.info("手动刷新：ComfyUI 可达，开始连接")
+                connectAiStudioComfyUi(url)
+            } else {
+                AppLogger.info("手动刷新：ComfyUI 仍不可达")
+                _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "未探测到 ComfyUI，确认它已在云端启动")) }
+            }
+        }
+    }
+
     /** 控制台：清空终端输出缓冲（不断开连接）。 */
     fun aiStudioClearConsole() {
         _state.update { it.copy(aiStudio = it.aiStudio.copy(terminalLines = emptyList())) }
@@ -823,16 +853,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 云端输出是流式的（一块可能含多行、也可能不带换行），这里按 \n 拆开逐行追加，
      * 只保留最近 [TERMINAL_MAX_LINES] 行，避免长时间跑命令把内存吃光。
      */
+    /**
+     * 把终端输出按行并入缓冲。
+     *
+     * 云端输出是流式的（一块可能含多行、也可能不带换行），这里按 \n 拆开逐行追加，
+     * 只保留最近 [TERMINAL_MAX_LINES] 行，避免长时间跑命令把内存吃光。
+     *
+     * `\r` 单独出现时不是换行而是「回到行首重写」（进度条、`ls` 的列对齐都靠它），
+     * 以前把它当换行会刷出一堆重复行；这里改成覆盖当前行。
+     */
     private fun appendTerminal(chunk: String) {
-        val lines = chunk.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         _state.update { current ->
             val buffer = current.aiStudio.terminalLines.toMutableList()
-            lines.forEachIndexed { index, line ->
-                // 首行接在上一行末尾（流式输出常把一行分几次发来）。
-                if (index == 0 && buffer.isNotEmpty() && !chunk.startsWith("\n")) {
-                    buffer[buffer.lastIndex] = buffer.last() + line
-                } else if (index < lines.size - 1 || line.isNotEmpty()) {
-                    buffer.add(line)
+            // 约定：末行永远是「当前正在写的行」。空缓冲时先放一个空行。
+            if (buffer.isEmpty()) buffer.add("")
+            chunk.replace("\r\n", "\n").forEach { ch ->
+                when (ch) {
+                    '\n' -> buffer.add("") // 换行：开新行
+                    '\r' -> buffer[buffer.lastIndex] = "" // 回到行首：清掉当前行
+                    else -> buffer[buffer.lastIndex] = buffer.last() + ch
                 }
             }
             val trimmed = if (buffer.size > TERMINAL_MAX_LINES) {

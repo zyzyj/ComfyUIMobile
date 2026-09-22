@@ -544,6 +544,32 @@ object AiStudioProtocol {
         if (array.optString(0) != "stdout") return null
         return array.optString(1).takeIf { it.isNotEmpty() }
     }
+
+    /**
+     * 剥离终端输出里的 ANSI 转义序列。
+     *
+     * Jupyter 终端（xterm 协议）会给输出带上大量控制序列：设标题的 OSC
+     * （`ESC]0;host:~`）、括号粘贴模式的 CSI（`ESC[?2004h`）、颜色码（`ESC[32m`）等。
+     * 这些是给终端模拟器看的，直接当普通文本渲染出来就是一串乱码（用户反馈
+     * 「输入 ls 输出一堆看不懂的东西」）。这里把它们去掉，只留人看得懂的正文。
+     */
+    fun stripAnsi(text: String): String = ANSI_PATTERN.replace(text, "")
+
+    private val ANSI_PATTERN = Regex(
+        // CSI：ESC [ 参数 中间字节 结束字节
+        "\u001B\\[[0-9;?]*[ -/]*[@-~]" +
+            // OSC：ESC ] ... 由 BEL 或 ST(ESC \) 结束
+            "|\u001B\\][^\u0007\u001B]*(?:\u0007|\u001B\\\\)" +
+            // 其他双字符转义（如 ESC(B、ESC=）
+            "|\u001B[@-Z\\\\-_]",
+    )
+
+    /** 去掉剩余不可见控制字符（除换行、回车外），避免界面出现方块/乱码。 */
+    fun stripControlChars(text: String): String = buildString(text.length) {
+        text.forEach { ch ->
+            if (ch == '\n' || ch == '\r' || ch == '\t' || ch.code >= 32) append(ch)
+        }
+    }
 }
 
 /** AI Studio 接口调用失败。message 一律是可以直接展示给用户的中文。 */

@@ -325,4 +325,23 @@ class AiStudioProtocolTest {
         // 非法帧不能抛异常，否则会把 WebSocket 的 onMessage 搞崩。
         org.junit.Assert.assertNull(AiStudioProtocol.parseTerminalOutput("not json"))
     }
+
+    @Test
+    fun stripsAnsiFromTerminalOutput() {
+        // OSC 设标题 + CSI 括号粘贴模式 + 颜色码，都是终端控制序列，不能当正文显示。
+        assertEquals(
+            "aistudio@jupyter:~$ ",
+            AiStudioProtocol.stripAnsi("\u001B]0;aistudio@jupyter: ~\u0007aistudio@jupyter:~$ "),
+        )
+        assertEquals("hello", AiStudioProtocol.stripAnsi("\u001B[?2004h\u001B[32mhello\u001B[0m"))
+        assertEquals("", AiStudioProtocol.stripAnsi("\u001B[K"))
+        assertEquals("plain text", AiStudioProtocol.stripAnsi("plain text"))
+    }
+
+    @Test
+    fun stripsResidualControlChars() {
+        assertEquals("ab", AiStudioProtocol.stripControlChars("a\u0000\u0007b"))
+        // 换行/制表保留（终端输出靠它们分行）。
+        assertEquals("a\nb\tc", AiStudioProtocol.stripControlChars("a\nb\tc"))
+    }
 }
