@@ -799,21 +799,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 平台分配 GPU 需要 1-2 分钟，刚提交完那一瞬项目仍是「已停止」——
      * 用户会以为启动没生效。这里自动盯一会儿，状态一变就刷新界面。
      */
-    private fun pollProjectRunning(projectId: String) {
+    private fun pollProjectRunning(projectId: String) = pollProjectState(projectId, wantRunning = true)
+
+    /**
+     * 轮询项目状态，直到它达到期望的运行状态（或超时）。
+     *
+     * 启动与停止都需要：平台分配/回收机器要 1-2 分钟，提交完那一瞬状态还没变，
+     * 只拉一次列表会停在旧状态上（用户反馈「停止了但状态不刷新，要手动刷」）。
+     * 这里一直盯到状态真的翻转，每轮把新列表推给界面。
+     */
+    private fun pollProjectState(projectId: String, wantRunning: Boolean) {
         viewModelScope.launch {
-            repeat(30) { attempt ->
+            repeat(40) { attempt ->
                 delay(if (attempt < 5) 4_000 else 8_000)
                 val account = _state.value.aiStudio.activeAccount() ?: return@launch
                 val page = runCatching { aiStudio.listProjects(account) }.getOrNull() ?: return@repeat
                 val project = page.projects.firstOrNull { it.projectId == projectId } ?: return@repeat
                 _state.update { it.copy(aiStudio = it.aiStudio.copy(projects = page.projects)) }
-                if (project.running) {
-                    AppLogger.info("AI Studio 项目已运行：$projectId")
-                    _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "环境已就绪")) }
+                if (project.running == wantRunning) {
+                    AppLogger.info("AI Studio 项目状态已更新：$projectId running=${project.running}")
+                    _state.update {
+                        it.copy(aiStudio = it.aiStudio.copy(message = if (wantRunning) "环境已就绪" else "已停止"))
+                    }
                     return@launch
                 }
             }
-            _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "启动较慢，可稍后点「刷新」查看")) }
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "状态未变化，可点「刷新」查看")) }
         }
     }
 
@@ -887,6 +898,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                     aiStudioLoadProjects(silent = true)
+                    pollProjectState(projectId, wantRunning = false)
                 }
                 .onFailure { error -> failAiStudio("停止失败", error) { it.copy(stoppingProjectId = null) } }
         }

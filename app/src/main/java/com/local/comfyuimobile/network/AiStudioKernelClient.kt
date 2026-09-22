@@ -12,6 +12,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
@@ -36,11 +40,50 @@ class AiStudioKernelClient {
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
+    /**
+     * Jupyter 自己的会话 cookie 必须留得住。
+     *
+     * 光带 AI Studio 的 Cookie 头不够：Jupyter 会在首次请求时 Set-Cookie 自己的
+     * `_xsrf` 与 session，后续 POST 要拿它做 CSRF 校验。以前没有 CookieJar，
+     * 这个 cookie 直接被丢掉，POST 就被网关重定向到登录页（返回 200 + HTML，
+     * 看着像“成功但没 name”）。这里既存住服务端下发的 cookie，也把账号 Cookie
+     * 预先种进 store，让每个请求都带齐。
+     */
+    private val cookieStore = mutableMapOf<String, MutableList<Cookie>>()
+    private var seededCookie = ""
+
+    private fun seedCookies(rawCookie: String) {
+        if (rawCookie.isBlank() || rawCookie == seededCookie) return
+        seededCookie = rawCookie
+        val url = AiStudioProtocol.BASE_URL.toHttpUrlOrNull() ?: return
+        val cookies = rawCookie.split(';').mapNotNull { pair ->
+            val name = pair.substringBefore('=', "").trim()
+            val value = pair.substringAfter('=', "").trim()
+            if (name.isBlank()) null
+            else Cookie.Builder().name(name).value(value).domain(url.host).path("/").build()
+        }
+        cookieStore[url.host] = cookies.toMutableList()
+    }
+
+    private val cookieJar = object : CookieJar {
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+            val list = cookieStore.getOrPut(url.host) { mutableListOf() }
+            cookies.forEach { fresh ->
+                list.removeAll { it.name == fresh.name }
+                list.add(fresh)
+            }
+        }
+
+        override fun loadForRequest(url: HttpUrl): List<Cookie> =
+            cookieStore[url.host].orEmpty().filter { it.matches(url) }
+    }
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .pingInterval(20, TimeUnit.SECONDS)
+        .cookieJar(cookieJar)
         .build()
 
     private var terminalSocket: WebSocket? = null
@@ -63,6 +106,7 @@ class AiStudioKernelClient {
      * 前端会按 `.com` 切分只留路径——这里两种形态都保留，避免平台换域名后缀时拼错 URL。
      */
     suspend fun fetchEndpoint(account: AiStudioAccount, projectId: String, scheduleName: String): KernelEndpoint {
+        seedCookies(account.cookie)
         val result = withContext(Dispatchers.IO) {
             val body = AiStudioProtocol.formEncode(
                 mapOf(
@@ -74,7 +118,6 @@ class AiStudioKernelClient {
             )
             val request = Request.Builder()
                 .url(AiStudioProtocol.BASE_URL + AiStudioProtocol.PATH_RUNNING_STATUS_CHECK)
-                .header("Cookie", account.cookie)
                 .header("x-requested-with", "XMLHttpRequest")
                 .header("Referer", AiStudioProtocol.BASE_URL + "/")
                 .apply {
@@ -105,8 +148,9 @@ class AiStudioKernelClient {
         account: AiStudioAccount,
         endpoint: KernelEndpoint,
     ): List<String> = withContext(Dispatchers.IO) {
-        val url = userBase(endpoint) + "api/terminals"
+        val url = withToken(endpoint, userBase(endpoint) + "api/terminals")
         val raw = get(account, endpoint, url, "读取终端列表")
+        AppLogger.info("终端列表响应：${raw.take(300)}")
         val array = runCatching { JSONArray(raw) }.getOrNull() ?: return@withContext emptyList()
         buildList {
             repeat(array.length()) { index ->
@@ -121,10 +165,11 @@ class AiStudioKernelClient {
         account: AiStudioAccount,
         endpoint: KernelEndpoint,
     ): String = withContext(Dispatchers.IO) {
-        val url = userBase(endpoint) + "api/terminals"
+        val url = withToken(endpoint, userBase(endpoint) + "api/terminals")
         val raw = post(account, endpoint, url, "{}", "新建终端")
+        AppLogger.info("新建终端响应：${raw.take(300)}")
         val name = runCatching { JSONObject(raw).optString("name") }.getOrNull().orEmpty()
-        if (name.isBlank()) throw AiStudioException("新建终端失败：返回里没有 name")
+        if (name.isBlank()) throw AiStudioException("新建终端失败：响应里没有 name（${raw.take(160)}）")
         name
     }
 
@@ -143,7 +188,7 @@ class AiStudioKernelClient {
         onClosed: (String) -> Unit,
     ) {
         closeTerminal()
-        val url = wsBase(endpoint) + "terminals/websocket/" + encode(name)
+        val url = withToken(endpoint, wsBase(endpoint) + "terminals/websocket/" + encode(name))
         val builder = Request.Builder().url(url)
         commonHeaders(account, endpoint).forEach { (k, v) -> builder.header(k, v) }
         terminalSocket = client.newWebSocket(
@@ -211,17 +256,35 @@ class AiStudioKernelClient {
 
     private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
 
+    /**
+     * 给 URL 补上 Jupyter 的 token 查询参数。
+     *
+     * 平台网关会吃掉自定义头（`auth`），而 Jupyter 自身认 `?token=`；两头都带才稳。
+     */
+    private fun withToken(endpoint: KernelEndpoint, url: String): String {
+        if (endpoint.token.isBlank()) return url
+        val separator = if (url.contains('?')) "&" else "?"
+        return url + separator + "token=" + encode(endpoint.token)
+    }
+
     private fun commonHeaders(account: AiStudioAccount, endpoint: KernelEndpoint): Map<String, String> = buildMap {
-        put("Cookie", account.cookie)
+        // Cookie 由 CookieJar 统一带上（含 Jupyter 下发的 _xsrf），不再手写。
         put("x-requested-with", "XMLHttpRequest")
         put("Referer", AiStudioProtocol.BASE_URL + "/")
         // 平台网关认 `auth` 头；Jupyter 自身认标准 `Authorization: token`。两个都带。
         put("auth", endpoint.token)
         if (endpoint.token.isNotBlank()) put("Authorization", "token " + endpoint.token)
         if (account.bdToken.isNotBlank()) put("x-studio-token", account.bdToken)
-        val xsrf = AiStudioProtocol.cookieValue(account.cookie, "_xsrf")
-        if (xsrf.isNotBlank()) put("X-XSRFToken", xsrf)
+        // _xsrf 以 CookieJar 里最新的为准（Jupyter 会下发自己的），拿不到才退回账号 Cookie。
+        val xsrf = currentXsrf() ?: AiStudioProtocol.cookieValue(account.cookie, "_xsrf")
+        if (!xsrf.isNullOrBlank()) put("X-XSRFToken", xsrf)
     }
+
+    private fun currentXsrf(): String? = cookieStore.values
+        .asSequence()
+        .flatten()
+        .firstOrNull { it.name == "_xsrf" }
+        ?.value
 
     private fun get(
         account: AiStudioAccount,
@@ -240,6 +303,8 @@ class AiStudioKernelClient {
         return response.use { resp ->
             val body = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) throw AiStudioException("${action}失败：HTTP ${resp.code}（${body.take(120)}）")
+            val redirected = resp.priorResponse?.let { "（经重定向 ${it.code} → ${resp.request.url}）" }.orEmpty()
+            AppLogger.info("${action}：HTTP ${resp.code} ${resp.header("Content-Type").orEmpty()}$redirected")
             body
         }
     }
@@ -262,6 +327,8 @@ class AiStudioKernelClient {
         return response.use { resp ->
             val body = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) throw AiStudioException("${action}失败：HTTP ${resp.code}（${body.take(120)}）")
+            val redirected = resp.priorResponse?.let { "（经重定向 ${it.code} → ${resp.request.url}）" }.orEmpty()
+            AppLogger.info("${action}：HTTP ${resp.code} ${resp.header("Content-Type").orEmpty()}$redirected")
             body
         }
     }
