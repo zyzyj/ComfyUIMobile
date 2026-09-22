@@ -60,12 +60,6 @@ jobs:
       - name: 赋予 gradlew 执行权限
         run: chmod +x gradlew
 
-      - name: 构建 Debug APK
-        # pipefail：让 Gradle 的失败退出码穿过 tee 管道，否则失败会被伪装成成功
-        run: |
-          set -o pipefail
-          ./gradlew :app:assembleDebug --stacktrace 2>&1 | tee /tmp/gradle-debug.log
-
       - name: 恢复签名密钥缓存
         # 签名必须跨构建保持稳定：App 内更新在装 APK 前会比对签名证书，
         # 每次现生成 keystore 会导致"签名与当前应用不一致"而永远装不上。
@@ -109,6 +103,12 @@ jobs:
           keyAlias=comfyuimobile
           keyPassword=comfyuimobile
           EOF
+
+      - name: 构建 Debug APK
+        # pipefail：让 Gradle 的失败退出码穿过 tee 管道，否则失败会被伪装成成功
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleDebug --stacktrace 2>&1 | tee /tmp/gradle-debug.log
 
       - name: 构建 Release APK
         run: |
