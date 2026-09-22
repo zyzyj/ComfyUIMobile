@@ -791,7 +791,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val base = endpoint.baseUrl.ifBlank { endpoint.basePath }
         if (base.isBlank()) return null
         val absolute = if (base.startsWith("http")) base else AiStudioProtocol.BASE_URL + "/" + base.trim('/')
-        return absolute.trimEnd('/') + "/api_serving/8188"
+        // 平台强制 https；且必须显式写 443——LanAddress.normalize 对不带端口的 http 地址会
+        // 默认补 ComfyUI 的 8188，拼出 aistudio.baidu.com:8188 这种错地址（实测踩到）。
+        val secured = when {
+            absolute.startsWith("http://") -> "https://" + absolute.removePrefix("http://")
+            absolute.startsWith("https://") -> absolute
+            else -> "https://$absolute"
+        }
+        return secured.trimEnd('/') + "/api_serving/8188"
     }
 
     /** 控制台：清空终端输出缓冲（不断开连接）。 */
