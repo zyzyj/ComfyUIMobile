@@ -56,6 +56,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
@@ -176,6 +177,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -183,6 +186,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -3668,6 +3672,8 @@ private fun previewUrl(media: ResultMedia): String =
 private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
     val panel = state.aiStudio
     val context = LocalContext.current
+    var showPointsInfo by remember { mutableStateOf(false) }
+    var showComputeInfo by remember { mutableStateOf(false) }
     val loginLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) viewModel.onAiStudioLoggedIn()
     }
@@ -3698,18 +3704,17 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                             label = "积分",
                             value = panel.points?.toString() ?: "—",
                             hint = if (panel.points == null) "未读到" else null,
+                            onClick = { showPointsInfo = true },
                         )
                         ResourceTile(
                             modifier = Modifier.weight(1f),
                             icon = { Icon(Icons.Outlined.Memory, null, Modifier.size(20.dp)) },
                             label = "算力卡",
-                            // 与官网一致的口径：resourceTotal ÷ 60。
-                            // 单位写作「算力卡」而不是「小时」——它是按基础版折算的等价时长，
-                            // 不同显卡消耗速度不同，直接写小时会误导。
+                            // 与官网完全一致：官网用户卡就是 resourceTotal ÷ 60 保留 1 位小数，
+                            // 这里只做同一道除法，不额外换算、不加单位。
                             value = panel.computeCard ?: "—",
-                            // 提示点明口径：这是按基础版折算的等价时长，
-                            // 不让它被误读成“任何显卡都能跑这么久”。
-                            hint = if (panel.computeCard == null) "未读到" else "按基础版折算",
+                            hint = if (panel.computeCard == null) "未读到" else null,
+                            onClick = { showComputeInfo = true },
                         )
                         ResourceTile(
                             modifier = Modifier.weight(1f),
@@ -3738,22 +3743,6 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                             modifier = Modifier.weight(1f),
                         ) { Text("领算力") }
                     }
-                }
-                item {
-                    // 积分任务：建项目→公开→删除。属模拟平台行为的自动化，
-                    // 有被平台判定异常的风险，所以单独一个按钮并配说明，不混在常规操作里。
-                    OutlinedButton(
-                        onClick = { viewModel.aiStudioRunPublishPointTask() },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("做「发布项目」积分任务") }
-                }
-                item {
-                    Text(
-                        "发布项目任务：自动新建一个临时项目、设为公开后删除。\n" +
-                            "这是模拟网页上的操作，平台有反作弊，请自行评估账号风险。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                 }
 
                 // —— 项目 ——
@@ -3805,47 +3794,6 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                 }
             }
 
-            // —— 积分任务 ——
-            if (panel.pointActions.isNotEmpty()) {
-                item {
-                    Text("积分任务", style = MaterialTheme.typography.titleMedium)
-                }
-                item {
-                    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            panel.pointActions.forEach { action ->
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (action.done) {
-                                        Icon(
-                                            Icons.Default.CheckCircle,
-                                            null,
-                                            Modifier.size(16.dp),
-                                            tint = MaterialTheme.colorScheme.primary,
-                                        )
-                                    } else {
-                                        Icon(
-                                            Icons.Outlined.RadioButtonUnchecked,
-                                            null,
-                                            Modifier.size(16.dp),
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(
-                                        action.name,
-                                        modifier = Modifier.weight(1f),
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
-                                    action.points?.let {
-                                        Text("+$it", style = MaterialTheme.typography.labelMedium)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
             // —— ComfyUI 连接（可展开卡片）——
             item {
                 Text("ComfyUI 服务器", style = MaterialTheme.typography.titleMedium)
@@ -3869,7 +3817,47 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                 item { RawResponseCard(raw = raw, context = context) }
             }
         }
+
+    if (showComputeInfo) {
+        AlertDialog(
+            onDismissRequest = { showComputeInfo = false },
+            title = { Text("算力卡") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("卡片上的数字与 AI Studio 官网显示的一致。")
+                    Text("它表示你本周还能用的 GPU 运行时长，按基础版（CPU）环境折算。换 V100、A100 等显卡时消耗更快，实际能跑的小时数会更少。")
+                    panel.weekQuota.entries.firstOrNull()?.let {
+                        Text("本周各档剩余见下方「本周算力剩余」。")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showComputeInfo = false }) { Text("知道了") }
+            },
+        )
     }
+
+    if (showPointsInfo) {
+        AlertDialog(
+            onDismissRequest = { showPointsInfo = false },
+            title = { Text("积分") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("积分来自平台上的日常任务（签到、发布项目等），可以换取算力卡、实物奖品等。")
+                    Text("当前积分：${panel.points ?: "未读到"}")
+                    Text(
+                        "积分用途与兑换入口在 AI Studio 官网的积分页（/pointsoverview）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showPointsInfo = false }) { Text("知道了") }
+            },
+        )
+    }
+}
 
 @Composable
 private fun AccountIdentityCard(panel: AiStudioState, onLogin: () -> Unit) {
@@ -3933,8 +3921,10 @@ private fun ResourceTile(
     label: String,
     value: String,
     hint: String?,
+    onClick: (() -> Unit)? = null,
 ) {
-    OutlinedCard(modifier = modifier) {
+    val cardModifier = if (onClick != null) modifier.clickable(onClick = onClick) else modifier
+    OutlinedCard(modifier = cardModifier) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 CompositionLocalProvider(
@@ -4179,100 +4169,138 @@ private fun RawResponseCard(raw: String, context: Context) {
 @Composable
 private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
     val panel = state.aiStudio
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+    var input by remember { mutableStateOf("comfyui") }
+    val terminalState = rememberLazyListState()
+    val focusRequester = remember { FocusRequester() }
+
+    // 新输出到了就滚到底，不然用户看不到刚跑出来的日志。
+    LaunchedEffect(panel.terminalLines.size) {
+        if (panel.terminalLines.isNotEmpty()) {
+            terminalState.animateScrollToItem(panel.terminalLines.lastIndex)
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // v0.1.98：真正接上了内核通道（JupyterLab）。
-        item {
-            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("内核通道", style = MaterialTheme.typography.titleSmall)
+        OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.Computer, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("云端终端", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                     Text(
-                        if (panel.consoleConnected) "已连上云端 Jupyter 内核"
-                        else "连上运行中的项目，就能在云端执行命令（启动 ComfyUI 等）",
+                        if (panel.consoleConnected) "已连接" else "未连接",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (panel.consoleConnected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    "连上运行中的项目后，在下面输入命令启动 ComfyUI。启动后回到「账号」页填地址即可。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            if (panel.consoleConnected) viewModel.aiStudioDisconnectConsole()
+                            else viewModel.aiStudioConnectConsole()
+                        },
+                        modifier = Modifier.weight(1f),
+                        enabled = !panel.consoleBusy,
+                    ) {
+                        if (panel.consoleBusy) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text(if (panel.consoleConnected) "断开" else "连接终端")
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = { viewModel.aiStudioClearConsole() },
+                        enabled = panel.consoleConnected,
+                    ) { Text("清屏") }
+                }
+            }
+        }
+
+        // ComfyUI 地址：连上终端后就能算出来，一键填到服务器地址。
+        panel.comfyUiUrl?.let { url ->
+            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("ComfyUI 地址", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        url,
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(
+                        onClick = {
+                            viewModel.setServerInput(url)
+                            viewModel.connect(url)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("用这个地址连接") }
+                }
+            }
+        }
+
+        // 终端输出。等宽字体、深色背景，像真的终端。
+        Surface(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+        ) {
+            if (panel.terminalLines.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        if (panel.consoleConnected) "终端已就绪，输入命令回车执行" else "尚未连接终端",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { viewModel.aiStudioConnectConsole() },
-                            modifier = Modifier.weight(1f),
-                            enabled = !panel.consoleBusy,
-                        ) {
-                            if (panel.consoleBusy) {
-                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            } else {
-                                Text(if (panel.consoleConnected) "重新连接" else "连接控制台")
-                            }
-                        }
-                        OutlinedButton(
-                            onClick = { viewModel.aiStudioStartKernel() },
-                            modifier = Modifier.weight(1f),
-                            enabled = panel.consoleConnected && !panel.consoleBusy,
-                        ) { Text("新建内核") }
-                    }
-                    if (panel.kernels.isNotEmpty()) {
-                        HorizontalDivider()
-                        Text("内核", style = MaterialTheme.typography.labelMedium)
-                        panel.kernels.forEach { name ->
-                            Text("· $name", style = MaterialTheme.typography.bodySmall)
-                        }
+                }
+            } else {
+                LazyColumn(
+                    state = terminalState,
+                    modifier = Modifier.fillMaxSize().padding(12.dp),
+                ) {
+                    items(panel.terminalLines) { line ->
+                        Text(
+                            line.ifEmpty { " " },
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
         }
-        item { Text("当前状态", style = MaterialTheme.typography.titleMedium) }
-        item {
-            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ConsoleRow("AI Studio 账号", panel.activeAccount()?.displayName() ?: "未登录")
-                    ConsoleRow("运行中项目", panel.projects.count { it.running }.toString())
-                    ConsoleRow("ComfyUI", state.activeServer?.name ?: "未连接")
-                    ConsoleRow(
-                        "连接状态",
-                        when (state.status) {
-                            ConnectionStatus.CONNECTED -> "在线"
-                            ConnectionStatus.CONNECTING -> "连接中"
-                            ConnectionStatus.RECONNECTING -> "重连中"
-                            ConnectionStatus.ERROR -> "出错"
-                            else -> "未连接"
-                        },
-                    )
-                }
-            }
+
+        // 命令输入行。
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = { input = it },
+                modifier = Modifier.weight(1f).focusRequester(focusRequester),
+                singleLine = true,
+                enabled = panel.consoleConnected,
+                placeholder = { Text("输入命令，如 bash run.sh") },
+                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+            )
+            Button(
+                onClick = {
+                    viewModel.aiStudioSendCommand(input.trim())
+                    input = ""
+                },
+                enabled = panel.consoleConnected && input.isNotBlank(),
+            ) { Text("发送") }
         }
+
         panel.message?.let { msg ->
-            item { Text(msg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary) }
+            Text(msg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
         }
         panel.error?.let { err ->
-            item { Text(err, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            Text(err, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
-        state.aiStudio.lastRawResponse?.takeIf { it.isNotBlank() }?.let { raw ->
-            item { Text("最近一次响应", style = MaterialTheme.typography.titleMedium) }
-            item {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                ) {
-                    Text(
-                        raw.take(1500),
-                        modifier = Modifier.padding(12.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ConsoleRow(label: String, value: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-        Text(value, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

@@ -74,20 +74,6 @@ data class AiStudioSchedule(
     fun displayName(): String = label.ifBlank { gpuType.ifBlank { scheduleName } }
 }
 
-/**
- * 积分的每日任务项。平台：`GET /point/user/action`。
- *
- * 字段名未经真机证实（该接口还没实际调到），所以解析全部走 opt + 兜底，
- * 拿不准的就不显示——宁可空着也不编。
- */
-data class AiStudioPointAction(
-    val name: String,
-    val points: Int? = null,
-    val done: Boolean = false,
-    /** 平台的完成入口（如 https://aistudio.baidu.com/account）。 */
-    val jumpUrl: String = "",
-)
-
 /** AI Studio 面板的整体状态，挂在 AppUiState 下。 */
 data class AiStudioState(
     val accounts: List<AiStudioAccount> = emptyList(),
@@ -119,13 +105,19 @@ data class AiStudioState(
     val aCoin: String? = null,
     /** 本周各档配额剩余（key 如 V100/A100/DCU/DEV，值=分钟）。 */
     val weekQuota: Map<String, Double> = emptyMap(),
-    /** 积分任务列表（未读到则为空）。 */
-    val pointActions: List<AiStudioPointAction> = emptyList(),
-    /** 控制台：内核列表（空 = 未连接或没内核）。 */
-    val kernels: List<String> = emptyList(),
+    /** 控制台：终端输出缓冲（按行，上限由 ViewModel 截断）。 */
+    val terminalLines: List<String> = emptyList(),
     val consoleBusy: Boolean = false,
-    /** 控制台是否已连上内核通道。 */
+    /** 控制台是否已连上云端终端。 */
     val consoleConnected: Boolean = false,
+    /**
+     * 运行中项目暴露的 ComfyUI 地址。
+     *
+     * 平台前端会把终端里出现的 `http://127.0.0.1:{port}` 自动改写成
+     * `{baseUrl}api_serving/{port}/`（前端 7613.js 就是这么拼的），
+     * 所以 ComfyUI 的 8188 端口对应 `{baseUrl}api_serving/8188`。
+     */
+    val comfyUiUrl: String? = null,
     /** 今天是否已签到（本机记录 + 接口状态共同决定）。 */
     val signedInToday: Boolean = false,
     val message: String? = null,
