@@ -54,12 +54,16 @@ object AiStudioProtocol {
     /** 设为公开 / 删除项目（积分任务「发布项目」用到）。 */
     const val PATH_PROJECT_PUBLIC = "/studio/project/public"
     const val PATH_PROJECT_DELETE = "/studio/project/delete"
+    /** 生成项目版本（公开前必须先有版本，否则平台回“当前项目没有版本”）。 */
+    const val PATH_PROJECT_VERSION_ADD = "/studio/project/version/add"
 
     // ===== 启动 / 停止环境 =====
     const val PATH_NOTEBOOK_ENTER = "/studio/project/notebook/enter"
     const val PATH_NOTEBOOK_CONFIG = "/studio/notebook/config"
     const val PATH_CLUSTER_ALL_LIST = "/studio/project/cluster/allList"
     const val PATH_PROJECT_RUNNING = "/studio/project/running"
+    /** 启动后查环境连接信息（返回 baseUrl / token / hubBaseUrl，用于 Jupyter 内核）。 */
+    const val PATH_RUNNING_STATUS_CHECK = "/studio/project/running_status_check"
     const val PATH_PROJECT_STOP = "/studio/project/stop"
     const val PATH_REQUIRE_GRAPHIC = "/studio/user/start/notebook/require/graphic"
 
@@ -85,7 +89,12 @@ object AiStudioProtocol {
             // 中文之间不要空格：之前是「领取算力 失败：…」，读着别扭。
             throw AiStudioException("${action}失败：$msg（错误码 $code）")
         }
-        return root.optJSONObject("result") ?: root
+        // 注意：result 可能是**对象也可能是数组**（如 /point/user/action）。
+        // 数组时 optJSONObject 返回 null，不能直接 fallback 成 root——那样数组就丢了。
+        // 把数组包成 {"result": [...]} 返回，让调用方统一能取到。
+        return root.optJSONObject("result")
+            ?: root.optJSONArray("result")?.let { JSONObject().put("result", it) }
+            ?: root
     }
 
     /** 把平台常见错误码翻译成人能看懂的话。未知码原样带出去，便于真机反馈。 */
@@ -281,14 +290,20 @@ object AiStudioProtocol {
 
     /** 签到的每日任务列表。平台：`GET /point/user/action`。 */
     fun parsePointActions(result: JSONObject): List<AiStudioPointAction> {
-        val array = firstArray(result, listOf("actionList", "data", "list", "actions", "items", "records"))
+        // 真机响应：result 直接是数组，每项
+        // {pointActionDesc, rewardPoint, isFinished, isDisposableAction, jumpUrl}
+        val array = result.optJSONArray("result")
+            ?: firstArray(result, listOf("actionList", "data", "list", "actions", "items", "records"))
             ?: return emptyList()
         return buildList {
             repeat(array.length()) { index ->
                 val item = array.optJSONObject(index) ?: return@repeat
-                val name = firstString(item, listOf("actionName", "name", "title", "desc", "actionDesc"))
+                val name = firstString(
+                    item,
+                    listOf("pointActionDesc", "actionName", "name", "title", "desc"),
+                )
                 if (name.isBlank()) return@repeat
-                val done = listOf("isFinish", "finished", "isDone", "status", "actionStatus")
+                val done = listOf("isFinished", "isFinish", "finished", "isDone", "status")
                     .firstNotNullOfOrNull { key ->
                         when (val value = item.opt(key)) {
                             is Boolean -> value
@@ -300,9 +315,11 @@ object AiStudioProtocol {
                 add(
                     AiStudioPointAction(
                         name = name,
-                        points = (item.opt("point") as? Number)?.toInt()
+                        points = (item.opt("rewardPoint") as? Number)?.toInt()
+                            ?: (item.opt("point") as? Number)?.toInt()
                             ?: (item.opt("points") as? Number)?.toInt(),
                         done = done,
+                        jumpUrl = item.optString("jumpUrl"),
                     ),
                 )
             }

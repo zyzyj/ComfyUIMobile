@@ -3950,39 +3950,57 @@ private fun ProjectCard(project: AiStudioProject, panel: AiStudioState, viewMode
     val starting = panel.startingProjectId == project.projectId
     val stopping = panel.stoppingProjectId == project.projectId
     var expanded by remember(project.projectId) { mutableStateOf(false) }
-    OutlinedCard(
-        modifier = Modifier.fillMaxWidth(),
-        onClick = {
-            viewModel.aiStudioLoadSchedules(project.projectId)
-            expanded = !expanded
-        },
-    ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    // v0.1.98：整张卡片不再可点。以前 onClick 挂在 OutlinedCard 上，会与
+    // 内部按钮抢事件（点「选择 GPU 启动」反而触发卡片展开/收起），这就是
+    // “选了也没反应”的根因之一。现在只有按钮可点。
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(project.displayName(), style = MaterialTheme.typography.titleSmall)
                     Text(
-                        if (project.running) "运行中" else "已停止",
+                        when {
+                            starting -> "正在启动…"
+                            stopping -> "正在停止…"
+                            project.running -> "运行中"
+                            else -> "已停止"
+                        },
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (project.running) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (project.running || starting) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (starting || stopping) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                if (starting || stopping) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                }
             }
             if (expanded) {
-                if (panel.schedules.isEmpty()) {
-                    Text("正在读取可用算力…", style = MaterialTheme.typography.bodySmall)
+                HorizontalDivider()
+                if (!panel.schedulesLoaded) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("正在读取可用 GPU…", style = MaterialTheme.typography.bodySmall)
+                    }
+                } else if (panel.schedules.isEmpty()) {
+                    Text(
+                        "没有读到可用档位，可直接用「默认档启动」",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 } else {
                     panel.schedules.forEach { schedule ->
                         OutlinedButton(
-                            onClick = { viewModel.aiStudioStartProject(project.projectId, schedule.scheduleName) },
+                            onClick = {
+                                viewModel.aiStudioStartProject(project.projectId, schedule.scheduleName)
+                                expanded = false
+                            },
                             modifier = Modifier.fillMaxWidth(),
                             enabled = !starting && !stopping && schedule.available,
                         ) {
-                            // 档位名 + 每小时消耗，让用户看得出不同显卡花销不同。
                             val cost = schedule.costPerHour
                                 ?.takeIf { it > 0 }
-                                ?.let { " · ${trimNumber(it / 100.0)}/小时" }
+                                ?.let { " · ${trimNumber(it / 100.0)} 算力卡/小时" }
                                 .orEmpty()
                             Text(schedule.displayName() + cost)
                         }
@@ -3991,19 +4009,22 @@ private fun ProjectCard(project: AiStudioProject, panel: AiStudioState, viewMode
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
-                    // v0.1.97：不再“盲目默认启动”。点它先把可选 GPU 档位拉出来并展开，
-                    // 由用户选具体用哪档——以前一点就用平台默认，用户根本没机会选显卡。
                     onClick = {
-                        viewModel.aiStudioLoadSchedules(project.projectId)
-                        expanded = true
+                        if (expanded) {
+                            // 已展开则用默认档启动，避免再点一次无反应
+                            viewModel.aiStudioStartProject(project.projectId, "")
+                        } else {
+                            viewModel.aiStudioLoadSchedules(project.projectId)
+                            expanded = true
+                        }
                     },
                     modifier = Modifier.weight(1f),
                     enabled = !starting && !stopping,
-                ) { Text(if (expanded && panel.schedules.isNotEmpty()) "选档位启动" else "选择 GPU 启动") }
+                ) { Text(if (expanded) "默认档启动" else "选择 GPU 启动") }
                 OutlinedButton(
                     onClick = { viewModel.aiStudioStopProject(project.projectId) },
                     modifier = Modifier.weight(1f),
-                    enabled = !starting && !stopping,
+                    enabled = !starting && !stopping && project.running,
                 ) { Text("停止") }
             }
         }
@@ -4153,64 +4174,96 @@ private fun RawResponseCard(raw: String, context: Context) {
  */
 @Composable
 private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
+    val panel = state.aiStudio
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-            item {
-                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("这一版还没接上内核通道", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            "地基已探明：BML Codelab 底层是 JupyterLab 3.0，启动环境后拿到的 " +
-                                "{baseUrl, token} 可直接走标准 Jupyter 接口执行命令。\n" +
-                                "下一版会把「在内核里跑命令 → 回显输出」接进来，届时这里就是真正的控制台。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+        // v0.1.98：真正接上了内核通道（JupyterLab）。
+        item {
+            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("内核通道", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        if (panel.consoleConnected) "已连上云端 Jupyter 内核"
+                        else "连上运行中的项目，就能在云端执行命令（启动 ComfyUI 等）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { viewModel.aiStudioConnectConsole() },
+                            modifier = Modifier.weight(1f),
+                            enabled = !panel.consoleBusy,
+                        ) {
+                            if (panel.consoleBusy) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            } else {
+                                Text(if (panel.consoleConnected) "重新连接" else "连接控制台")
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = { viewModel.aiStudioStartKernel() },
+                            modifier = Modifier.weight(1f),
+                            enabled = panel.consoleConnected && !panel.consoleBusy,
+                        ) { Text("新建内核") }
                     }
-                }
-            }
-            item { Text("当前状态", style = MaterialTheme.typography.titleMedium) }
-            item {
-                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        ConsoleRow("AI Studio 账号", state.aiStudio.activeAccount()?.displayName() ?: "未登录")
-                        ConsoleRow("运行中项目", state.aiStudio.projects.count { it.running }.toString())
-                        ConsoleRow("ComfyUI", state.activeServer?.name ?: "未连接")
-                        ConsoleRow(
-                            "连接状态",
-                            when (state.status) {
-                                ConnectionStatus.CONNECTED -> "在线"
-                                ConnectionStatus.CONNECTING -> "连接中"
-                                ConnectionStatus.RECONNECTING -> "重连中"
-                                ConnectionStatus.ERROR -> "出错"
-                                else -> "未连接"
-                            },
-                        )
-                    }
-                }
-            }
-            state.aiStudio.lastRawResponse?.takeIf { it.isNotBlank() }?.let { raw ->
-                item { Text("最近一次输出", style = MaterialTheme.typography.titleMedium) }
-                item {
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                    ) {
-                        Text(
-                            raw.take(1500),
-                            modifier = Modifier.padding(12.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    if (panel.kernels.isNotEmpty()) {
+                        HorizontalDivider()
+                        Text("内核", style = MaterialTheme.typography.labelMedium)
+                        panel.kernels.forEach { name ->
+                            Text("· $name", style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
             }
         }
+        item { Text("当前状态", style = MaterialTheme.typography.titleMedium) }
+        item {
+            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ConsoleRow("AI Studio 账号", panel.activeAccount()?.displayName() ?: "未登录")
+                    ConsoleRow("运行中项目", panel.projects.count { it.running }.toString())
+                    ConsoleRow("ComfyUI", state.activeServer?.name ?: "未连接")
+                    ConsoleRow(
+                        "连接状态",
+                        when (state.status) {
+                            ConnectionStatus.CONNECTED -> "在线"
+                            ConnectionStatus.CONNECTING -> "连接中"
+                            ConnectionStatus.RECONNECTING -> "重连中"
+                            ConnectionStatus.ERROR -> "出错"
+                            else -> "未连接"
+                        },
+                    )
+                }
+            }
+        }
+        panel.message?.let { msg ->
+            item { Text(msg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary) }
+        }
+        panel.error?.let { err ->
+            item { Text(err, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+        }
+        state.aiStudio.lastRawResponse?.takeIf { it.isNotBlank() }?.let { raw ->
+            item { Text("最近一次响应", style = MaterialTheme.typography.titleMedium) }
+            item {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    Text(
+                        raw.take(1500),
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
     }
+}
 
 @Composable
 private fun ConsoleRow(label: String, value: String) {

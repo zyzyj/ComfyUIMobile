@@ -84,6 +84,8 @@ data class AiStudioPointAction(
     val name: String,
     val points: Int? = null,
     val done: Boolean = false,
+    /** 平台的完成入口（如 https://aistudio.baidu.com/account）。 */
+    val jumpUrl: String = "",
 )
 
 /** AI Studio 面板的整体状态，挂在 AppUiState 下。 */
@@ -92,6 +94,8 @@ data class AiStudioState(
     val activeAccountId: String? = null,
     val projects: List<AiStudioProject> = emptyList(),
     val schedules: List<AiStudioSchedule> = emptyList(),
+    /** GPU 档位是否已拉取完成。用于区分“还没拉”与“拉到了空”。 */
+    val schedulesLoaded: Boolean = false,
     val loadingProjects: Boolean = false,
     val signingIn: Boolean = false,
     val startingProjectId: String? = null,
@@ -117,6 +121,11 @@ data class AiStudioState(
     val weekQuota: Map<String, Double> = emptyMap(),
     /** 积分任务列表（未读到则为空）。 */
     val pointActions: List<AiStudioPointAction> = emptyList(),
+    /** 控制台：内核列表（空 = 未连接或没内核）。 */
+    val kernels: List<String> = emptyList(),
+    val consoleBusy: Boolean = false,
+    /** 控制台是否已连上内核通道。 */
+    val consoleConnected: Boolean = false,
     /** 今天是否已签到（本机记录 + 接口状态共同决定）。 */
     val signedInToday: Boolean = false,
     val message: String? = null,
