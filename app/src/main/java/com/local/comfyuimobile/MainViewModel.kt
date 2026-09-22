@@ -871,14 +871,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      *
      * 已有有效项目级 Cookie 时直接返回 true，不重复建终端。
      */
-    private suspend fun ensureAiStudioProjectCookies(): Boolean {
+    private suspend fun ensureAiStudioProjectCookies(servingUrl: String): Boolean {
         if (kernelClient.hasProjectCookies()) return true
         val account = _state.value.aiStudio.activeAccount() ?: return false
-        val project = _state.value.aiStudio.projects.firstOrNull { it.running }
-            ?: _state.value.aiStudio.projects.firstOrNull()
+        // 直接从 api_serving 地址解析项目 ID（/user/{uid}/{pid}/api_serving/{port}）。
+        // 不依赖项目列表——App 刚启动时列表往往还没加载完，靠它会在连接时静默跳过。
+        val pid = Regex("/user/\\d+/(\\d+)/").find(servingUrl)?.groupValues?.get(1)
             ?: return false
         return runCatching {
-            val endpoint = kernelClient.fetchEndpoint(account, project.projectId, "")
+            val endpoint = kernelClient.fetchEndpoint(account, pid, "")
             val existing = kernelClient.listTerminals(account, endpoint)
             val name = existing.firstOrNull() ?: kernelClient.createTerminal(account, endpoint)
             kernelEndpoint = endpoint
@@ -1319,7 +1320,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val configured = _state.value.serverCookie
                 val cookie = if (isAiStudioServingAddress(normalized)) {
                     // 持久化的项目级 Cookie 会随实例重启失效，连接前先确保拿到当前实例的新值。
-                    ensureAiStudioProjectCookies()
+                    ensureAiStudioProjectCookies(normalized)
                     AiStudioProtocol.mergeCookies(configured, kernelClient.exportCookies())
                 } else {
                     configured
