@@ -339,6 +339,26 @@ class AiStudioKernelClient {
         .joinToString("; ") { "${it.name}=${it.value}" }
 
     /**
+     * 当前已捕获的 Cookie **名字**（不含值）。
+     *
+     * 仅用于诊断：判断网关是否下发了项目级 Cookie（`ide-proxy`、`user-*`）。
+     * 值等同账号密码，绝不写进日志。
+     */
+    fun cookieNames(): List<String> = cookieStore.values
+        .asSequence()
+        .flatten()
+        .map { it.name }
+        .distinct()
+        .sorted()
+        .toList()
+
+    /** 是否已拿到 api_serving 反代鉴权必需的项目级 Cookie。 */
+    fun hasProjectCookies(): Boolean {
+        val names = cookieNames()
+        return names.contains("ide-proxy") || names.any { it.startsWith("user-") }
+    }
+
+    /**
      * 预热项目 Cookie：像浏览器那样访问一次 Codelab 环境首页（用户路径）。
      *
      * 网关在访问 `/user/{uid}/{pid}/` 时会下发项目级 Cookie（`ide-proxy`、
@@ -349,11 +369,26 @@ class AiStudioKernelClient {
     suspend fun warmUpProjectCookies(account: AiStudioAccount, endpoint: KernelEndpoint) {
         withContext(Dispatchers.IO) {
             runCatching {
-                val url = withToken(endpoint, userBase(endpoint))
-                val builder = Request.Builder().url(url)
-                commonHeaders(account, endpoint).forEach { (k, v) -> builder.header(k, v) }
-                client.newCall(builder.get().build()).execute().use { response ->
-                    AppLogger.info("Codelab 预热：HTTP ${response.code}，已捕获 Cookie ${cookieStore.values.flatten().size} 段")
+                // 先访问项目根（Codelab 首页），再补一次项目详情页：两处都可能 Set-Cookie。
+                val targets = buildList {
+                    add(withToken(endpoint, userBase(endpoint)))
+                    add(withToken(endpoint, userBase(endpoint) + "home"))
+                    add(withToken(endpoint, userBase(endpoint) + "lab"))
+                    add(withToken(endpoint, userBase(endpoint) + "tree"))
+                }
+                targets.forEach { url ->
+                    runCatching {
+                        val builder = Request.Builder().url(url)
+                        commonHeaders(account, endpoint).forEach { (k, v) -> builder.header(k, v) }
+                        client.newCall(builder.get().build()).execute().use { response ->
+                            AppLogger.info("Codelab 预热：${response.code} ${response.request.url.encodedPath}")
+                        }
+                    }
+                }
+                // 只记名字，不记值（值等同凭据）。
+                AppLogger.info("Codelab 预热完成：已捕获 Cookie=[${cookieNames().joinToString()}]")
+                if (!hasProjectCookies()) {
+                    AppLogger.warn("Codelab 预热未拿到项目级 Cookie（ide-proxy / user-*），ComfyUI 反代可能仍被拒")
                 }
             }.onFailure { error ->
                 AppLogger.warn("Codelab 预热失败（不影响终端，可能影响 ComfyUI 自动连接）", error)
