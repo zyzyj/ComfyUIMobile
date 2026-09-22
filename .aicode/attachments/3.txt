@@ -1,0 +1,79 @@
+2026-09-22 10:20:34.671 [信息] 应用启动，日志记录=开启
+2026-09-22 10:20:34.956 [信息] WebView 运行时（初始化）：包=com.google.android.webview，版本=151.0.7922.170
+2026-09-22 10:20:49.447 [信息] AI Studio 登录完成：Cookie 长度=658，bdToken=已取到，uid=20104163，昵称=ZAYANJ
+2026-09-22 10:20:49.478 [信息] AI Studio 账号已保存：ZAYANJ（UID=20104163）
+2026-09-22 10:20:49.763 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":12,"continuousSingCount":2,"isFinishSign":1}
+2026-09-22 10:20:49.796 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":12,"continuousSingCount":2,"isFinishSign":1}
+2026-09-22 10:20:49.836 [信息] AI Studio[项目列表] 响应 1359 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:20:49.838 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 10:20:50.227 [信息] AI Studio[算力卡] 响应 320 字：{"id":966594,"resourceTotal":3761,"resourceConsume":5241,"resourceIncome":9000,"resourceFree":3761,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-22 02:06:39","resourceWeekQuotaMap":{"DEV":2880,"DCU":3761,"V10
+2026-09-22 10:20:50.227 [信息] AI Studio[积分任务] 响应 960 字：{"logId":"6637a1ff8bc716f85c32cc5975ed28bd","errorCode":0,"errorMsg":"Success","result":[{"pointActionDesc":"完善个人信息","isDisposableAction":true,"rewardPoint":5,"isFinished":true,"jumpUrl":"https:\/\/aistudio.baidu.com\/account"},{"pointActionDesc":"公开项目","isDisposableAction":false,"rewardPoint":5,"is
+2026-09-22 10:20:50.244 [信息] AI Studio[算力卡] 响应 320 字：{"id":966594,"resourceTotal":3761,"resourceConsume":5241,"resourceIncome":9000,"resourceFree":3761,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-22 02:06:39","resourceWeekQuotaMap":{"DEV":2880,"DCU":3761,"V10
+2026-09-22 10:20:50.245 [信息] AI Studio[积分任务] 响应 960 字：{"logId":"d64f51cbf2ee72138a9451563355c174","errorCode":0,"errorMsg":"Success","result":[{"pointActionDesc":"完善个人信息","isDisposableAction":true,"rewardPoint":5,"isFinished":true,"jumpUrl":"https:\/\/aistudio.baidu.com\/account"},{"pointActionDesc":"公开项目","isDisposableAction":false,"rewardPoint":5,"is
+2026-09-22 10:20:50.361 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-22 10:20:50.365 [信息] AI Studio 资源：积分=12，算力卡=3761 算力卡，A币=0，任务=0 项
+2026-09-22 10:20:50.466 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-22 10:20:50.467 [信息] AI Studio 资源：积分=12，算力卡=3761 算力卡，A币=0，任务=0 项
+2026-09-22 10:20:55.067 [信息] 检查更新 开始
+2026-09-22 10:20:56.863 [信息] 检查更新 完成
+2026-09-22 10:20:59.259 [信息] 积分任务：开始建项目 tmp-0922-102059
+2026-09-22 10:20:59.770 [信息] 积分任务：已建项目 id=10720563
+2026-09-22 10:21:00.058 [错误] 积分任务失败
+com.local.comfyuimobile.network.AiStudioException: 设为公开失败：当前项目没有版本（错误码 500）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:86)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:359)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-22 10:21:15.349 [信息] AI Studio[项目列表] 响应 1359 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:21:15.350 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 10:21:59.208 [信息] AI Studio[项目列表] 响应 1359 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:21:59.211 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 10:22:25.027 [信息] AI Studio 可用算力：基础版, 异构算力 16GB, BI-V150S 32GB, V100 16GB, V100 32GB
+2026-09-22 10:22:28.186 [信息] AI Studio 启动请求已提交：项目=10716006，算力=resourceCardVGpuSchedule
+2026-09-22 10:22:28.408 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:22:28.410 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 10:22:31.505 [信息] AI Studio 启动请求已提交：项目=10716006，算力=resourceCardVGpuSchedule
+2026-09-22 10:22:31.733 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:22:31.736 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 10:22:32.445 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:22:32.447 [信息] AI Studio 项目已运行：10716006
+2026-09-22 10:22:35.829 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:22:35.833 [信息] AI Studio 项目已运行：10716006
+2026-09-22 10:22:38.006 [信息] AI Studio 启动请求已提交：项目=10716006，算力=resourceCardVGpuSchedule
+2026-09-22 10:22:38.242 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:22:38.243 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 10:22:40.276 [信息] AI Studio 启动请求已提交：项目=10716006，算力=resourceCardVGpuSchedule
+2026-09-22 10:22:40.519 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:22:40.523 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 10:22:41.539 [信息] AI Studio 启动请求已提交：项目=10716006，算力=resourceCardVGpuSchedule
+2026-09-22 10:22:41.762 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:22:41.767 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 10:22:42.289 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:22:42.292 [信息] AI Studio 项目已运行：10716006
+2026-09-22 10:22:44.255 [信息] AI Studio 可用算力：
+2026-09-22 10:22:44.545 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:22:44.548 [信息] AI Studio 项目已运行：10716006
+2026-09-22 10:22:45.815 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:22:45.819 [信息] AI Studio 项目已运行：10716006
+2026-09-22 10:22:58.751 [信息] AI Studio 停止请求已提交：项目=10716006
+2026-09-22 10:22:59.107 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:22:59.109 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 10:23:00.149 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:23:00.152 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 10:23:01.387 [信息] AI Studio 停止请求已提交：项目=10716006
+2026-09-22 10:23:01.597 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:23:01.599 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 10:23:02.262 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:23:02.265 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 10:23:03.209 [信息] AI Studio 停止请求已提交：项目=10716006
+2026-09-22 10:23:03.438 [信息] AI Studio[项目列表] 响应 1359 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:23:03.440 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 10:23:04.098 [信息] AI Studio[项目列表] 响应 1359 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 10:23:04.100 [信息] AI Studio 项目列表：1 个（共 1）

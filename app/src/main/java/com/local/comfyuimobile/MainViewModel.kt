@@ -66,6 +66,7 @@ import com.local.comfyuimobile.model.WorkflowNode
 import com.local.comfyuimobile.network.ActiveJobRecovery
 import com.local.comfyuimobile.network.ComfyClient
 import com.local.comfyuimobile.network.AiStudioClient
+import com.local.comfyuimobile.network.AiStudioKernelClient
 import com.local.comfyuimobile.network.AiStudioException
 import com.local.comfyuimobile.network.AiStudioProtocol
 import com.local.comfyuimobile.network.ExecutionNodeResolver
@@ -195,6 +196,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var knownNodeTypes: Set<String>? = null
     // ===== v0.1.90 AI Studio 平台 =====
     private val aiStudio = AiStudioClient()
+    private val kernelClient = AiStudioKernelClient()
+    /** 控制台当前连接的环境（用于后续在内核里跑命令）。 */
+    private var kernelEndpoint: AiStudioKernelClient.KernelEndpoint? = null
     /**
      * v0.1.97：拆成三个独立 Job。
      *
@@ -641,6 +645,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val id = aiStudio.createProject(account, name)
                 createdId = id
                 AppLogger.info("积分任务：已建项目 id=$id")
+                // 必须先生成版本，否则平台回「当前项目没有版本」。
+                val versionName = "v" + java.text.SimpleDateFormat("MMddHHmm", java.util.Locale.US)
+                    .format(java.util.Date())
+                val versionId = aiStudio.createVersion(account, id, versionName)
+                AppLogger.info("积分任务：已生成版本 id=$versionId name=$versionName")
                 aiStudio.publishProject(account, id)
                 AppLogger.info("积分任务：已设为公开 id=$id")
                 id
@@ -671,7 +680,85 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * 拉当前账号的项目列表。
+     * 控制台：连上已运行项目的内核通道。
+     *
+     * 链路（从前端核实）：running_status_check 拿 {baseUrl,token,hubBaseUrl}
+     * → GET {hub}/api/kernels。启动项目后需等环境就绪（1-2 分钟）。
+     */
+    fun aiStudioConnectConsole() {
+        val account = _state.value.aiStudio.activeAccount() ?: return
+        if (aiStudioActionJob?.isActive == true) return
+        val project = _state.value.aiStudio.projects.firstOrNull { it.running }
+            ?: _state.value.aiStudio.projects.firstOrNull()
+        if (project == null) {
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(error = "先在「账号」页启动一个项目")) }
+            return
+        }
+        _state.update {
+            it.copy(aiStudio = it.aiStudio.copy(consoleBusy = true, error = null, message = null))
+        }
+        aiStudioActionJob = viewModelScope.launch {
+            runCatching {
+                val endpoint = kernelClient.fetchEndpoint(account, project.projectId, "")
+                val kernels = kernelClient.listKernels(account, endpoint)
+                endpoint to kernels
+            }
+                .onSuccess { (endpoint, kernels) ->
+                    kernelEndpoint = endpoint
+                    AppLogger.info("控制台已连接：内核 ${kernels.size} 个")
+                    _state.update {
+                        it.copy(
+                            aiStudio = it.aiStudio.copy(
+                                consoleBusy = false,
+                                consoleConnected = true,
+                                kernels = kernels.map { it.displayName() },
+                                message = if (kernels.isEmpty()) "已连上，暂无内核（可新建）" else "已连上内核通道",
+                            ),
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    kernelEndpoint = null
+                    _state.update {
+                        it.copy(aiStudio = it.aiStudio.copy(consoleBusy = false, consoleConnected = false))
+                    }
+                    failAiStudio("连接控制台失败", error)
+                }
+        }
+    }
+
+    /** 控制台：新建一个 python3 内核。 */
+    fun aiStudioStartKernel() {
+        val account = _state.value.aiStudio.activeAccount() ?: return
+        val endpoint = kernelEndpoint
+        if (endpoint == null) {
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(error = "先点「连接控制台」")) }
+            return
+        }
+        if (aiStudioActionJob?.isActive == true) return
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleBusy = true, error = null)) }
+        aiStudioActionJob = viewModelScope.launch {
+            runCatching { kernelClient.startKernel(account, endpoint) }
+                .onSuccess { kernel ->
+                    AppLogger.info("控制台：已新建内核 ${kernel.id}")
+                    _state.update {
+                        it.copy(
+                            aiStudio = it.aiStudio.copy(
+                                consoleBusy = false,
+                                kernels = it.aiStudio.kernels + kernel.displayName(),
+                                message = "已新建内核",
+                            ),
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleBusy = false)) }
+                    failAiStudio("新建内核失败", error)
+                }
+        }
+    }
+
+    /** 拉当前账号的项目列表。
      *
      * @param silent true 时不显示 loading（给启动后的自动轮询用，
      *   否则每几秒闪一下圈）。
@@ -728,6 +815,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 拉某个项目的可用算力档位。 */
     fun aiStudioLoadSchedules(projectId: String) {
         val account = _state.value.aiStudio.activeAccount() ?: return
+        // 重置为「未加载」，让界面显示读取中（旧数据不要留着假装是新项目的）。
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(schedules = emptyList(), schedulesLoaded = false)) }
         aiStudioProjectJob = viewModelScope.launch {
             runCatching { aiStudio.listSchedules(account, projectId) }
                 .onSuccess { schedules ->
@@ -736,12 +825,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(
                             aiStudio = it.aiStudio.copy(
                                 schedules = schedules,
+                                schedulesLoaded = true,
                                 lastRawResponse = aiStudio.lastRawResponse,
                             ),
                         )
                     }
                 }
-                .onFailure { error -> failAiStudio("读取可用算力失败", error) }
+                .onFailure { error ->
+                    // 失败也要标成已加载，否则界面永远停在“读取中”。
+                    _state.update { it.copy(aiStudio = it.aiStudio.copy(schedulesLoaded = true)) }
+                    failAiStudio("读取可用算力失败", error)
+                }
         }
     }
 

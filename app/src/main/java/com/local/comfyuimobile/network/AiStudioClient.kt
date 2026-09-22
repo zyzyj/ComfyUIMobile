@@ -281,6 +281,35 @@ class AiStudioClient {
         return id
     }
 
+    /**
+     * 生成项目版本，返回 versionId。
+     *
+     * 真实调用（前端核实）：`POST /studio/project/version/add`，body
+     * `{projectId, fileList, versionName, uploadDirectly}`。
+     * **公开项目前必须先有版本** —— 否则平台直接回“当前项目没有版本”。
+     * 新建的空项目默认自带 main.ipynb，所以 fileList 传空数组即可让平台打包当前内容。
+     */
+    suspend fun createVersion(
+        account: AiStudioAccount,
+        projectId: String,
+        versionName: String,
+    ): String {
+        val body = JSONObject()
+            .put("projectId", projectId)
+            .put("fileList", org.json.JSONArray())
+            .put("versionName", versionName)
+            .put("uploadDirectly", true)
+            .toString()
+        val result = request(
+            account,
+            AiStudioProtocol.PATH_PROJECT_VERSION_ADD,
+            "POST_JSON",
+            body,
+            "生成版本",
+        )
+        return result.optString("versionId").ifBlank { result.optString("id") }
+    }
+
     /** 把项目设为公开。 */
     suspend fun publishProject(account: AiStudioAccount, projectId: String) {
         request(
