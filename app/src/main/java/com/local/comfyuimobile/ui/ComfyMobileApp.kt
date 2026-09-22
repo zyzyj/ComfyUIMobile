@@ -4271,18 +4271,19 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
             }
         }
 
-        // —— 终端输出：等宽 + 大字号，支持长按选择复制 ——
+        // —— 终端输出：深色底 + 浅色等宽字，模拟真终端；支持长按选择复制 ——
+        // 取色用 inverseSurface/inverseOnSurface：浅色主题下是深底浅字，深色主题下自动反转。
         Surface(
             modifier = Modifier.fillMaxWidth().weight(1f),
             shape = RoundedCornerShape(10.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant,
+            color = MaterialTheme.colorScheme.inverseSurface,
         ) {
             if (panel.terminalLines.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
                         if (panel.consoleConnected) "终端已就绪，输入命令回车执行" else "尚未连接终端",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = MaterialTheme.colorScheme.inverseOnSurface,
                     )
                 }
             } else {
@@ -4300,7 +4301,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                                     fontFamily = FontFamily.Monospace,
                                     lineHeight = 20.sp,
                                 ),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = MaterialTheme.colorScheme.inverseOnSurface,
                             )
                         }
                     }

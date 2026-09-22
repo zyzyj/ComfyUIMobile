@@ -74,6 +74,11 @@ object PlatformResponseGuard {
             // 报成了"该服务器不支持此接口"，其实 Cookie 没带对，文案纯属误导）。
             httpCode in AUTH_CODES ->
                 "需要登录或登录已失效（HTTP $httpCode，服务器返回的是网页错误页）"
+            // AI Studio 的 api_serving 网关在后端服务未监听时回 490（带 SPA 首页），
+            // 实测含义是「端口服务还没起」——对 ComfyUI 场景就是 setup.sh 还没跑完，
+            // 属于正常等待，不该报成登录或故障。
+            httpCode == 490 ->
+                "服务还没启动完成（HTTP 490，平台网关已通但后端端口未监听）"
             httpCode in UNSUPPORTED_CODES ->
                 "该服务器不支持此接口（HTTP $httpCode，返回的是网页错误页）"
             else ->
