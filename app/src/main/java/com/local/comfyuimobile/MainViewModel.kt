@@ -385,14 +385,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
+     * 连 ComfyUI 要用的 Cookie：账号 Cookie + 终端阶段网关下发的项目级 Cookie。
+     *
+     * 关键在后者。`api_serving/8188` 是平台反代，网关校验的是**项目级** Cookie
+     * （`ide-proxy`、`user-{uid}-{pid}`）——实测：不带 `ide-proxy` 请求会 302 到登录页，
+     * 带上（哪怕值是假的）才会被当成代理请求。而这两段是进 Codelab 环境时由网关下发的，
+     * 账号 Cookie（BDUSS 等）里根本没有。连终端时 kernelClient 的 CookieJar 已经拿到了
+     * 它们（notebook/enter、baseinfo、api/terminals 这些请求会 Set-Cookie），
+     * 以前却只用账号 Cookie 去连 ComfyUI，于是必然被甩回登录页——这正是用户
+     * “手动连 ComfyUI 还要粘 Cookie”的根因。
+     *
+     * 合并顺序：账号 Cookie 在前、项目级在后（同名取后者，它更新更准）。
+     */
+    private fun aiStudioComfyCookie(): String = AiStudioProtocol.mergeCookies(
+        _state.value.aiStudio.activeAccount()?.cookie.orEmpty(),
+        kernelClient.exportCookies(),
+    )
+
+    /**
      * 连接运行中项目暴露的 ComfyUI（`{baseUrl}api_serving/8188`）。
      *
-     * 这个地址是平台的反向代理，**必须带 AI Studio 的登录 Cookie**，否则网关把请求
-     * 当成未登录，返回登录页（日志里“HTTP 200 但返回的是登录页”就是这么来的）。
-     * 所以这里顺手把当前账号的 Cookie 一起填上再连，不让用户手动去设置里粘贴。
+     * 这个地址是平台的反向代理，必须带齐平台登录 Cookie（含项目级 `ide-proxy`），
+     * 否则网关把请求当成未登录，返回登录页（日志里“HTTP 200 但返回的是登录页”就是这么来的）。
+     * 这里自动把 Cookie 填上再连，不让用户手动去设置里粘贴。
      */
     fun connectAiStudioComfyUi(url: String) {
-        val cookie = _state.value.aiStudio.activeAccount()?.cookie.orEmpty()
+        val cookie = aiStudioComfyCookie()
         if (cookie.isNotBlank()) {
             cookieSeededAddress = url
             _state.update { it.copy(serverInput = url, serverCookie = cookie) }
@@ -673,7 +691,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     kernelEndpoint = endpoint
                     // 新一次连接：允许再自动连一次 ComfyUI（上次的失败不带到这次）。
                     autoConnectAttempted = false
+                    // 终端也是长连接：切后台后系统休眠会掐断 WebSocket（真机日志里
+                    // 每次都是切出去几十秒就"终端断开（Software caused connection abort）"）。
+                    // 所以连上终端同样要起前台服务 + CPU/WiFi 锁。
+                    terminalKeepAlive = true
+                    syncKeepAlive()
                     openTerminalSocket(account, endpoint, name)
+                    // 预热项目级 Cookie（ide-proxy 等）——ComfyUI 的 api_serving 反代
+                    // 靠它们鉴权，而账号 Cookie 里没有。放后台跑，不阻塞终端显示。
+                    viewModelScope.launch { kernelClient.warmUpProjectCookies(account, endpoint) }
                     _state.update {
                         it.copy(
                             aiStudio = it.aiStudio.copy(
@@ -695,6 +721,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var terminalReconnectJob: Job? = null
     private var terminalManualClose = false
+    /**
+     * 保活引用：ComfyUI 连接与云端终端各自持有。
+     *
+     * 以前只有 ComfyUI 连接会起保活前台服务，连终端时什么都不做——于是用终端跑 ComfyUI
+     * 的用户一切到后台，系统就休眠把 WebSocket 掐断。两者任一活跃都要保住进程，
+     * 只有都断开才撤掉通知。
+     */
+    private var comfyKeepAlive = false
+    private var terminalKeepAlive = false
+    /** 保活通知上显示的名字（ComfyUI 服务器名）。 */
+    private var comfyServerName = ""
     /** 终端里是否已尝试过自动连接 ComfyUI（只自动连一次，不刷屏）。 */
     private var autoConnectAttempted = false
 
@@ -786,8 +823,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         appendTerminal("$ $command\n")
         if (!kernelClient.sendInput(command)) {
             _state.update { it.copy(aiStudio = it.aiStudio.copy(error = "命令发送失败：终端未就绪")) }
+        } else {
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleDraft = "")) }
         }
     }
+
+    /**
+     * 控制台：向终端发 Ctrl+C（中断当前命令）。
+     *
+     * 跑 ComfyUI 这类前台进程时，用户必须能中断它。没有这个按钮就只能断开重连终端，
+     * 而终端是 PTY 会话，重连后那个进程还在跑。
+     */
+    fun aiStudioInterruptConsole() {
+        if (!_state.value.aiStudio.consoleConnected) return
+        kernelClient.sendRawInput("\u0003")
+    }
+
+    /** 控制台：把常用命令快速填到输入框（不直接执行，由用户确认）。 */
+    fun aiStudioSetConsoleInput(command: String) {
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleDraft = command)) }
+    }
+
+    /** 控制台：用户在输入框里打字。 */
+    fun aiStudioUpdateConsoleDraft(value: String) {
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleDraft = value)) }
+    }
+
+    /**
+     * 判断地址是不是 AI Studio 的 api_serving 反代（`.../api_serving/{port}`）。
+     *
+     * 只有这种地址才需要补项目级 Cookie（ide-proxy 等）；直连局域网/自建反代不该
+     * 被塞入百度域的 Cookie，否则可能污染对方服务。
+     */
+    private fun isAiStudioServingAddress(url: String): Boolean =
+        url.contains("aistudio.baidu.com") && url.contains("/api_serving/")
 
     /**
      * 运行中项目的 ComfyUI 地址：`{baseUrl}api_serving/8188`。
@@ -823,7 +892,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         autoConnectAttempted = false
         _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "正在探测 ComfyUI…", error = null)) }
-        val cookie = _state.value.aiStudio.activeAccount()?.cookie.orEmpty()
+        val cookie = aiStudioComfyCookie()
         viewModelScope.launch {
             val reachable = runCatching {
                 client.setAuthCookie(cookie)
@@ -850,6 +919,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         terminalReconnectJob?.cancel()
         kernelClient.closeTerminal()
         kernelEndpoint = null
+        terminalKeepAlive = false
+        syncKeepAlive()
         _state.update {
             it.copy(aiStudio = it.aiStudio.copy(consoleConnected = false, message = "已断开终端"))
         }
@@ -911,8 +982,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         AppLogger.info("终端输出检测到 ComfyUI 启动特征，准备自动连接 $url")
         _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "检测到 ComfyUI 启动，正在自动连接…")) }
         viewModelScope.launch {
-            // api_serving 是平台反代，探测也得带 AI Studio 登录 Cookie。
-            val cookie = _state.value.aiStudio.activeAccount()?.cookie.orEmpty()
+            // api_serving 是平台反代，探测也得带齐项目级 Cookie（含 ide-proxy）。
+            val cookie = aiStudioComfyCookie()
             // ComfyUI 刚打印就绪日志时，端口可能还没真正 listen，给它几秒。
             repeat(AUTO_CONNECT_PROBES) { attempt ->
                 if (attempt > 0) delay(2_000L)
@@ -1190,7 +1261,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // refreshWorkflowsInternal 置回 true，不受影响。
                 activeBridge.serverWorkflowStoreAvailable = false
                 // 反向代理认证 Cookie：用户手动配置的登录态（如 AI Studio api_serving）。
-                val cookie = _state.value.serverCookie
+                //
+                // 对 AI Studio 的 api_serving 地址额外补上项目级 Cookie（ide-proxy 等）：
+                // 这些是平台反代鉴权真正校验的东西，用户手粘的那份常常只有账号 Cookie，
+                // 于是“手动连接”也一直被甩回登录页。已连终端时 kernelClient 手里就有，
+                // 直接合并，不必让用户去浏览器里找。
+                val configured = _state.value.serverCookie
+                val cookie = if (isAiStudioServingAddress(normalized)) {
+                    AiStudioProtocol.mergeCookies(configured, kernelClient.exportCookies())
+                } else {
+                    configured
+                }
+                if (cookie != configured) {
+                    AppLogger.info("连接：为 AI Studio 反代补充了项目级 Cookie（含 ide-proxy）")
+                }
                 client.setAuthCookie(cookie)
                 activeBridge.setAuthCookie(cookie)
                 AuthCookieProvider.current = cookie
@@ -1254,7 +1338,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 restoreNotificationWorkflow()
                 // v0.1.86：连上后常驻一条前台通知（"已连接 xxx"），让进程不再是无保护的
                 // 普通后台进程——AI Studio 上被杀一次要重走 65 秒的连接流程，代价太大。
-                startKeepAlive(savedProfile.name)
+                comfyKeepAlive = true
+                comfyServerName = savedProfile.name
+                syncKeepAlive()
                 // v0.1.85：连上了再查更新。以前它在 onCreate 里和连接同时开跑，抢走
                 // 3.7 秒的网络握手时间；启动阶段用户只在乎"快点连上"，更新晚点知道没关系。
                 checkUpdate(manual = false)
@@ -1272,14 +1358,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 这是 Android 上唯一正规且有效的保活手段：系统会优先保留带前台服务的进程。
      * 它挡不住用户主动划掉 App（FORCE STOP 之后任何服务都不会被拉起，这是系统设计的），
      * 但能显著降低"切个后台回来要重连"的概率。
+     *
+     * baseUrl 必须非空：服务端拿它区分"建立保活"与"撤销保活"。只连云端终端、
+     * 没连 ComfyUI 时 `client.serverUrl()` 是空的，直接传会被当成断开。
      */
-    private fun startKeepAlive(serverName: String) {
+    private fun startKeepAlive(serverName: String, baseUrl: String) {
         val intent = Intent(app, JobMonitorService::class.java)
             .setAction(JobMonitorService.ACTION_KEEP_ALIVE)
-            .putExtra(JobMonitorService.EXTRA_BASE_URL, client.serverUrl())
+            .putExtra(JobMonitorService.EXTRA_BASE_URL, baseUrl.ifBlank { "aistudio-terminal" })
             .putExtra(JobMonitorService.EXTRA_SERVER_NAME, serverName)
         runCatching { ContextCompat.startForegroundService(app, intent) }
             .onFailure { error -> AppLogger.warn("连接保活启动失败（不影响使用）: ${error.message.orEmpty()}") }
+    }
+
+    /**
+     * 按当前活跃的长连接决定保活开关：ComfyUI 连接与云端终端任一在线就保住进程，
+     * 两个都断开才撤掉通知。
+     */
+    private fun syncKeepAlive() {
+        when {
+            comfyKeepAlive -> startKeepAlive(comfyServerName.ifBlank { "ComfyUI" }, client.serverUrl())
+            terminalKeepAlive -> startKeepAlive("AI Studio 终端", kernelEndpoint?.baseUrl.orEmpty())
+            else -> stopKeepAlive()
+        }
     }
 
     /** v0.1.86：断开连接时撤掉保活通知。 */
@@ -1346,7 +1447,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         reconnectJob?.cancel()
         client.closeWebSocket()
         // v0.1.86：断开连接时把常驻的保活通知一起撤掉，别在通知栏留个孤儿。
-        stopKeepAlive()
+        // 但若云端终端还连着，就继续保活（syncKeepAlive 会自己判断）。
+        comfyKeepAlive = false
+        comfyServerName = ""
+        syncKeepAlive()
         awaitingQueueJobIds.clear()
         pendingReconnectNodeId = null
         pendingNotificationWorkflowPath = null
