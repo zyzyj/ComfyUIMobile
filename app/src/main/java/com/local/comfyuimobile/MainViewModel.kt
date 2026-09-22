@@ -409,7 +409,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 否则网关把请求当成未登录，返回登录页（日志里“HTTP 200 但返回的是登录页”就是这么来的）。
      * 这里自动把 Cookie 填上再连，不让用户手动去设置里粘贴。
      */
-    fun connectAiStudioComfyUi(url: String) {
+    fun connectAiStudioComfyUi(url: String, showLoading: Boolean = false) {
         val cookie = aiStudioComfyCookie()
         if (cookie.isNotBlank()) {
             cookieSeededAddress = url
@@ -418,7 +418,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             _state.update { it.copy(serverInput = url) }
         }
-        connect(url)
+        connect(url, showLoading)
     }
 
     fun setServerCookie(value: String) {
@@ -724,6 +724,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var terminalManualClose = false
     /** 项目级 Cookie 预热任务：自动/手动连 ComfyUI 前要等它完成，否则 Cookie 不全。 */
     private var warmUpJob: Job? = null
+    /** 静默重开 WebSocket 的退避（被反代猛掐时逐步拉长，避免原地打转）。 */
+    private var wsReconnectBackoffMs = WS_RECONNECT_MIN_MS
     /**
      * 保活引用：ComfyUI 连接与云端终端各自持有。
      *
@@ -1290,7 +1292,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun connect(address: String = state.value.serverInput) {
+    fun connect(address: String = state.value.serverInput, showLoading: Boolean = true) {
         // 地址里可能带 user:pass@，日志会被导出，这里只记录脱敏后的地址。
         AppLogger.info("请求连接服务器：${LanAddress.withoutCredentials(address)}")
         persistCurrentWorkflowDraft()
@@ -1304,7 +1306,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         status = ConnectionStatus.CONNECTING,
                         connectionMessage = "正在检查服务器地址格式",
                         connectionStep = 1,
-                        loading = true,
+                        // 自动连接（控制台 ComfyUI 卡片）不锁全屏：用户要能继续看终端、
+                        // 切页面。控制台卡片自己有旋转指示，全局遮罩只给手动连接用。
+                        loading = showLoading,
                         activeServer = null,
                         bridgeReady = false,
                         error = null,
@@ -2822,7 +2826,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         modified = System.currentTimeMillis() / 1000.0,
                     )
                 }
-                cacheWorkflowContent(document.serverUrl, saved.path, savedJson)
+                cacheWorkflowContent(
+                    _state.value.activeServer?.baseUrl.orEmpty().ifBlank { document.serverUrl },
+                    saved.path,
+                    savedJson,
+                )
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(
                         rawJson = savedJson,
@@ -2852,6 +2860,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         nodeProblems = emptyMap(),
                         workflowDraftConflictRequired = false,
                         workflowDraftConflictReason = "",
+                        // 服务器不支持云端存储时，刷新列表（listWorkflows）必然失败，
+                        // 而 refreshWorkflowsInternal 的失败分支只在"列表原本为空"之外
+                        // 才不覆盖——真机上另存后副本就是不出现在列表里。直接把新副本
+                        // 并入现有列表，不再依赖一次注定失败的重拉。
+                        workflows = if (serverStoreAvailable) it.workflows
+                        else (it.workflows.filterNot { entry -> entry.path == saved.path } + saved),
                         notice = if (serverStoreAvailable) "已另存为 $fileName" else "已另存到本机 $fileName（此服务器不支持云端存储）",
                     )
                 }
@@ -3102,7 +3116,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             ?: error("无法读取所选文件")
                     }
                 }
-                val json = JSONObject(raw)
+                // 选错文件（比如把文本文件当工作流导入）时 raw 可能是任意文本，
+                // JSONObject() 会抛"Value User of type java.lang.String cannot be
+                // converted to JSONObject"这种看不懂的话，包成可操作的提示。
+                val json = runCatching { JSONObject(raw) }.getOrElse {
+                    error("这个文件不是 JSON 格式的工作流（需要 ComfyUI 导出的 .json 画布文件或 API 格式）")
+                }
                 require(WorkflowFormat.isCanvas(json) || WorkflowFormat.isApiPrompt(json)) {
                     "不是可识别的 ComfyUI 工作流（需要画布格式或 API 格式）"
                 }
@@ -3725,12 +3744,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // 像掉线了，其实生图功能一切正常。静默重开 WebSocket 即可。
             val httpAlive = runCatching { client.systemStats() }.isSuccess
             if (httpAlive) {
-                delay(2_000L)
+                // AI Studio 反代对 /ws 很暴力：真机日志里每 2.3 秒就掐一次
+                // （00:51 一分钟刷出 20+ 条）。无退避地重开只是原地打转、白耗电，
+                // 所以逐步拉长间隔（2s → 4s → … → 30s 封顶）。
+                // 期间 HTTP 正常，状态保持「已连接」，不影响生图。
+                val wait = wsReconnectBackoffMs
+                wsReconnectBackoffMs = (wsReconnectBackoffMs * 2).coerceAtMost(30_000L)
+                delay(wait)
                 if (_state.value.activeServer == null) return@launch
-                AppLogger.info("ComfyUI WebSocket 被反代抬断（HTTP 正常），静默重开")
+                AppLogger.info("ComfyUI WebSocket 被反代抬断（HTTP 正常），${wait / 1000} 秒后静默重开")
                 openSocket()
                 return@launch
             }
+            wsReconnectBackoffMs = WS_RECONNECT_MIN_MS
             _state.update {
                 it.copy(
                     status = ConnectionStatus.RECONNECTING,
@@ -4935,6 +4961,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
         const val MIN_VISIBLE_NODE_MILLIS = 450L
+        /** 静默重开 WebSocket 的最小退避。 */
+        const val WS_RECONNECT_MIN_MS = 2_000L
         const val DRAFT_SAVE_DEBOUNCE_MILLIS = 250L
         /** v0.1.82：恢复窗口里每失败这么多次，就自己重载一次页面推进恢复。 */
         const val RELOAD_EVERY_ATTEMPTS = 2

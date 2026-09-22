@@ -4249,10 +4249,20 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                 ) {
                     Icon(Icons.Outlined.Computer, null, Modifier.size(16.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(
-                            if (comfyConnected) "ComfyUI 已连接" else "ComfyUI 待连接",
-                            style = MaterialTheme.typography.labelMedium,
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            // 连接中给一个小旋转圈：自动连接不再锁全屏后，用户从这里看进度。
+                            if (state.status == ConnectionStatus.CONNECTING && state.activeServer == null) {
+                                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
+                            }
+                            Text(
+                                when {
+                                    comfyConnected -> "ComfyUI 已连接"
+                                    state.status == ConnectionStatus.CONNECTING -> "正在连接…"
+                                    else -> "ComfyUI 待连接"
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
                         Text(
                             comfyUrl,
                             style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
