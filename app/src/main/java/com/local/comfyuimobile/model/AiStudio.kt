@@ -111,6 +111,13 @@ data class AiStudioState(
     /** 控制台是否已连上云端终端。 */
     val consoleConnected: Boolean = false,
     /**
+     * 控制台命令输入框的内容。
+     *
+     * 放在状态里而不是 Composable 的 remember，是为了让「快捷命令」芯片能把命令
+     * 填进输入框（跨组件传递）。
+     */
+    val consoleDraft: String = "comfyui",
+    /**
      * 运行中项目暴露的 ComfyUI 地址。
      *
      * 平台前端会把终端里出现的 `http://127.0.0.1:{port}` 自动改写成

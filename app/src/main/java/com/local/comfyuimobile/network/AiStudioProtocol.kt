@@ -361,6 +361,29 @@ object AiStudioProtocol {
     fun looksLoggedIn(cookie: String): Boolean = cookieValue(cookie, "BDUSS").isNotBlank()
 
     /**
+     * 按名称合并多串 Cookie，**后面的覆盖前面的**（同名的取靠后那份）。
+     *
+     * 用途：账号 Cookie（BDUSS 等） + 连终端时网关下发的项目级 Cookie
+     * （`ide-proxy`、`user-{uid}-{pid}`）。同名时项目级那份更新、更准，必须优先。
+     * 输出保持插入顺序，方便日志排查。
+     */
+    fun mergeCookies(vararg parts: String): String {
+        val order = LinkedHashMap<String, String>()
+        parts.forEach { part ->
+            part.split(';').forEach { segment ->
+                val trimmed = segment.trim()
+                if (trimmed.isEmpty()) return@forEach
+                val eq = trimmed.indexOf('=')
+                if (eq <= 0) return@forEach
+                val name = trimmed.substring(0, eq).trim()
+                if (name.isEmpty()) return@forEach
+                order[name] = trimmed.substring(eq + 1).trim()
+            }
+        }
+        return order.entries.joinToString("; ") { "${it.key}=${it.value}" }
+    }
+
+    /**
      * 从积分接口里取「剩余/可用积分」。
      *
      * 字段名不定（points / point / available / residue 都可能），逐个兜底；
@@ -528,6 +551,10 @@ object AiStudioProtocol {
     /** 构造向终端发送命令的帧：`["stdin", "命令\r"]`。 */
     fun terminalStdinFrame(command: String): String =
         JSONArray().put("stdin").put(command + "\r").toString()
+
+    /** 构造原始 stdin 帧（不补回车）：`["stdin", "..."]`。用于 Ctrl+C 等控制字符。 */
+    fun terminalRawStdinFrame(raw: String): String =
+        JSONArray().put("stdin").put(raw).toString()
 
     /** 构造终端尺寸帧：`["set_size", rows, cols]`（注意 rows 在前）。 */
     fun terminalResizeFrame(rows: Int, cols: Int): String =

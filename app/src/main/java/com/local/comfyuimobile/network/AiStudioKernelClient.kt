@@ -302,6 +302,17 @@ class AiStudioKernelClient {
         return socket.send(AiStudioProtocol.terminalStdinFrame(command))
     }
 
+    /**
+     * 向终端发送原始按键（不补回车）。
+     *
+     * 用于 Ctrl+C（`\u0003`）这类控制字符——它们是裸字节，补上 `\r` 反而会被当成
+     * 回车提交。协议帧同样是 `["stdin", "..."]`，只是内容不带 `\r`。
+     */
+    fun sendRawInput(raw: String): Boolean {
+        val socket = terminalSocket ?: return false
+        return socket.send(AiStudioProtocol.terminalRawStdinFrame(raw))
+    }
+
     /** 告知终端窗口尺寸，避免输出错行。协议帧：`["set_size", rows, cols]`（注意顺序）。 */
     fun resize(cols: Int, rows: Int) {
         val socket = terminalSocket ?: return
@@ -311,6 +322,43 @@ class AiStudioKernelClient {
     fun closeTerminal() {
         terminalSocket?.close(1000, "client close")
         terminalSocket = null
+    }
+
+    /**
+     * 导出 CookieJar 里当前的 Cookie 串（`name=value; name2=value2`）。
+     *
+     * 连终端的过程中，AI Studio 网关（nginx）会下发**项目级** Cookie——`ide-proxy`
+     * 和 `user-{uid}-{pid}`——它们才是 `api_serving` 反代（ComfyUI 地址）真正校验的东西。
+     * 只带账号 Cookie（BDUSS 等）会被 302 回登录页；这也是为什么以前“手动连接
+     * ComfyUI 要手粘 Cookie”。这里把网关下发的这份导出给 ComfyUI 连接复用。
+     */
+    fun exportCookies(): String = cookieStore.values
+        .asSequence()
+        .flatten()
+        .distinctBy { it.name }
+        .joinToString("; ") { "${it.name}=${it.value}" }
+
+    /**
+     * 预热项目 Cookie：像浏览器那样访问一次 Codelab 环境首页（用户路径）。
+     *
+     * 网关在访问 `/user/{uid}/{pid}/` 时会下发项目级 Cookie（`ide-proxy`、
+     * `user-{uid}-{pid}`）。这些是 `api_serving` 反代鉴权所必需、而账号 Cookie 里没有的。
+     * 平台网页能直连 api_serving 正是因为浏览器访问过 Codelab 页、拿过这两段。
+     * 这里补上同一动作，让 CookieJar 拿到它们。失败不影响终端本身。
+     */
+    suspend fun warmUpProjectCookies(account: AiStudioAccount, endpoint: KernelEndpoint) {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val url = withToken(endpoint, userBase(endpoint))
+                val builder = Request.Builder().url(url)
+                commonHeaders(account, endpoint).forEach { (k, v) -> builder.header(k, v) }
+                client.newCall(builder.get().build()).execute().use { response ->
+                    AppLogger.info("Codelab 预热：HTTP ${response.code}，已捕获 Cookie ${cookieStore.values.flatten().size} 段")
+                }
+            }.onFailure { error ->
+                AppLogger.warn("Codelab 预热失败（不影响终端，可能影响 ComfyUI 自动连接）", error)
+            }
+        }
     }
 
     /**
