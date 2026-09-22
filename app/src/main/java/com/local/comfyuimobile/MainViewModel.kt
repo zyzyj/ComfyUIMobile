@@ -562,7 +562,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (error is CancellationException) throw error
                     AppLogger.warn("读取 AI Studio 算力卡失败", error)
                 }
-                .getOrDefault(AiStudioClient.ResourceSnapshot(null, null, emptyMap(), emptyList()))
+                .getOrDefault(AiStudioClient.ResourceSnapshot(null, null, emptyMap()))
             val aCoin = runCatching { aiStudio.fetchACoin(account) }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
@@ -707,6 +707,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!kernelClient.sendInput(command)) {
             _state.update { it.copy(aiStudio = it.aiStudio.copy(error = "命令发送失败：终端未就绪")) }
         }
+    }
+
+    /**
+     * 运行中项目的 ComfyUI 地址：`{baseUrl}api_serving/8188`。
+     *
+     * 平台前端会把终端输出里的 127.0.0.1 端口改写成 api_serving 代理（7613.js），
+     * ComfyUI 默认监听 8188，所以拼出来就是它。
+     */
+    private fun comfyUiUrl(endpoint: AiStudioKernelClient.KernelEndpoint): String? {
+        val base = endpoint.baseUrl.ifBlank { endpoint.basePath }
+        if (base.isBlank()) return null
+        val absolute = if (base.startsWith("http")) base else AiStudioProtocol.BASE_URL + "/" + base.trim('/')
+        return absolute.trimEnd('/') + "/api_serving/8188"
     }
 
     /** 控制台：清空终端输出缓冲（不断开连接）。 */
