@@ -306,18 +306,15 @@ class AiStudioKernelClient {
     }
 
     /**
-     * 终端接口主机：**https + hub 路径** `https://aistudio.baidu.com/{zone}/hub/user/{uid}/{pid}/`。
+     * 终端接口主机：**https + 用户路径** `https://aistudio.baidu.com/{zone}/user/{uid}/{pid}/`。
      *
-     * 真机实测（curl 验证）：
-     *  - `http://.../user/.../api/terminals` → **301** 到 https（平台强制 https）；
-     *  - `https://.../user/.../api/terminals` → **302** 到 `.../hub/user/...`；
-     *  也就是平台最终要求的就是 hub 路径 + https。直接用 baseinfo 给的 baseUrl（是
-     * 用户路径且是 http）会被逐层重定向到登录页，终端永远建不起来。
-     *
-     * 所以这里以 baseinfo 的 hubBaseUrl 为准，强制升级成 https。
+     * 真机逐条验证：https + 用户路径下 GET/POST `api/terminals` 都 200（v0.2.0 实测就是
+     * 这个，终端能建起来）；hub 路径 GET 靠 302 跳回用户路径能通，但 POST 被网关回 405。
+     * baseinfo 给的 baseUrl 是 http（running_status_check 给的是 https），http 会被
+     * 301→https，所以这里强制升级成 https。
      */
     private fun userBase(endpoint: KernelEndpoint): String {
-        val raw = endpoint.hubBaseUrl.ifBlank { endpoint.baseUrl.ifBlank { endpoint.basePath } }
+        val raw = endpoint.baseUrl.ifBlank { endpoint.hubBaseUrl.ifBlank { endpoint.basePath } }
         if (raw.isBlank()) throw AiStudioException("终端通道失败：平台没有返回环境地址")
         val absolute = if (raw.startsWith("http")) raw else AiStudioProtocol.BASE_URL + "/" + raw.trim('/')
         // 平台只接受 https；baseinfo 给的地址是 http，这里强制升级。
