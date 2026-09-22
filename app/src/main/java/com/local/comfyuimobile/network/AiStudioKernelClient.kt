@@ -22,19 +22,22 @@ import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 /**
- * BML Codelab（JupyterLab 3.0）的终端通道。
+ * BML Codelab（JupyterLab）的终端通道。
  *
  * v0.2.0：控制台改成**真终端**——输入命令、看到回显，用来启动 ComfyUI 等。
  *
- * 链路（从前端 bundle 与平台响应核实）：
- *  1. `POST /studio/project/running_status_check` → `result = {baseUrl, token, hubBaseUrl}`。
- *  2. **所有 Jupyter 接口都挂在用户路径 baseUrl 下**（形如
- *     `https://aistudio.baidu.com/bj-cpu-01/user/{uid}/{pid}/`）：
- *     - REST：`POST {baseUrl}api/terminals` 新建终端；
- *     - WS：`{wsBase}terminals/websocket/{name}` 收发终端输入输出。
+ * 链路（全部经真机实测 + 前端 bundle 核实）：
+ *  1. 先进 notebook：`POST /studio/project/notebook/enter`（不调它 IDE 环境不会分配）。
+ *  2. 取环境地址：`GET /studio/project/envs/baseinfo?projectId=...`
+ *     → `result = {baseUrl, token, hubBaseUrl}`。
+ *  3. 终端接口走 **https + hub 路径** `{hubBaseUrl}api/terminals`：
+ *     - REST：`POST api/terminals` 新建终端（返回 `{name}`）；
+ *     - WS：`terminals/websocket/{name}` 收发（terminado 数组协议）。
  *
- * 特别注意 hubBaseUrl（`.../hub/user/...`）那条路：GET `/api/kernels` 能通，
- * 但 POST 会被平台网关回 405——所以内核/终端一律走用户路径 baseUrl。
+ * 两个真机踩过的坑：
+ *  - baseinfo 给的 baseUrl 是 **http 用户路径**，直接用会被 301→https、再 302→hub 路径，
+ *    最终落到登录页。必须直接走 https + hub 路径。
+ *  - 项目未运行时 baseinfo 会回 `baseUrl: "...null"`，必须当成无效值。
  */
 class AiStudioKernelClient {
 
@@ -90,11 +93,13 @@ class AiStudioKernelClient {
 
     /** 平台返回的环境连接信息。 */
     data class KernelEndpoint(
-        /** 完整 baseUrl（含域名），形如 `https://.../user/{uid}/{pid}/`，Jupyter 接口的根。 */
+        /** baseinfo 给的 baseUrl（用户路径，http）。 */
         val baseUrl: String,
-        /** 仅路径部分（前端就是用它拼 kernels 的）。 */
+        /** 仅路径部分。 */
         val basePath: String,
         val token: String,
+        /** baseinfo 给的 hubBaseUrl（hub 路径）——终端接口真正要用的是它。 */
+        val hubBaseUrl: String = "",
     ) {
         fun isUsable(): Boolean = baseUrl.isNotBlank() && token.isNotBlank()
     }
@@ -111,18 +116,51 @@ class AiStudioKernelClient {
     suspend fun fetchEndpoint(account: AiStudioAccount, projectId: String, scheduleName: String): KernelEndpoint {
         seedCookies(account.cookie)
         val result = withContext(Dispatchers.IO) {
+            // 前端进 notebook 前会先调 enter，它才真正把 IDE 环境拉起来；
+            // 不先 enter 的话 baseinfo 会回 `baseUrl: "...null"`（环境未分配）。
+            runCatching { enterNotebook(account, projectId) }
+                .onFailure { AppLogger.warn("notebook/enter 失败（继续尝试取环境信息）", it) }
             val info = runCatching { fetchBaseInfo(account, projectId) }.getOrNull()
-            if (info != null && info.optString("baseUrl").isNotBlank()) return@withContext info
-            AppLogger.warn("envs/baseinfo 未返回 baseUrl，改用 running_status_check 兜底")
+            if (info != null && validBaseUrl(info.optString("baseUrl")) != null) return@withContext info
+            AppLogger.warn("envs/baseinfo 未返回有效 baseUrl，改用 running_status_check 兜底")
             fetchRunningStatusCheck(account, projectId, scheduleName)
         }
-        val baseUrl = result.optString("baseUrl")
+        val baseUrl = validBaseUrl(result.optString("baseUrl"))
         AppLogger.info("终端通道：baseUrl=$baseUrl")
         return KernelEndpoint(
-            baseUrl = baseUrl,
-            basePath = baseUrl.substringAfter(".com", "").ifBlank { baseUrl },
+            baseUrl = baseUrl.orEmpty(),
+            basePath = baseUrl?.substringAfter(".com", "")?.ifBlank { baseUrl } ?: "",
             token = result.optString("token"),
+            hubBaseUrl = result.optString("hubBaseUrl"),
         )
+    }
+
+    /**
+     * 平台有时把 baseUrl 拼成 `http://aistudio.baidu.comnull`（环境还没分配）。
+     * 这种值拿去解析会得到 `aistudio.baidu.comnull` 这种域名，必须当成无效。
+     */
+    private fun validBaseUrl(raw: String): String? {
+        if (raw.isBlank() || raw.endsWith("null") || !raw.contains("/user/")) return null
+        return raw
+    }
+
+    /** `POST /studio/project/notebook/enter`：进入 notebook，触发 IDE 环境分配。 */
+    private fun enterNotebook(account: AiStudioAccount, projectId: String): String {
+        val body = AiStudioProtocol.formEncode(mapOf("projectId" to projectId))
+        val request = Request.Builder()
+            .url(AiStudioProtocol.BASE_URL + AiStudioProtocol.PATH_NOTEBOOK_ENTER)
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("Referer", AiStudioProtocol.BASE_URL + "/")
+            .apply {
+                if (account.bdToken.isNotBlank()) header("x-studio-token", account.bdToken)
+                val xsrf = AiStudioProtocol.cookieValue(account.cookie, "_xsrf")
+                if (xsrf.isNotBlank()) header("X-XSRFToken", xsrf)
+            }
+            .post(body.toRequestBody("application/x-www-form-urlencoded; charset=utf-8".toMediaType()))
+            .build()
+        val raw = client.newCall(request).execute().use { it.body?.string().orEmpty() }
+        AppLogger.info("进入 notebook 响应：${raw.take(300)}")
+        return raw
     }
 
     /** `GET /studio/project/envs/baseinfo?projectId=...` → result 里带 baseUrl/token。 */
@@ -268,16 +306,26 @@ class AiStudioKernelClient {
     }
 
     /**
-     * 用户路径主机：`https://aistudio.baidu.com/{zone}/user/{uid}/{pid}/`。
+     * 终端接口主机：**https + hub 路径** `https://aistudio.baidu.com/{zone}/hub/user/{uid}/{pid}/`。
      *
-     * Jupyter 的 REST/WS 全挂在这条路径下（前端 2299.js 就是 `url_path_join(base_url, ...)`）。
-     * 不能改用 hubBaseUrl：那条路的网关只放行 GET，POST 会 405。
+     * 真机实测（curl 验证）：
+     *  - `http://.../user/.../api/terminals` → **301** 到 https（平台强制 https）；
+     *  - `https://.../user/.../api/terminals` → **302** 到 `.../hub/user/...`；
+     *  也就是平台最终要求的就是 hub 路径 + https。直接用 baseinfo 给的 baseUrl（是
+     * 用户路径且是 http）会被逐层重定向到登录页，终端永远建不起来。
+     *
+     * 所以这里以 baseinfo 的 hubBaseUrl 为准，强制升级成 https。
      */
     private fun userBase(endpoint: KernelEndpoint): String {
-        val raw = endpoint.baseUrl.ifBlank { endpoint.basePath }
-        if (raw.isBlank()) throw AiStudioException("终端通道失败：平台没有返回 baseUrl")
+        val raw = endpoint.hubBaseUrl.ifBlank { endpoint.baseUrl.ifBlank { endpoint.basePath } }
+        if (raw.isBlank()) throw AiStudioException("终端通道失败：平台没有返回环境地址")
         val absolute = if (raw.startsWith("http")) raw else AiStudioProtocol.BASE_URL + "/" + raw.trim('/')
-        return absolute.trimEnd('/') + "/"
+        // 平台只接受 https；baseinfo 给的地址是 http，这里强制升级。
+        val secured = when {
+            absolute.startsWith("http://") -> "https://" + absolute.removePrefix("http://")
+            else -> absolute
+        }
+        return secured.trimEnd('/') + "/"
     }
 
     private fun wsBase(endpoint: KernelEndpoint): String {
