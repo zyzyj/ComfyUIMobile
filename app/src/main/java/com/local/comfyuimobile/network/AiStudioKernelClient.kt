@@ -102,33 +102,19 @@ class AiStudioKernelClient {
     /**
      * 拉取环境连接信息。
      *
-     * 平台在 `running_status_check` 的 result 里回 baseUrl/token/hubBaseUrl。
-     * 前端会按 `.com` 切分只留路径——这里两种形态都保留，避免平台换域名后缀时拼错 URL。
+     * 真正管用的是 `GET /studio/project/envs/baseinfo?projectId=...`（前端
+     * loadNotebookConfig 用的就是它），result = {baseUrl, token, hubBaseUrl}。
+     * 以前用的 `POST /studio/project/running_status_check` 在项目已运行时**不回
+     * baseUrl**（真机实测 baseUrl 为空），所以才连不上终端；这里改成主用 baseinfo、
+     * 拿不到再退回 running_status_check。
      */
     suspend fun fetchEndpoint(account: AiStudioAccount, projectId: String, scheduleName: String): KernelEndpoint {
         seedCookies(account.cookie)
         val result = withContext(Dispatchers.IO) {
-            val body = AiStudioProtocol.formEncode(
-                mapOf(
-                    "projectId" to projectId,
-                    "versionId" to "0",
-                    "scheduleName" to scheduleName.ifBlank { AiStudioProtocol.DEFAULT_SCHEDULE },
-                    "startMode" to AiStudioProtocol.START_MODE_NOTEBOOK.toString(),
-                ),
-            )
-            val request = Request.Builder()
-                .url(AiStudioProtocol.BASE_URL + AiStudioProtocol.PATH_RUNNING_STATUS_CHECK)
-                .header("x-requested-with", "XMLHttpRequest")
-                .header("Referer", AiStudioProtocol.BASE_URL + "/")
-                .apply {
-                    if (account.bdToken.isNotBlank()) header("x-studio-token", account.bdToken)
-                    val xsrf = AiStudioProtocol.cookieValue(account.cookie, "_xsrf")
-                    if (xsrf.isNotBlank()) header("X-XSRFToken", xsrf)
-                }
-                .post(body.toRequestBody("application/x-www-form-urlencoded; charset=utf-8".toMediaType()))
-                .build()
-            val raw = client.newCall(request).execute().use { it.body?.string().orEmpty() }
-            AiStudioProtocol.unwrap(raw, "查询内核环境")
+            val info = runCatching { fetchBaseInfo(account, projectId) }.getOrNull()
+            if (info != null && info.optString("baseUrl").isNotBlank()) return@withContext info
+            AppLogger.warn("envs/baseinfo 未返回 baseUrl，改用 running_status_check 兜底")
+            fetchRunningStatusCheck(account, projectId, scheduleName)
         }
         val baseUrl = result.optString("baseUrl")
         AppLogger.info("终端通道：baseUrl=$baseUrl")
@@ -137,6 +123,55 @@ class AiStudioKernelClient {
             basePath = baseUrl.substringAfter(".com", "").ifBlank { baseUrl },
             token = result.optString("token"),
         )
+    }
+
+    /** `GET /studio/project/envs/baseinfo?projectId=...` → result 里带 baseUrl/token。 */
+    private fun fetchBaseInfo(account: AiStudioAccount, projectId: String): JSONObject {
+        val url = AiStudioProtocol.BASE_URL + AiStudioProtocol.PATH_ENV_BASEINFO +
+            "?projectId=" + URLEncoder.encode(projectId, "UTF-8")
+        val request = Request.Builder()
+            .url(url)
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("Referer", AiStudioProtocol.BASE_URL + "/")
+            .apply {
+                if (account.bdToken.isNotBlank()) header("x-studio-token", account.bdToken)
+                val xsrf = AiStudioProtocol.cookieValue(account.cookie, "_xsrf")
+                if (xsrf.isNotBlank()) header("X-XSRFToken", xsrf)
+            }
+            .get()
+            .build()
+        val raw = client.newCall(request).execute().use { it.body?.string().orEmpty() }
+        AppLogger.info("环境信息响应：${raw.take(300)}")
+        return AiStudioProtocol.unwrap(raw, "查询环境信息")
+    }
+
+    private fun fetchRunningStatusCheck(
+        account: AiStudioAccount,
+        projectId: String,
+        scheduleName: String,
+    ): JSONObject {
+        val body = AiStudioProtocol.formEncode(
+            mapOf(
+                "projectId" to projectId,
+                "versionId" to "0",
+                "scheduleName" to scheduleName.ifBlank { AiStudioProtocol.DEFAULT_SCHEDULE },
+                "startMode" to AiStudioProtocol.START_MODE_NOTEBOOK.toString(),
+            ),
+        )
+        val request = Request.Builder()
+            .url(AiStudioProtocol.BASE_URL + AiStudioProtocol.PATH_RUNNING_STATUS_CHECK)
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("Referer", AiStudioProtocol.BASE_URL + "/")
+            .apply {
+                if (account.bdToken.isNotBlank()) header("x-studio-token", account.bdToken)
+                val xsrf = AiStudioProtocol.cookieValue(account.cookie, "_xsrf")
+                if (xsrf.isNotBlank()) header("X-XSRFToken", xsrf)
+            }
+            .post(body.toRequestBody("application/x-www-form-urlencoded; charset=utf-8".toMediaType()))
+            .build()
+        val raw = client.newCall(request).execute().use { it.body?.string().orEmpty() }
+        AppLogger.info("运行状态响应：${raw.take(300)}")
+        return AiStudioProtocol.unwrap(raw, "查询内核环境")
     }
 
     /**

@@ -1,3 +1,13 @@
+# v0.2.1 — 修终端连接拿不到环境地址
+
+真机实测发现：控制台点「连接终端」报「平台没有返回 baseUrl」。
+
+根因：拿环境连接信息的接口用错了。原来用 `POST /studio/project/running_status_check`，
+项目已运行时它**不回 baseUrl**；平台前端 `loadNotebookConfig` 真正用的是
+`GET /studio/project/envs/baseinfo?projectId=...`。已改为主用后者、拿不到再退回前者。
+
+---
+
 # v0.2.0 — 控制台改成云端终端 · 算力卡对齐官网 · 去掉积分任务
 
 这一版把控制台从「列内核」换成**真终端**，并修正了算力卡显示。

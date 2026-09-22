@@ -58,6 +58,8 @@ object AiStudioProtocol {
     // ===== 启动 / 停止环境 =====
     const val PATH_NOTEBOOK_ENTER = "/studio/project/notebook/enter"
     const val PATH_NOTEBOOK_CONFIG = "/studio/notebook/config"
+    /** 环境连接信息（baseUrl/token/hubBaseUrl）——前端 loadNotebookConfig 真正用的就是它。 */
+    const val PATH_ENV_BASEINFO = "/studio/project/envs/baseinfo"
     const val PATH_CLUSTER_ALL_LIST = "/studio/project/cluster/allList"
     const val PATH_PROJECT_RUNNING = "/studio/project/running"
     /** 启动后查环境连接信息（返回 baseUrl / token，用于 Jupyter 终端）。 */
