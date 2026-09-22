@@ -122,6 +122,11 @@ class AiStudioKernelClient {
                 .onFailure { AppLogger.warn("notebook/enter 失败（继续尝试取环境信息）", it) }
             val info = runCatching { fetchBaseInfo(account, projectId) }.getOrNull()
             if (info != null && validBaseUrl(info.optString("baseUrl")) != null) return@withContext info
+            // baseinfo 在实例刚起来时会短暂返回空（真机日志里 6 次），直接兜底容易
+            // 拿到还没分配完的信息。先重试一次再走兜底。
+            delay(1_500)
+            val retry = runCatching { fetchBaseInfo(account, projectId) }.getOrNull()
+            if (retry != null && validBaseUrl(retry.optString("baseUrl")) != null) return@withContext retry
             AppLogger.warn("envs/baseinfo 未返回有效 baseUrl，改用 running_status_check 兜底")
             fetchRunningStatusCheck(account, projectId, scheduleName)
         }
@@ -133,6 +138,26 @@ class AiStudioKernelClient {
             token = result.optString("token"),
             hubBaseUrl = result.optString("hubBaseUrl"),
         )
+    }
+
+    /**
+     * 轻量探测环境是否已就绪（**不**调 notebook/enter）。
+     *
+     * 轮询期间每几秒跑一次，若用 [fetchEndpoint] 会顺带下发 enter + 重试，既加重平台
+     * 负担也刷屏日志（真机一轮启动就多出十几条）。这里只问一次 baseinfo，够判断了。
+     */
+    suspend fun peekEndpoint(account: AiStudioAccount, projectId: String): KernelEndpoint? {
+        seedCookies(account.cookie)
+        return withContext(Dispatchers.IO) {
+            val info = runCatching { fetchBaseInfo(account, projectId) }.getOrNull() ?: return@withContext null
+            val baseUrl = validBaseUrl(info.optString("baseUrl")) ?: return@withContext null
+            KernelEndpoint(
+                baseUrl = baseUrl,
+                basePath = baseUrl.substringAfter(".com", "").ifBlank { baseUrl },
+                token = info.optString("token"),
+                hubBaseUrl = info.optString("hubBaseUrl"),
+            ).takeIf { it.isUsable() }
+        }
     }
 
     /**
