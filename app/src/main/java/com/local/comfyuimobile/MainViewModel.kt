@@ -726,6 +726,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var warmUpJob: Job? = null
     /** 静默重开 WebSocket 的退避（被反代猛掐时逐步拉长，避免原地打转）。 */
     private var wsReconnectBackoffMs = WS_RECONNECT_MIN_MS
+    /** 退避日志节流：同一档退避只记一次。 */
+    private var lastWsBackoffLoggedMs = 0L
     /**
      * 保活引用：ComfyUI 连接与云端终端各自持有。
      *
@@ -1138,11 +1140,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _state.update { it.copy(aiStudio = it.aiStudio.copy(projects = page.projects)) }
                 if (project.running != wantRunning) return@repeat
                 if (wantRunning) {
-                    // running 只是受理，再确认平台已经给出环境地址。
-                    val endpoint = runCatching {
-                        kernelClient.fetchEndpoint(account, projectId, "")
-                    }.getOrNull()
-                    if (endpoint?.isUsable() != true) {
+                    // running 只是受理，再确认平台已经给出环境地址。用轻量探测：
+                    // 轮询里不调 notebook/enter，免得每几秒给平台下发一次启动动作。
+                    val ready = runCatching {
+                        kernelClient.peekEndpoint(account, projectId)
+                    }.getOrNull() != null
+                    if (!ready) {
                         val waited = (attempt + 1) * 4
                         _state.update {
                             it.copy(
@@ -3774,11 +3777,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 wsReconnectBackoffMs = (wsReconnectBackoffMs * 2).coerceAtMost(30_000L)
                 delay(wait)
                 if (_state.value.activeServer == null) return@launch
-                AppLogger.info("ComfyUI WebSocket 被反代抬断（HTTP 正常），${wait / 1000} 秒后静默重开")
+                // 这种抖动在繁忙期能达到每 2.3 秒一次（一分钟 26 条），不节流会把
+                // 诊断日志冲垮，真正有用的信息反而看不到。同一档退避只记一次。
+                if (wait != lastWsBackoffLoggedMs) {
+                    lastWsBackoffLoggedMs = wait
+                    AppLogger.info("ComfyUI WebSocket 被反代抬断（HTTP 正常，不影响生图），${wait / 1000} 秒后静默重开")
+                }
                 openSocket()
                 return@launch
             }
             wsReconnectBackoffMs = WS_RECONNECT_MIN_MS
+            lastWsBackoffLoggedMs = 0L
             _state.update {
                 it.copy(
                     status = ConnectionStatus.RECONNECTING,
