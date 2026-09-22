@@ -3703,9 +3703,13 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                             modifier = Modifier.weight(1f),
                             icon = { Icon(Icons.Outlined.Memory, null, Modifier.size(20.dp)) },
                             label = "算力卡",
-                            // 平台口径就是「多少算力卡」，直接显示点数。
-                            value = panel.computeCardMinutes?.let { trimNumber(it) } ?: "—",
-                            hint = if (panel.computeCardMinutes == null) "未读到" else null,
+                            // 与官网一致的口径：resourceTotal ÷ 60。
+                            // 单位写作「算力卡」而不是「小时」——它是按基础版折算的等价时长，
+                            // 不同显卡消耗速度不同，直接写小时会误导。
+                            value = panel.computeCard ?: "—",
+                            // 提示点明口径：这是按基础版折算的等价时长，
+                            // 不让它被误读成“任何显卡都能跑这么久”。
+                            hint = if (panel.computeCard == null) "未读到" else "按基础版折算",
                         )
                         ResourceTile(
                             modifier = Modifier.weight(1f),

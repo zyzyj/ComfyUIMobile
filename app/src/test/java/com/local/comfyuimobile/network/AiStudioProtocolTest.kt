@@ -219,11 +219,13 @@ class AiStudioProtocolTest {
     }
 
     @Test
-    fun parsesComputeCardAsBaseTierHours() {
-        // resourceTotal 单位是**分钟**，是平台按基础版折算的可用时长。
-        // 真机日志：3761 分钟 -> 62.7 小时（基础版）。
-        assertEquals("62.7 小时（按基础版折算）", AiStudioProtocol.parseComputeCard(JSONObject("""{"resourceTotal":3761}""")))
+    fun parsesComputeCardWithPlatformDivision() {
+        // 平台口径：`(resourceTotal/60).toFixed(1)`。
+        // 真机：3761 -> 官网显示 62.7（已与官网核对一致）。
+        assertEquals("62.7", AiStudioProtocol.parseComputeCard(JSONObject("""{"resourceTotal":3761}""")))
         assertEquals(3761.0, AiStudioProtocol.parseComputeCardMinutes(JSONObject("""{"resourceTotal":3761}""")))
+        // 本周配额同口径：2880 -> 48（截图里就是 48 小时）
+        assertEquals("48", AiStudioProtocol.parseComputeCard(JSONObject("""{"resourceTotal":2880}""")))
     }
 
     @Test
