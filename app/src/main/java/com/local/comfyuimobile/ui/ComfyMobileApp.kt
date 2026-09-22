@@ -4236,10 +4236,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Button(
-                        onClick = {
-                            viewModel.setServerInput(url)
-                            viewModel.connect(url)
-                        },
+                        onClick = { viewModel.connectAiStudioComfyUi(url) },
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("用这个地址连接") }
                 }
