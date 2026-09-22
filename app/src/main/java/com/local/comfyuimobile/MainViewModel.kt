@@ -1121,6 +1121,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 启动与停止都需要：平台分配/回收机器要 1-2 分钟，提交完那一瞬状态还没变，
      * 只拉一次列表会停在旧状态上（用户反馈「停止了但状态不刷新，要手动刷」）。
      * 这里一直盯到状态真的翻转，每轮把新列表推给界面。
+     *
+     * ⚠️ 启动方向必须**额外验证环境真的就绪**（baseinfo 拿到 token），不能只看
+     * running。实测：提交启动后 running 在 4.2 秒就变成 true，但那只是"受理
+     * 回执"——真正的环境分配要 6~24 秒，平台繁忙时实测卡到 348 秒以上还在
+     * projectState=300202。以前只看 running，于是 App 早早宣布"环境已就绪"，
+     * 用户接着点连接就撞上"平台没有返回环境地址"。
      */
     private fun pollProjectState(projectId: String, wantRunning: Boolean) {
         viewModelScope.launch {
@@ -1130,13 +1136,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val page = runCatching { aiStudio.listProjects(account) }.getOrNull() ?: return@repeat
                 val project = page.projects.firstOrNull { it.projectId == projectId } ?: return@repeat
                 _state.update { it.copy(aiStudio = it.aiStudio.copy(projects = page.projects)) }
-                if (project.running == wantRunning) {
-                    AppLogger.info("AI Studio 项目状态已更新：$projectId running=${project.running}")
-                    _state.update {
-                        it.copy(aiStudio = it.aiStudio.copy(message = if (wantRunning) "环境已就绪" else "已停止"))
+                if (project.running != wantRunning) return@repeat
+                if (wantRunning) {
+                    // running 只是受理，再确认平台已经给出环境地址。
+                    val endpoint = runCatching {
+                        kernelClient.fetchEndpoint(account, projectId, "")
+                    }.getOrNull()
+                    if (endpoint?.isUsable() != true) {
+                        val waited = (attempt + 1) * 4
+                        _state.update {
+                            it.copy(
+                                aiStudio = it.aiStudio.copy(
+                                    message = "机器已分配，正在启动环境…（已等 ${waited} 秒）",
+                                ),
+                            )
+                        }
+                        return@repeat
                     }
-                    return@launch
                 }
+                AppLogger.info("AI Studio 项目状态已更新：$projectId running=${project.running}")
+                _state.update {
+                    it.copy(aiStudio = it.aiStudio.copy(message = if (wantRunning) "环境已就绪" else "已停止"))
+                }
+                return@launch
             }
             _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "状态未变化，可点「刷新」查看")) }
         }
@@ -1182,7 +1204,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(
                             aiStudio = it.aiStudio.copy(
                                 startingProjectId = null,
-                                message = "已提交启动请求，等平台分配机器（可能要 1-2 分钟）",
+                                message = "已提交启动请求，等平台分配机器（通常十几秒，平台繁忙时可能数分钟）",
                                 lastRawResponse = aiStudio.lastRawResponse,
                             ),
                         )
