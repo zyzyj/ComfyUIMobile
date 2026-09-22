@@ -696,10 +696,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // 所以连上终端同样要起前台服务 + CPU/WiFi 锁。
                     terminalKeepAlive = true
                     syncKeepAlive()
+                    AppLogger.info("终端已连上，当前 Cookie=[${kernelClient.cookieNames().joinToString()}]")
                     openTerminalSocket(account, endpoint, name)
                     // 预热项目级 Cookie（ide-proxy 等）——ComfyUI 的 api_serving 反代
                     // 靠它们鉴权，而账号 Cookie 里没有。放后台跑，不阻塞终端显示。
-                    viewModelScope.launch { kernelClient.warmUpProjectCookies(account, endpoint) }
+                    warmUpJob = viewModelScope.launch { kernelClient.warmUpProjectCookies(account, endpoint) }
                     _state.update {
                         it.copy(
                             aiStudio = it.aiStudio.copy(
@@ -721,6 +722,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var terminalReconnectJob: Job? = null
     private var terminalManualClose = false
+    /** 项目级 Cookie 预热任务：自动/手动连 ComfyUI 前要等它完成，否则 Cookie 不全。 */
+    private var warmUpJob: Job? = null
     /**
      * 保活引用：ComfyUI 连接与云端终端各自持有。
      *
@@ -892,8 +895,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         autoConnectAttempted = false
         _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "正在探测 ComfyUI…", error = null)) }
-        val cookie = aiStudioComfyCookie()
         viewModelScope.launch {
+            // 等预热拿到项目级 Cookie 再探测，否则会带着不完整的 Cookie 去连、必被拒。
+            warmUpJob?.join()
+            val cookie = aiStudioComfyCookie()
             val reachable = runCatching {
                 client.setAuthCookie(cookie)
                 client.probe(url)
@@ -983,6 +988,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "检测到 ComfyUI 启动，正在自动连接…")) }
         viewModelScope.launch {
             // api_serving 是平台反代，探测也得带齐项目级 Cookie（含 ide-proxy）。
+            // 等预热完成再算 Cookie，否则拿到的 jar 里可能还没有 ide-proxy。
+            warmUpJob?.join()
             val cookie = aiStudioComfyCookie()
             // ComfyUI 刚打印就绪日志时，端口可能还没真正 listen，给它几秒。
             repeat(AUTO_CONNECT_PROBES) { attempt ->
