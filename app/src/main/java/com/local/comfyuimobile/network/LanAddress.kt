@@ -12,7 +12,11 @@ object LanAddress {
         // 会在域名后另起一行 "cloudstudio.net"），直接解析会在 authority 段撞上换行符，
         // 抛 "Illegal character in authority"。这里只取第一行再 trim；刻意不动行内空格，
         // 保持"含空格属于畸形地址"的既有校验语义。
-        val firstLine = input.lineSequence().firstOrNull().orEmpty().trim()
+        //
+        // 中文输入法会把半角标点自动转成全角（实测：输入 http://127.0.0.1:8188 得到
+        // http：//127.0.0.1：8188），全角冒号会让 URI 解析直接失败，用户却看着"地址没错"。
+        // 这里先把全角标点归一化成半角——地址里本来也不可能有全角字符。
+        val firstLine = input.lineSequence().firstOrNull().orEmpty().trim().normalizeFullWidth()
         require(firstLine.isNotEmpty()) { "请输入 ComfyUI 地址" }
         val withScheme = if (firstLine.contains("://")) firstLine else "http://$firstLine"
         val uri = runCatching { URI(withScheme) }.getOrElse {
@@ -38,8 +42,34 @@ object LanAddress {
         return "$scheme://$userInfo$formattedHost:$port$path"
     }
 
-    /** 去掉认证信息后的纯地址，用于展示和 WebView 加载。 */
-    fun withoutCredentials(url: String): String {
+    /**
+     * 把常见全角标点归一化成半角。
+     *
+     * 中文输入法（讯飞/搜狗等）在中文状态下会把 `:` `.` `/` `？` 等自动转成全角，
+     * 用户输入 `http://127.0.0.1:8188` 实际得到 `http：//127.0.0.1：8188`。
+     * 全角冒号是非法 URI 字符，会导致"地址看着对却连不上"。这里只换地址里可能
+     * 出现的几个标点，不做全角转半角的通用转换（中文路径不应被改动）。
+     */
+    private fun String.normalizeFullWidth(): String = buildString(length) {
+        this@normalizeFullWidth.forEach { ch ->
+            append(
+                when (ch) {
+                    '：' -> ':'
+                    '／' -> '/'
+                    '．' -> '.'
+                    '？' -> '?'
+                    '＠' -> '@'
+                    '＃' -> '#'
+                    '－' -> '-'
+                    '＿' -> '_'
+                    '　' -> ' ' // 全角空格
+                    else -> ch
+                },
+            )
+        }
+    }
+
+    /** 去掉认证信息后的纯地址，用于展示和 WebView 加载。 */    fun withoutCredentials(url: String): String {
         val schemeEnd = url.indexOf("://")
         if (schemeEnd < 0) return url
         val scheme = url.substring(0, schemeEnd + 3)

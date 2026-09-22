@@ -647,7 +647,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 启动项目后需等环境就绪（1-2 分钟）。
      */
     fun aiStudioConnectConsole() {
-        val account = _state.value.aiStudio.activeAccount() ?: return
+        val account = _state.value.aiStudio.activeAccount()
+        if (account == null) {
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(error = "先在「账号」页登录百度 AI Studio")) }
+            return
+        }
         if (aiStudioActionJob?.isActive == true) return
         val project = _state.value.aiStudio.projects.firstOrNull { it.running }
             ?: _state.value.aiStudio.projects.firstOrNull()
