@@ -1,7 +1,6 @@
 package com.local.comfyuimobile.network
 
 import com.local.comfyuimobile.model.AiStudioAccount
-import com.local.comfyuimobile.model.AiStudioPointAction
 import com.local.comfyuimobile.model.AiStudioProject
 import com.local.comfyuimobile.model.AiStudioSchedule
 import org.json.JSONArray
@@ -33,7 +32,6 @@ object AiStudioProtocol {
     const val PATH_POINT_SIGN = "/point/sign"
     const val PATH_POINT_INFO = "/point/user/info"
     /** 积分任务列表（任务名/多少分/是否完成）。 */
-    const val PATH_POINT_ACTION = "/point/user/action"
     /** 算力卡与资源配额。 */
     const val PATH_RESOURCE_SUMMARY = "/studio/resource/user/summary"
     const val PATH_RESOURCE_QUOTA = "/studio/resource/quota"
@@ -62,7 +60,7 @@ object AiStudioProtocol {
     const val PATH_NOTEBOOK_CONFIG = "/studio/notebook/config"
     const val PATH_CLUSTER_ALL_LIST = "/studio/project/cluster/allList"
     const val PATH_PROJECT_RUNNING = "/studio/project/running"
-    /** 启动后查环境连接信息（返回 baseUrl / token / hubBaseUrl，用于 Jupyter 内核）。 */
+    /** 启动后查环境连接信息（返回 baseUrl / token，用于 Jupyter 终端）。 */
     const val PATH_RUNNING_STATUS_CHECK = "/studio/project/running_status_check"
     const val PATH_PROJECT_STOP = "/studio/project/stop"
     const val PATH_REQUIRE_GRAPHIC = "/studio/user/start/notebook/require/graphic"
@@ -288,44 +286,6 @@ object AiStudioProtocol {
         return true
     }
 
-    /** 签到的每日任务列表。平台：`GET /point/user/action`。 */
-    fun parsePointActions(result: JSONObject): List<AiStudioPointAction> {
-        // 真机响应：result 直接是数组，每项
-        // {pointActionDesc, rewardPoint, isFinished, isDisposableAction, jumpUrl}
-        val array = result.optJSONArray("result")
-            ?: firstArray(result, listOf("actionList", "data", "list", "actions", "items", "records"))
-            ?: return emptyList()
-        return buildList {
-            repeat(array.length()) { index ->
-                val item = array.optJSONObject(index) ?: return@repeat
-                val name = firstString(
-                    item,
-                    listOf("pointActionDesc", "actionName", "name", "title", "desc"),
-                )
-                if (name.isBlank()) return@repeat
-                val done = listOf("isFinished", "isFinish", "finished", "isDone", "status")
-                    .firstNotNullOfOrNull { key ->
-                        when (val value = item.opt(key)) {
-                            is Boolean -> value
-                            is Number -> value.toInt() == 1
-                            is String -> value == "1" || value.equals("true", true)
-                            else -> null
-                        }
-                    } ?: false
-                add(
-                    AiStudioPointAction(
-                        name = name,
-                        points = (item.opt("rewardPoint") as? Number)?.toInt()
-                            ?: (item.opt("point") as? Number)?.toInt()
-                            ?: (item.opt("points") as? Number)?.toInt(),
-                        done = done,
-                        jumpUrl = item.optString("jumpUrl"),
-                    ),
-                )
-            }
-        }
-    }
-
     /** 启动环境的表单体。tk/ds 来自通行码流程，免费环境可为空。 */
     fun runProjectBody(
         projectId: String,
@@ -450,16 +410,12 @@ object AiStudioProtocol {
      * 这个字段。拿不到就返回 null。
      */
     /**
-     * 算力卡余额展示文案。
+     * 算力卡余额展示值。
      *
-     * 口径完全按平台自己的展示：`(resourceTotal / 60).toFixed(1)`。
-     * 平台源码（1629.js）：`i({ num: +(r.resourceTotal/60).toFixed(1), linkText: "算力卡" })`。
-     * resourceTotal 原始单位是**分钟**（3761），官网展示成 62.7。
-     * 以前直接显示 3761 会和官网对不上，用户一看就迷惑。
-     *
-     * 单位不叫「小时」而叫「算力卡」：平台在环境选择处写的是
-     * 「高级GPU环境使用时间本周剩余 X 小时」，它是**按基础版（CPU）折算**的
-     * 等价时长，换 V100/A100 消耗更快、实际能跑的小时数更少。
+     * **与官网完全一致**：官网用户卡就是 `(resourceTotal/60).toFixed(1)`
+     * （平台源码 1629.js：`i({ num: +(r.resourceTotal/60).toFixed(1), linkText: "算力卡" })`）。
+     * 所以这里只做同一道除法，不额外换算、不加单位、不做四舍五入以外的处理。
+     * 用户若看不懂这个数字的含义，点卡片看说明。
      */
     fun parseComputeCard(result: JSONObject): String? {
         val minutes = parseComputeCardMinutes(result) ?: return null

@@ -9,24 +9,28 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 /**
- * BML Codelab（JupyterLab 3.0）的内核通道。
+ * BML Codelab（JupyterLab 3.0）的终端通道。
  *
- * v0.1.98：控制台真正的「能在云端跑命令」能力。
+ * v0.2.0：控制台改成**真终端**——输入命令、看到回显，用来启动 ComfyUI 等。
  *
- * 链路（全部从前端 bundle 核实，不是猜的）：
- *  1. `POST /studio/project/running_status_check` → `result = {baseUrl, token, hubBaseUrl}`
- *     平台返回的 baseUrl 形如 `https://xxx.com/idehubcpu01/user/4560/209624/`，
- *     前端会 `split(".com")[1]` 只取域名之后的路径部分。
- *  2. `GET {hubBaseUrl}/api/kernels`（带 `auth: token`）列出运行中的内核。
- *  3. `POST {hubBaseUrl}/api/kernels` 新建内核。
+ * 链路（从前端 bundle 与平台响应核实）：
+ *  1. `POST /studio/project/running_status_check` → `result = {baseUrl, token, hubBaseUrl}`。
+ *  2. **所有 Jupyter 接口都挂在用户路径 baseUrl 下**（形如
+ *     `https://aistudio.baidu.com/bj-cpu-01/user/{uid}/{pid}/`）：
+ *     - REST：`POST {baseUrl}api/terminals` 新建终端；
+ *     - WS：`{wsBase}terminals/websocket/{name}` 收发终端输入输出。
  *
- * 注意：执行命令需要 WebSocket（`/api/kernels/{id}/channels`），
- * 这一版先只做「列内核 + 新建内核 + 读取文件」，把连接链打通；
- * 真正的代码执行是下一步。
+ * 特别注意 hubBaseUrl（`.../hub/user/...`）那条路：GET `/api/kernels` 能通，
+ * 但 POST 会被平台网关回 405——所以内核/终端一律走用户路径 baseUrl。
  */
 class AiStudioKernelClient {
 
@@ -36,20 +40,20 @@ class AiStudioKernelClient {
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
+        .pingInterval(20, TimeUnit.SECONDS)
         .build()
+
+    private var terminalSocket: WebSocket? = null
 
     /** 平台返回的环境连接信息。 */
     data class KernelEndpoint(
-        /** 完整 baseUrl（含域名），用于 /api/contents 之类。 */
+        /** 完整 baseUrl（含域名），形如 `https://.../user/{uid}/{pid}/`，Jupyter 接口的根。 */
         val baseUrl: String,
         /** 仅路径部分（前端就是用它拼 kernels 的）。 */
         val basePath: String,
         val token: String,
-        /** 内核接口所在主机（hubBaseUrl 的完整值）。 */
-        val hubBaseUrl: String,
-        val hubPath: String,
     ) {
-        fun isUsable(): Boolean = hubBaseUrl.isNotBlank() && token.isNotBlank()
+        fun isUsable(): Boolean = baseUrl.isNotBlank() && token.isNotBlank()
     }
 
     /**
@@ -84,84 +88,136 @@ class AiStudioKernelClient {
             AiStudioProtocol.unwrap(raw, "查询内核环境")
         }
         val baseUrl = result.optString("baseUrl")
-        val hub = result.optString("hubBaseUrl")
-        AppLogger.info("内核通道：baseUrl=$baseUrl hubBaseUrl=$hub")
+        AppLogger.info("终端通道：baseUrl=$baseUrl")
         return KernelEndpoint(
             baseUrl = baseUrl,
             basePath = baseUrl.substringAfter(".com", "").ifBlank { baseUrl },
             token = result.optString("token"),
-            hubBaseUrl = hub,
-            hubPath = hub.substringAfter(".com", "").ifBlank { hub },
         )
     }
 
     /**
-     * 列出运行中的内核。
+     * 列出现有终端。`GET {baseUrl}api/terminals` → `[{name}]`。
      *
-     * 前端：`GET {hubBaseUrl}/api/kernels`，header 带 `auth: <token>`。
-     * 返回数组，每项含 id / name / execution_state。
+     * 项目重启后旧终端会消失，所以连之前先探一下，有就复用。
      */
-    suspend fun listKernels(
+    suspend fun listTerminals(
         account: AiStudioAccount,
         endpoint: KernelEndpoint,
-    ): List<KernelInfo> = withContext(Dispatchers.IO) {
-        val url = kernelBase(endpoint) + "/api/kernels"
-        val raw = get(account, endpoint, url, "读取内核列表")
-        val array = runCatching { org.json.JSONArray(raw) }.getOrNull()
-            ?: (runCatching { JSONObject(raw).optJSONArray("result") }.getOrNull())
-            ?: return@withContext emptyList()
+    ): List<String> = withContext(Dispatchers.IO) {
+        val url = userBase(endpoint) + "api/terminals"
+        val raw = get(account, endpoint, url, "读取终端列表")
+        val array = runCatching { JSONArray(raw) }.getOrNull() ?: return@withContext emptyList()
         buildList {
             repeat(array.length()) { index ->
-                val item = array.optJSONObject(index) ?: return@repeat
-                val id = item.optString("id")
-                if (id.isBlank()) return@repeat
-                add(
-                    KernelInfo(
-                        id = id,
-                        name = item.optString("name"),
-                        state = item.optString("execution_state"),
-                    ),
-                )
+                val name = array.optJSONObject(index)?.optString("name").orEmpty()
+                if (name.isNotBlank()) add(name)
             }
         }
     }
 
-    /** 新建内核：`POST {hub}/api/kernels`（带 name）。 */
-    suspend fun startKernel(
+    /** 新建终端：`POST {baseUrl}api/terminals` → `{name}`。 */
+    suspend fun createTerminal(
         account: AiStudioAccount,
         endpoint: KernelEndpoint,
-        kernelName: String = "python3",
-    ): KernelInfo = withContext(Dispatchers.IO) {
-        val url = kernelBase(endpoint) + "/api/kernels"
-        val body = JSONObject().put("name", kernelName).toString()
-        val raw = post(account, endpoint, url, body, "新建内核")
-        val item = runCatching { JSONObject(raw) }.getOrNull() ?: throw AiStudioException("新建内核失败：返回不是对象")
-        KernelInfo(
-            id = item.optString("id"),
-            name = item.optString("name"),
-            state = item.optString("execution_state"),
-        )
+    ): String = withContext(Dispatchers.IO) {
+        val url = userBase(endpoint) + "api/terminals"
+        val raw = post(account, endpoint, url, "{}", "新建终端")
+        val name = runCatching { JSONObject(raw).optString("name") }.getOrNull().orEmpty()
+        if (name.isBlank()) throw AiStudioException("新建终端失败：返回里没有 name")
+        name
     }
 
     /**
-     * 内核接口主机。
+     * 打开终端的 WebSocket，开始收发命令。
      *
-     * hubBaseUrl 可能是完整 URL，也可能只有路径（前端做过 split(".com")）。
-     * 完整 URL 直接用；只有路径时补平台域名。
+     * Jupyter 终端协议：发 `{"type":"stdin","content":"..."}`，
+     * 收 `{"type":"stdout","content":"..."}`；另有 `resize` 告知窗口尺寸。
      */
-    private fun kernelBase(endpoint: KernelEndpoint): String {
-        val raw = endpoint.hubBaseUrl.ifBlank { endpoint.hubPath }
-        if (raw.isBlank()) throw AiStudioException("内核通道失败：平台没有返回 hubBaseUrl")
-        return if (raw.startsWith("http")) raw.trimEnd('/')
-        else AiStudioProtocol.BASE_URL + "/" + raw.trim('/')
+    fun openTerminal(
+        account: AiStudioAccount,
+        endpoint: KernelEndpoint,
+        name: String,
+        onOutput: (String) -> Unit,
+        onOpen: () -> Unit,
+        onClosed: (String) -> Unit,
+    ) {
+        closeTerminal()
+        val url = wsBase(endpoint) + "terminals/websocket/" + encode(name)
+        val builder = Request.Builder().url(url)
+        commonHeaders(account, endpoint).forEach { (k, v) -> builder.header(k, v) }
+        terminalSocket = client.newWebSocket(
+            builder.build(),
+            object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) = onOpen()
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    val json = runCatching { JSONObject(text) }.getOrNull() ?: return
+                    if (json.optString("type") != "stdout") return
+                    json.optString("content").takeIf { it.isNotEmpty() }?.let(onOutput)
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    if (terminalSocket === webSocket) terminalSocket = null
+                    onClosed(t.message ?: "连接中断")
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    if (terminalSocket === webSocket) terminalSocket = null
+                    onClosed("终端已关闭（$code）")
+                }
+            },
+        )
     }
+
+    /** 向终端发一条命令（自动补回车）。 */
+    fun sendInput(command: String): Boolean {
+        val socket = terminalSocket ?: return false
+        val payload = JSONObject().put("type", "stdin").put("content", command + "\r")
+        return socket.send(payload.toString())
+    }
+
+    /** 告知终端窗口尺寸，避免输出错行。 */
+    fun resize(cols: Int, rows: Int) {
+        val socket = terminalSocket ?: return
+        socket.send(JSONObject().put("type", "resize").put("cols", cols).put("rows", rows).toString())
+    }
+
+    fun closeTerminal() {
+        terminalSocket?.close(1000, "client close")
+        terminalSocket = null
+    }
+
+    /**
+     * 用户路径主机：`https://aistudio.baidu.com/{zone}/user/{uid}/{pid}/`。
+     *
+     * Jupyter 的 REST/WS 全挂在这条路径下（前端 2299.js 就是 `url_path_join(base_url, ...)`）。
+     * 不能改用 hubBaseUrl：那条路的网关只放行 GET，POST 会 405。
+     */
+    private fun userBase(endpoint: KernelEndpoint): String {
+        val raw = endpoint.baseUrl.ifBlank { endpoint.basePath }
+        if (raw.isBlank()) throw AiStudioException("终端通道失败：平台没有返回 baseUrl")
+        val absolute = if (raw.startsWith("http")) raw else AiStudioProtocol.BASE_URL + "/" + raw.trim('/')
+        return absolute.trimEnd('/') + "/"
+    }
+
+    private fun wsBase(endpoint: KernelEndpoint): String {
+        val http = userBase(endpoint)
+        return when {
+            http.startsWith("https") -> "wss" + http.substring("https".length)
+            http.startsWith("http") -> "ws" + http.substring("http".length)
+            else -> http
+        }
+    }
+
+    private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
 
     private fun commonHeaders(account: AiStudioAccount, endpoint: KernelEndpoint): Map<String, String> = buildMap {
         put("Cookie", account.cookie)
         put("x-requested-with", "XMLHttpRequest")
         put("Referer", AiStudioProtocol.BASE_URL + "/")
-        // 前端就是靠这个 auth 头过内核接口的鉴权。
+        // 平台网关认 `auth` 头；Jupyter 自身认标准 `Authorization: token`。两个都带。
         put("auth", endpoint.token)
+        if (endpoint.token.isNotBlank()) put("Authorization", "token " + endpoint.token)
         if (account.bdToken.isNotBlank()) put("x-studio-token", account.bdToken)
         val xsrf = AiStudioProtocol.cookieValue(account.cookie, "_xsrf")
         if (xsrf.isNotBlank()) put("X-XSRFToken", xsrf)
@@ -207,15 +263,6 @@ class AiStudioKernelClient {
             val body = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) throw AiStudioException("${action}失败：HTTP ${resp.code}（${body.take(120)}）")
             body
-        }
-    }
-
-    data class KernelInfo(val id: String, val name: String, val state: String) {
-        fun displayName(): String = when {
-            name.isNotBlank() && state.isNotBlank() -> "$name · $state"
-            name.isNotBlank() -> name
-            state.isNotBlank() -> "$id · $state"
-            else -> id
         }
     }
 }

@@ -582,7 +582,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         computeCardMinutes = snapshot.computeCardMinutes,
                         computeCard = snapshot.computeCard,
                         weekQuota = snapshot.weekQuota,
-                        pointActions = snapshot.actions,
                         aCoin = aCoin,
                         signedInToday = signedTodayFromApi ?: signedTodayLocal,
                         lastRawResponse = aiStudio.lastRawResponse,
@@ -591,7 +590,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             AppLogger.info(
                 "AI Studio 资源：积分=${points ?: "未知"}，算力卡=${snapshot.computeCard ?: "未知"}，" +
-                    "A币=${aCoin ?: "未知"}，任务=${snapshot.actions.size} 项",
+                    "A币=${aCoin ?: "未知"}",
             )
         }
     }
@@ -622,68 +621,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * 【风险自负】自动完成「发布项目」积分任务。
+     * 控制台：连上已运行项目的云端终端（Jupyter terminal）。
      *
-     * 流程：建一个项目 → 设为公开 → 删掉。这是**模拟平台上的“发布项目”任务**，
-     * 不是平台官方提供的接口。平台有反作弊，批量建删可能被判定异常，
-     * 后果（限制/封号）由账号承担。所以：**每次只做一轮、不循环、不并发**，
-     * 每一步都写进日志。
-     */
-    fun aiStudioRunPublishPointTask() {
-        val account = _state.value.aiStudio.activeAccount() ?: return
-        if (aiStudioActionJob?.isActive == true) return
-        _state.update {
-            it.copy(aiStudio = it.aiStudio.copy(error = null, message = "正在执行积分任务…"))
-        }
-        aiStudioActionJob = viewModelScope.launch {
-            // 项目名带时间戳，避免与已有项目重名。
-            val name = "tmp-" + java.text.SimpleDateFormat("MMdd-HHmmss", java.util.Locale.US)
-                .format(java.util.Date())
-            var createdId: String? = null
-            val result = runCatching {
-                AppLogger.info("积分任务：开始建项目 $name")
-                val id = aiStudio.createProject(account, name)
-                createdId = id
-                AppLogger.info("积分任务：已建项目 id=$id")
-                // 必须先生成版本，否则平台回「当前项目没有版本」。
-                val versionName = "v" + java.text.SimpleDateFormat("MMddHHmm", java.util.Locale.US)
-                    .format(java.util.Date())
-                val versionId = aiStudio.createVersion(account, id, versionName)
-                AppLogger.info("积分任务：已生成版本 id=$versionId name=$versionName")
-                aiStudio.publishProject(account, id)
-                AppLogger.info("积分任务：已设为公开 id=$id")
-                id
-            }
-            if (result.isFailure) {
-                val error = result.exceptionOrNull()
-                if (error is CancellationException) throw error
-                failAiStudio("积分任务失败", error ?: AiStudioException("未知错误"))
-                // 失败时尽量把半成品删掉，不在账号里留垃圾。
-                createdId?.let { id ->
-                    runCatching { aiStudio.deleteProject(account, id) }
-                        .onFailure { AppLogger.warn("清理临时项目失败 id=$id", it) }
-                }
-                return@launch
-            }
-            // 公开后稍等，让平台的积分结算跑完，再删除。
-            delay(3_000)
-            createdId?.let { id ->
-                runCatching { aiStudio.deleteProject(account, id) }
-                    .onFailure { error -> AppLogger.warn("删除临时项目失败 id=$id", error) }
-                    .onSuccess { AppLogger.info("积分任务：已删除临时项目 id=$id") }
-            }
-            _state.update {
-                it.copy(aiStudio = it.aiStudio.copy(message = "积分任务已执行，稍后刷新看积分变化"))
-            }
-            aiStudioRefreshAccount()
-        }
-    }
-
-    /**
-     * 控制台：连上已运行项目的内核通道。
-     *
-     * 链路（从前端核实）：running_status_check 拿 {baseUrl,token,hubBaseUrl}
-     * → GET {hub}/api/kernels。启动项目后需等环境就绪（1-2 分钟）。
+     * 链路：running_status_check 拿 {baseUrl,token} → 有现成终端就复用，
+     * 否则 POST {baseUrl}api/terminals 新建 → 开 WebSocket 收发命令。
+     * 启动项目后需等环境就绪（1-2 分钟）。
      */
     fun aiStudioConnectConsole() {
         val account = _state.value.aiStudio.activeAccount() ?: return
@@ -700,19 +642,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         aiStudioActionJob = viewModelScope.launch {
             runCatching {
                 val endpoint = kernelClient.fetchEndpoint(account, project.projectId, "")
-                val kernels = kernelClient.listKernels(account, endpoint)
-                endpoint to kernels
+                val existing = kernelClient.listTerminals(account, endpoint)
+                val name = existing.firstOrNull() ?: kernelClient.createTerminal(account, endpoint)
+                endpoint to name
             }
-                .onSuccess { (endpoint, kernels) ->
+                .onSuccess { (endpoint, name) ->
                     kernelEndpoint = endpoint
-                    AppLogger.info("控制台已连接：内核 ${kernels.size} 个")
+                    openTerminalSocket(account, endpoint, name)
                     _state.update {
                         it.copy(
                             aiStudio = it.aiStudio.copy(
                                 consoleBusy = false,
-                                consoleConnected = true,
-                                kernels = kernels.map { it.displayName() },
-                                message = if (kernels.isEmpty()) "已连上，暂无内核（可新建）" else "已连上内核通道",
+                                message = "终端已连接（$name）",
                             ),
                         )
                     }
@@ -727,34 +668,85 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 控制台：新建一个 python3 内核。 */
-    fun aiStudioStartKernel() {
-        val account = _state.value.aiStudio.activeAccount() ?: return
-        val endpoint = kernelEndpoint
-        if (endpoint == null) {
-            _state.update { it.copy(aiStudio = it.aiStudio.copy(error = "先点「连接控制台」")) }
+    private fun openTerminalSocket(account: AiStudioAccount, endpoint: AiStudioKernelClient.KernelEndpoint, name: String) {
+        kernelClient.openTerminal(
+            account = account,
+            endpoint = endpoint,
+            name = name,
+            onOutput = { chunk -> appendTerminal(chunk) },
+            onOpen = {
+                AppLogger.info("控制台：终端已连接 $name")
+                _state.update {
+                    it.copy(
+                        aiStudio = it.aiStudio.copy(
+                            consoleConnected = true,
+                            comfyUiUrl = comfyUiUrl(endpoint),
+                        ),
+                    )
+                }
+            },
+            onClosed = { reason ->
+                AppLogger.info("控制台：终端断开（$reason）")
+                _state.update {
+                    it.copy(aiStudio = it.aiStudio.copy(consoleConnected = false, message = "终端断开：$reason"))
+                }
+            },
+        )
+    }
+
+    /**
+     * 把命令发给云端终端。
+     */
+    fun aiStudioSendCommand(command: String) {
+        if (!_state.value.aiStudio.consoleConnected) {
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(error = "先点「连接终端」")) }
             return
         }
-        if (aiStudioActionJob?.isActive == true) return
-        _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleBusy = true, error = null)) }
-        aiStudioActionJob = viewModelScope.launch {
-            runCatching { kernelClient.startKernel(account, endpoint) }
-                .onSuccess { kernel ->
-                    AppLogger.info("控制台：已新建内核 ${kernel.id}")
-                    _state.update {
-                        it.copy(
-                            aiStudio = it.aiStudio.copy(
-                                consoleBusy = false,
-                                kernels = it.aiStudio.kernels + kernel.displayName(),
-                                message = "已新建内核",
-                            ),
-                        )
-                    }
+        if (command.isBlank()) return
+        appendTerminal("$ $command\n")
+        if (!kernelClient.sendInput(command)) {
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(error = "命令发送失败：终端未就绪")) }
+        }
+    }
+
+    /** 控制台：清空终端输出缓冲（不断开连接）。 */
+    fun aiStudioClearConsole() {
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(terminalLines = emptyList())) }
+    }
+
+    /** 控制台：断开终端。 */
+    fun aiStudioDisconnectConsole() {
+        kernelClient.closeTerminal()
+        kernelEndpoint = null
+        _state.update {
+            it.copy(aiStudio = it.aiStudio.copy(consoleConnected = false, message = "已断开终端"))
+        }
+    }
+
+    /**
+     * 把终端输出按行并入缓冲。
+     *
+     * 云端输出是流式的（一块可能含多行、也可能不带换行），这里按 \n 拆开逐行追加，
+     * 只保留最近 [TERMINAL_MAX_LINES] 行，避免长时间跑命令把内存吃光。
+     */
+    private fun appendTerminal(chunk: String) {
+        val lines = chunk.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        _state.update { current ->
+            val buffer = current.aiStudio.terminalLines.toMutableList()
+            lines.forEachIndexed { index, line ->
+                // 首行接在上一行末尾（流式输出常把一行分几次发来）。
+                if (index == 0 && buffer.isNotEmpty() && !chunk.startsWith("\n")) {
+                    buffer[buffer.lastIndex] = buffer.last() + line
+                } else if (index < lines.size - 1 || line.isNotEmpty()) {
+                    buffer.add(line)
                 }
-                .onFailure { error ->
-                    _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleBusy = false)) }
-                    failAiStudio("新建内核失败", error)
-                }
+            }
+            val trimmed = if (buffer.size > TERMINAL_MAX_LINES) {
+                buffer.subList(buffer.size - TERMINAL_MAX_LINES, buffer.size).toList()
+            } else {
+                buffer.toList()
+            }
+            current.copy(aiStudio = current.aiStudio.copy(terminalLines = trimmed))
         }
     }
 
@@ -4548,6 +4540,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         client.closeWebSocket()
+        kernelClient.closeTerminal()
         // v0.1.86：App 真正退出时把"已连接"常驻通知一起撤掉，别在通知栏留孤儿。
         // 注意这只清保活标记：如果还有生图任务在后台跑，服务自己的 stopIfIdle 会
         // 保留前台通知，任务不受影响。
@@ -4573,5 +4566,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         /** v0.1.83：批量对比单张轮询间隔与超时。20 分钟上限给云端平台排队留足余量。 */
         const val BATCH_POLL_INTERVAL_MS = 3_000L
         const val BATCH_ITEM_TIMEOUT_MS = 20 * 60_000L
+        /** 控制台终端最多保留的行数：长时间跑命令（如装依赖）也会刷出成千上万行。 */
+        const val TERMINAL_MAX_LINES = 2_000
     }
 }
