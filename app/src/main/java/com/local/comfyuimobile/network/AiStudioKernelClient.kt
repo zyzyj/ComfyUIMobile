@@ -176,8 +176,10 @@ class AiStudioKernelClient {
     /**
      * 打开终端的 WebSocket，开始收发命令。
      *
-     * Jupyter 终端协议：发 `{"type":"stdin","content":"..."}`，
-     * 收 `{"type":"stdout","content":"..."}`；另有 `resize` 告知窗口尺寸。
+     * Jupyter 终端的 WebSocket 协议是 **JSON 数组**（terminado，不是内核那套 dict 消息）：
+     * 发 `["stdin", "命令\r"]`，收 `["stdout", "输出"]`，改尺寸用 `["set_size", rows, cols]`。
+     * 以前发的是 `{"type":"stdin",...}`，服务器当成畸形消息直接把连接掉了——
+     * 现象就是“刚连上、一输命令就断开”。
      */
     fun openTerminal(
         account: AiStudioAccount,
@@ -195,10 +197,12 @@ class AiStudioKernelClient {
             builder.build(),
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) = onOpen()
+
                 override fun onMessage(webSocket: WebSocket, text: String) {
-                    val json = runCatching { JSONObject(text) }.getOrNull() ?: return
-                    if (json.optString("type") != "stdout") return
-                    json.optString("content").takeIf { it.isNotEmpty() }?.let(onOutput)
+                    val frame = runCatching { JSONArray(text) }.getOrNull() ?: return
+                    // 帧形如 ["stdout", "..."]，也可能是 ["setup", {}] / ["disconnect", n]。
+                    if (frame.optString(0) != "stdout") return
+                    frame.optString(1).takeIf { it.isNotEmpty() }?.let(onOutput)
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -214,17 +218,17 @@ class AiStudioKernelClient {
         )
     }
 
-    /** 向终端发一条命令（自动补回车）。 */
+    /** 向终端发一条命令（自动补回车）。协议帧：`["stdin", "...\r"]`。 */
     fun sendInput(command: String): Boolean {
         val socket = terminalSocket ?: return false
-        val payload = JSONObject().put("type", "stdin").put("content", command + "\r")
+        val payload = JSONArray().put("stdin").put(command + "\r")
         return socket.send(payload.toString())
     }
 
-    /** 告知终端窗口尺寸，避免输出错行。 */
+    /** 告知终端窗口尺寸，避免输出错行。协议帧：`["set_size", rows, cols]`（注意顺序）。 */
     fun resize(cols: Int, rows: Int) {
         val socket = terminalSocket ?: return
-        socket.send(JSONObject().put("type", "resize").put("cols", cols).put("rows", rows).toString())
+        socket.send(JSONArray().put("set_size").put(rows).put(cols).toString())
     }
 
     fun closeTerminal() {

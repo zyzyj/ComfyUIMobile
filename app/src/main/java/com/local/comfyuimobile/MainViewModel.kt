@@ -384,6 +384,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(serverInput = value) }
     }
 
+    /**
+     * 连接运行中项目暴露的 ComfyUI（`{baseUrl}api_serving/8188`）。
+     *
+     * 这个地址是平台的反向代理，**必须带 AI Studio 的登录 Cookie**，否则网关把请求
+     * 当成未登录，返回登录页（日志里“HTTP 200 但返回的是登录页”就是这么来的）。
+     * 所以这里顺手把当前账号的 Cookie 一起填上再连，不让用户手动去设置里粘贴。
+     */
+    fun connectAiStudioComfyUi(url: String) {
+        val cookie = _state.value.aiStudio.activeAccount()?.cookie.orEmpty()
+        if (cookie.isNotBlank()) {
+            cookieSeededAddress = url
+            _state.update { it.copy(serverInput = url, serverCookie = cookie) }
+            persistCookieFor(url, cookie)
+        } else {
+            _state.update { it.copy(serverInput = url) }
+        }
+        connect(url)
+    }
+
     fun setServerCookie(value: String) {
         // 记下"这个地址用户自己改过了"，别让下一次 DataStore 推送把输入覆盖掉。
         cookieSeededAddress = _state.value.serverInput
