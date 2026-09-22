@@ -908,7 +908,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 connectAiStudioComfyUi(url)
             } else {
                 AppLogger.info("手动刷新：ComfyUI 仍不可达")
-                _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "未探测到 ComfyUI，确认它已在云端启动")) }
+                _state.update {
+                    it.copy(
+                        aiStudio = it.aiStudio.copy(
+                            // setup.sh 从输入到 ComfyUI 监听端口要几分钟，这期间探测必然失败；
+                            // 提示用户这是等待而不是故障，等终端打出就绪标志会自动连接。
+                            message = "ComfyUI 还没启动完成：等终端出现 To see the GUI go to 后会自动连接",
+                        ),
+                    )
+                }
             }
         }
     }
@@ -1005,7 +1013,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             AppLogger.info("ComfyUI 地址暂时不可达，已停止自动连接（可手动点「用这个地址连接」）")
-            _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "未探测到 ComfyUI，可手动连接")) }
+            _state.update {
+                it.copy(
+                    aiStudio = it.aiStudio.copy(
+                        message = "ComfyUI 还没启动完成：等终端出现 To see the GUI go to 后会自动连接",
+                    ),
+                )
+            }
         }
     }
 
