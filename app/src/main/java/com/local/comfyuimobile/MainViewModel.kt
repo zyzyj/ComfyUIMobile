@@ -724,6 +724,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         aiStudio = it.aiStudio.copy(
                             consoleConnected = true,
                             comfyUiUrl = comfyUiUrl(endpoint),
+                            // 清掉上一次的「重连中…」「已断开」提示，否则连上了还挂着旧文案。
+                            message = null,
+                            error = null,
                         ),
                     )
                 }
@@ -744,25 +747,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         name: String,
         attempt: Int,
     ) {
+        // 已经在重连中就不再排（避免 onClosed 抖动时排一堆）。
         if (terminalReconnectJob?.isActive == true) return
-        if (attempt >= TERMINAL_RECONNECT_DELAYS_MS.size) {
-            _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "终端多次重连失败，可手动重连")) }
-            return
-        }
         terminalReconnectJob = viewModelScope.launch {
-            delay(TERMINAL_RECONNECT_DELAYS_MS[attempt])
-            if (terminalManualClose) return@launch
-            _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "终端重连中…")) }
-            // 终端名可能因项目重启而失效，重连前重新确认一次。
-            val fresh = runCatching {
-                kernelClient.listTerminals(account, endpoint).firstOrNull()
-                    ?: kernelClient.createTerminal(account, endpoint)
-            }.getOrNull()
-            if (fresh == null) {
-                scheduleTerminalReconnect(account, endpoint, name, attempt + 1)
-                return@launch
+            // 用循环而不是递归：递归时本 job 还是 active，会被上面的判断提前挡掉，
+            // 重试链静默中断（真机表现：断一次后就再也不重连了）。
+            var current = attempt
+            while (current < TERMINAL_RECONNECT_DELAYS_MS.size) {
+                delay(TERMINAL_RECONNECT_DELAYS_MS[current])
+                if (terminalManualClose) return@launch
+                _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "终端重连中…")) }
+                // 终端名可能因项目重启而失效，重连前重新确认一次。
+                val fresh = runCatching {
+                    kernelClient.listTerminals(account, endpoint).firstOrNull()
+                        ?: kernelClient.createTerminal(account, endpoint)
+                }.getOrNull()
+                if (fresh != null) {
+                    // openTerminalSocket 会重置 terminalManualClose；若这次又失败，
+                    // 它会再调 scheduleTerminalReconnect，但那时本 job 已结束，不会被挡。
+                    openTerminalSocket(account, endpoint, fresh, current + 1)
+                    return@launch
+                }
+                current += 1
             }
-            openTerminalSocket(account, endpoint, fresh, attempt + 1)
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "终端多次重连失败，可手动重连")) }
         }
     }
 

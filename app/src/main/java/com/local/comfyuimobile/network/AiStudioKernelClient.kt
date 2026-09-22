@@ -279,12 +279,17 @@ class AiStudioKernelClient {
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    if (terminalSocket === webSocket) terminalSocket = null
+                    // 只有「当前 socket」的回调才算数。换连接时 closeTerminal() 会先关掉旧
+                    // socket，它的 onFailure/onClosed 是异步后到的——不判断身份的话，旧连接
+                    // 的回调会把刚建立的新连接报成"断开"，于是界面一直"重连中"。
+                    if (terminalSocket !== webSocket) return
+                    terminalSocket = null
                     onClosed(t.message ?: "连接中断")
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    if (terminalSocket === webSocket) terminalSocket = null
+                    if (terminalSocket !== webSocket) return
+                    terminalSocket = null
                     onClosed("终端已关闭（$code）")
                 }
             },
