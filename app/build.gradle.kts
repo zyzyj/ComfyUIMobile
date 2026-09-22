@@ -45,6 +45,12 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            // debug 也复用那份固定密钥：否则 CI 每次用各 runner 自生成的调试密钥，
+            // 签名不一致→装新版必须先卸载→登录态丢失（用户反馈「每次都要重新登录」）。
+            // 密钥不存在（本地首次）时保持默认调试签名，不影响开发。
+            if (signingPropertiesFile.isFile) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         release {
             isMinifyEnabled = false
