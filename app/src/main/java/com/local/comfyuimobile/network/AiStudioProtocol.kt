@@ -51,6 +51,9 @@ object AiStudioProtocol {
     const val PATH_PROJECT_DETAIL = "/studio/project/detail"
     const val PATH_PROJECT_STATUS = "/studio/project/status"
     const val PATH_PROJECT_ADD = "/studio/project/add"
+    /** 设为公开 / 删除项目（积分任务「发布项目」用到）。 */
+    const val PATH_PROJECT_PUBLIC = "/studio/project/public"
+    const val PATH_PROJECT_DELETE = "/studio/project/delete"
 
     // ===== 启动 / 停止环境 =====
     const val PATH_NOTEBOOK_ENTER = "/studio/project/notebook/enter"
@@ -321,6 +324,22 @@ object AiStudioProtocol {
         put("ds", ds)
     }
 
+    /**
+     * 建项目表单体。
+     *
+     * 平台必填字段（从前端 savedParams 核实）：projectName / projectAbs /
+     * projectType / projectEnvironment / projectFramework。projectEnvironment=2、
+     * projectType=0、projectFramework=44 是 Notebook 新建页的默认值。
+     */
+    fun createProjectBody(name: String, description: String = ""): Map<String, String> = mapOf(
+        "projectName" to name,
+        "projectAbs" to description,
+        "projectType" to "0",
+        "projectEnvironment" to "2",
+        "projectFramework" to "44",
+        "templateId" to "-1",
+    )
+
     /** 构造表单编码体（平台绝大多数 POST 走 `application/x-www-form-urlencoded`）。 */
     fun formEncode(fields: Map<String, String>): String = fields.entries.joinToString("&") {
         "${urlEncode(it.key)}=${urlEncode(it.value)}"
@@ -416,14 +435,13 @@ object AiStudioProtocol {
     /**
      * 算力卡余额展示文案。
      *
-     * 平台自身展示为：数值 `(resourceTotal/60).toFixed(1)` + 标签「算力卡」。
-     * 它是**按基础版（CPU）折算的可用时长**，不是“所有显卡都能跑这么久” ——
-     * 高级版/V100/A100 每小时消耗不同，能跑的小时数会少很多。
-     * 所以文案里明确写出「按基础版折算」，避免误解。
+     * 平台口径就是「多少算力卡」—— 用户看的是数字本身（如 3761 算力卡）。
+     * 不再换算成小时：resourceTotal 虽是分钟，但不同显卡每小时扣的数量不同，
+     * 换成小时会让人误以为“什么卡都能跑这么久”（已被真机反馈过）。
      */
     fun parseComputeCard(result: JSONObject): String? {
-        val minutes = parseComputeCardMinutes(result) ?: return null
-        return "${trimNumber(minutes / 60.0)} 小时（按基础版折算）"
+        val value = parseComputeCardMinutes(result) ?: return null
+        return "${trimNumber(value)} 算力卡"
     }
 
     /** 算力卡余额原始值（分钟）。 */
@@ -445,9 +463,15 @@ object AiStudioProtocol {
         }
     }
 
-    /** 去掉无意义的小数尾巴：32.0 -> 32，32.5 保持 32.5。 */
-    private fun trimNumber(value: Double): String =
-        if (value == value.toLong().toDouble()) value.toLong().toString() else value.toString()
+    /**
+     * 去掉无意义的小数尾巴，并保留至多 1 位小数。
+     * 32.0 → 32；62.683333 → 62.7。
+     * （之前直接 toString() 会吐出 62.68333333333333 这种长小数，界面很脏。）
+     */
+    private fun trimNumber(value: Double): String {
+        val rounded = Math.round(value * 10.0) / 10.0
+        return if (rounded == rounded.toLong().toDouble()) rounded.toLong().toString() else rounded.toString()
+    }
 
     /**
      * 把 Cookie 收敛成平台域名下可用的一份。
