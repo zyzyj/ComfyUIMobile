@@ -862,6 +862,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         url.contains("aistudio.baidu.com") && url.contains("/api_serving/")
 
     /**
+     * 确保 kernelClient 手里拿着**当前实例**的项目级 Cookie（ide-proxy / user-{uid}-{pid}）。
+     *
+     * 这两段跟实例会话绑定：用户停止再启动项目后旧值就失效；而 App 进程重启又会把
+     * 内存里的 CookieJar 丢掉——真机实测（21:04）：重启 App 后直接连 ComfyUI，带着
+     * 20:13 持久化的旧 Cookie 照样被登录墙拒绝。所以这里补一次「连终端」的 REST
+     * 握手（enter + baseinfo + 建/复用终端），网关就会下发新值。
+     *
+     * 已有有效项目级 Cookie 时直接返回 true，不重复建终端。
+     */
+    private suspend fun ensureAiStudioProjectCookies(): Boolean {
+        if (kernelClient.hasProjectCookies()) return true
+        val account = _state.value.aiStudio.activeAccount() ?: return false
+        val project = _state.value.aiStudio.projects.firstOrNull { it.running }
+            ?: _state.value.aiStudio.projects.firstOrNull()
+            ?: return false
+        return runCatching {
+            val endpoint = kernelClient.fetchEndpoint(account, project.projectId, "")
+            val existing = kernelClient.listTerminals(account, endpoint)
+            val name = existing.firstOrNull() ?: kernelClient.createTerminal(account, endpoint)
+            kernelEndpoint = endpoint
+            kernelClient.warmUpProjectCookies(account, endpoint)
+            AppLogger.info("ComfyUI 连接前已补取项目级 Cookie（终端 $name）：[${kernelClient.cookieNames().joinToString()}]")
+            kernelClient.hasProjectCookies()
+        }.onFailure { error ->
+            AppLogger.warn("补取项目级 Cookie 失败（ComfyUI 可能被登录墙拒绝）", error)
+        }.getOrDefault(false)
+    }
+
+    /**
      * 运行中项目的 ComfyUI 地址：`{baseUrl}api_serving/8188`。
      *
      * 平台前端会把终端输出里的 127.0.0.1 端口改写成 api_serving 代理（7613.js），
@@ -1289,6 +1318,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 直接合并，不必让用户去浏览器里找。
                 val configured = _state.value.serverCookie
                 val cookie = if (isAiStudioServingAddress(normalized)) {
+                    // 持久化的项目级 Cookie 会随实例重启失效，连接前先确保拿到当前实例的新值。
+                    ensureAiStudioProjectCookies()
                     AiStudioProtocol.mergeCookies(configured, kernelClient.exportCookies())
                 } else {
                     configured
