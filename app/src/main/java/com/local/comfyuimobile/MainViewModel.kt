@@ -898,11 +898,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         return runCatching {
             // 实例刚启动时 baseinfo 可能短暂返回空（环境未分配完），重试几次再放弃。
+            // 用 while 而不是 repeat：repeat 的 return@repeat 只跳过本次迭代，
+            // 拿到可用 endpoint 后还会再白等 4 秒、多打两次平台接口。
             var endpoint: AiStudioKernelClient.KernelEndpoint? = null
-            repeat(3) { attempt ->
+            var attempt = 0
+            while (attempt < 3 && endpoint?.isUsable() != true) {
                 if (attempt > 0) delay(2_000L)
                 endpoint = kernelClient.fetchEndpoint(account!!, pid, "")
-                if (endpoint?.isUsable() == true) return@repeat
+                attempt += 1
             }
             val resolved = endpoint?.takeIf { it.isUsable() }
                 ?: throw AiStudioException("补取项目级 Cookie 失败：平台未返回环境地址")
@@ -991,16 +994,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         terminalKeepAlive = false
         syncKeepAlive()
         _state.update {
-            it.copy(aiStudio = it.aiStudio.copy(consoleConnected = false, message = "已断开终端"))
+            it.copy(
+                aiStudio = it.aiStudio.copy(
+                    consoleConnected = false,
+                    message = "已断开终端",
+                    // 实例已回收，旧地址必然不可达。留着会让用户反复点「探测」
+                    // 得到误导性失败，所以一并清掉（重连终端后会重新算出来）。
+                    comfyUiUrl = null,
+                ),
+            )
         }
     }
 
-    /**
-     * 把终端输出按行并入缓冲。
-     *
-     * 云端输出是流式的（一块可能含多行、也可能不带换行），这里按 \n 拆开逐行追加，
-     * 只保留最近 [TERMINAL_MAX_LINES] 行，避免长时间跑命令把内存吃光。
-     */
     /**
      * 把终端输出按行并入缓冲。
      *
@@ -1132,8 +1137,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private fun pollProjectState(projectId: String, wantRunning: Boolean) {
         viewModelScope.launch {
+            // 累计实际等待时长：前 5 轮 4 秒、之后 8 秒，文案必须跟真实退避一致
+            // （以前固定按每轮 4 秒算，等了 60 秒却显示 24 秒）。
+            var waitedSeconds = 0
             repeat(40) { attempt ->
-                delay(if (attempt < 5) 4_000 else 8_000)
+                val step = if (attempt < 5) 4 else 8
+                delay(step * 1_000L)
+                waitedSeconds += step
                 val account = _state.value.aiStudio.activeAccount() ?: return@launch
                 val page = runCatching { aiStudio.listProjects(account) }.getOrNull() ?: return@repeat
                 val project = page.projects.firstOrNull { it.projectId == projectId } ?: return@repeat
@@ -1146,11 +1156,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         kernelClient.peekEndpoint(account, projectId)
                     }.getOrNull() != null
                     if (!ready) {
-                        val waited = (attempt + 1) * 4
                         _state.update {
                             it.copy(
                                 aiStudio = it.aiStudio.copy(
-                                    message = "机器已分配，正在启动环境…（已等 ${waited} 秒）",
+                                    message = "机器已分配，正在启动环境…（已等 ${waitedSeconds} 秒）",
                                 ),
                             )
                         }

@@ -230,18 +230,22 @@ class AiStudioLoginActivity : ComponentActivity() {
 
     /** evaluateJavascript 的协程封装：单次求值，10 秒超时兜底。 */
     private suspend fun suspendCancellableCompat(script: String): String =
-        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
-            runCatching {
-                webView.evaluateJavascript(script) { encoded ->
-                    val raw = encoded?.trim().orEmpty()
-                    val value = if (raw.isEmpty() || raw == "null") ""
-                    else runCatching { org.json.JSONArray("[$raw]").getString(0) }.getOrDefault("")
-                    if (cont.isActive) cont.resumeWith(Result.success(value))
+        // evaluateJavascript 的回调在 WebView 正在销毁、页面异常等情况下可能永不触发，
+        // 没有超时就会让整个登录流程永久挂起（停在"正在保存账号…"只能杀进程）。
+        kotlinx.coroutines.withTimeoutOrNull(10_000L) {
+            kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+                runCatching {
+                    webView.evaluateJavascript(script) { encoded ->
+                        val raw = encoded?.trim().orEmpty()
+                        val value = if (raw.isEmpty() || raw == "null") ""
+                        else runCatching { org.json.JSONArray("[$raw]").getString(0) }.getOrDefault("")
+                        if (cont.isActive) cont.resumeWith(Result.success(value))
+                    }
+                }.onFailure {
+                    if (cont.isActive) cont.resumeWith(Result.failure(it))
                 }
-            }.onFailure {
-                if (cont.isActive) cont.resumeWith(Result.failure(it))
             }
-        }
+        }.orEmpty()
 
     override fun onDestroy() {
         pollJob?.cancel()

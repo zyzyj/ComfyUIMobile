@@ -31,7 +31,6 @@ object AiStudioProtocol {
     /** 社区积分：另一套接口（不带 /studio 前缀），签到就是签这个。 */
     const val PATH_POINT_SIGN = "/point/sign"
     const val PATH_POINT_INFO = "/point/user/info"
-    /** 积分任务列表（任务名/多少分/是否完成）。 */
     /** 算力卡与资源配额。 */
     const val PATH_RESOURCE_SUMMARY = "/studio/resource/user/summary"
     const val PATH_RESOURCE_QUOTA = "/studio/resource/quota"
@@ -47,13 +46,6 @@ object AiStudioProtocol {
     /** 备用项目列表入口。平台在不同页面用了两套，主入口读不到时再试这个。 */
     const val PATH_PROJECT_LIST_ALT = "/studio/user/project/cherry/list"
     const val PATH_PROJECT_DETAIL = "/studio/project/detail"
-    const val PATH_PROJECT_STATUS = "/studio/project/status"
-    const val PATH_PROJECT_ADD = "/studio/project/add"
-    /** 设为公开 / 删除项目（积分任务「发布项目」用到）。 */
-    const val PATH_PROJECT_PUBLIC = "/studio/project/public"
-    const val PATH_PROJECT_DELETE = "/studio/project/delete"
-    /** 生成项目版本（公开前必须先有版本，否则平台回“当前项目没有版本”）。 */
-    const val PATH_PROJECT_VERSION_ADD = "/studio/project/version/add"
 
     // ===== 启动 / 停止环境 =====
     const val PATH_NOTEBOOK_ENTER = "/studio/project/notebook/enter"
@@ -186,14 +178,6 @@ object AiStudioProtocol {
     /**
      * 判断项目是否在运行。
      *
-     * 平台的字段名与取值都不稳定：可能是布尔 `running`/`isRunning`，也可能是
-     * 数字 `status`（1 常表示运行中），还有 `runStatus` 字符串。任一命中即可，
-     * 全都没有就按"未运行"处理——大不了让用户点一下启动，比误判成运行中而
-     * 什么都不做要好。
-     */
-    /**
-     * 判断项目是否在运行。
-     *
      * 平台真实字段：`running`（布尔，前端直接读它）。其余名字作为兜底。
      * 全都没线索时按「未运行」处理——大不了让用户点一下启动，比误判成
      * 运行中而什么都不做要好。
@@ -310,15 +294,6 @@ object AiStudioProtocol {
      * projectType / projectEnvironment / projectFramework。projectEnvironment=2、
      * projectType=0、projectFramework=44 是 Notebook 新建页的默认值。
      */
-    fun createProjectBody(name: String, description: String = ""): Map<String, String> = mapOf(
-        "projectName" to name,
-        "projectAbs" to description,
-        "projectType" to "0",
-        "projectEnvironment" to "2",
-        "projectFramework" to "44",
-        "templateId" to "-1",
-    )
-
     /** 构造表单编码体（平台绝大多数 POST 走 `application/x-www-form-urlencoded`）。 */
     fun formEncode(fields: Map<String, String>): String = fields.entries.joinToString("&") {
         "${urlEncode(it.key)}=${urlEncode(it.value)}"
@@ -361,6 +336,29 @@ object AiStudioProtocol {
     fun looksLoggedIn(cookie: String): Boolean = cookieValue(cookie, "BDUSS").isNotBlank()
 
     /**
+     * 把响应里的凭据值脱敏后再拿去落日志。
+     *
+     * 平台的 `envs/baseinfo` / `running_status_check` 响应里带 Jupyter `token`——
+     * 它可以直接访问云端环境，等同于密码。而诊断日志默认开启，用户排障时又会
+     * 把日志发出来，所以落日志前必须先把这些字段的主文替换掉。
+     *
+     * 只保留字段名与长度（长度本身对排障够用了，能看出"有没有拿到"），
+     * 不做通用加密——日志是给人读的。
+     */
+    fun redactSecrets(raw: String): String {
+        var text = raw
+        REDACT_KEYS.forEach { key ->
+            text = Regex("\"$key\"\\s*:\\s*\"([^\"]*)\"").replace(text) { match ->
+                val value = match.groupValues[1]
+                if (value.isEmpty()) "\"$key\":\"\"" else "\"$key\":\"<已省略 len=${value.length}>\""
+            }
+        }
+        return text
+    }
+
+    private val REDACT_KEYS = listOf("token", "bdToken", "cookie")
+
+    /**
      * 按名称合并多串 Cookie，**后面的覆盖前面的**（同名的取靠后那份）。
      *
      * 用途：账号 Cookie（BDUSS 等） + 连终端时网关下发的项目级 Cookie
@@ -383,12 +381,6 @@ object AiStudioProtocol {
         return order.entries.joinToString("; ") { "${it.key}=${it.value}" }
     }
 
-    /**
-     * 从积分接口里取「剩余/可用积分」。
-     *
-     * 字段名不定（points / point / available / residue 都可能），逐个兜底；
-     * 全都取不到就返回 null，让界面显示「—」而不是 0。
-     */
     /**
      * 从积分接口取剩余积分。
      *
@@ -450,7 +442,15 @@ object AiStudioProtocol {
     /** 算力卡余额原始值（分钟）。 */
     fun parseComputeCardMinutes(result: JSONObject): Double? =
         listOf("resourceTotal", "resourceFree", "resourceQuota")
-            .firstNotNullOfOrNull { key -> (result.opt(key) as? Number)?.toDouble() }
+            .firstNotNullOfOrNull { key ->
+                // 平台字段类型不稳：既可能给数字，也可能给字符串（本项目其它
+                // 处已按这个前提做了 double 兼容），两种都要认。
+                when (val value = result.opt(key)) {
+                    is Number -> value.toDouble()
+                    is String -> value.trim().toDoubleOrNull()
+                    else -> null
+                }
+            }
 
     /**
      * 本周各配额类型（V100 / A100 / DCU / DEV）剩余分钟数。

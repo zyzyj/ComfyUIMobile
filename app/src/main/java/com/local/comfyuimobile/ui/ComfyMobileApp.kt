@@ -3790,7 +3790,8 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                                     Text(
                                         "${trimNumber(minutes / 60.0)} 小时",
                                         style = MaterialTheme.typography.labelMedium,
-                                    )                                }
+                                    )
+                                }
                             }
                             Text(
                                 "同一份算力卡换成不同显卡，能跑的小时数不一样",

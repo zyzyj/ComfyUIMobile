@@ -53,7 +53,19 @@ class AiStudioKernelClient {
      * 看着像“成功但没 name”）。这里既存住服务端下发的 cookie，也把账号 Cookie
      * 预先种进 store，让每个请求都带齐。
      */
-    private val cookieStore = mutableMapOf<String, MutableList<Cookie>>()
+    /**
+     * Cookie 存储。
+     *
+     * 并发读写方：IO 线程（seedCookies / 预热请求）、OkHttp 网络线程
+     * （saveFromResponse / loadForRequest）、调用方线程（exportCookies /
+     * cookieNames / currentXsrf）。以前用普通 mutableMap，并发下可能抛
+     * ConcurrentModificationException 或读到半更新列表（表现为偶发"连上又断"）。
+     * 换 ConcurrentHashMap；列表内元素本身也只在锁内改。
+     */
+    private val cookieStore = java.util.concurrent.ConcurrentHashMap<String, MutableList<Cookie>>()
+    private val cookieLock = Any()
+
+    @Volatile
     private var seededCookie = ""
 
     private fun seedCookies(rawCookie: String) {
@@ -66,20 +78,31 @@ class AiStudioKernelClient {
             if (name.isBlank()) null
             else Cookie.Builder().name(name).value(value).domain(url.host).path("/").build()
         }
-        cookieStore[url.host] = cookies.toMutableList()
-    }
-
-    private val cookieJar = object : CookieJar {
-        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+        synchronized(cookieLock) {
+            // 按 name 合并而不是整表替换：服务端下发的 Jupyter 会话 cookie
+            // （_xsrf 等）不能因为重新 seed 账号 Cookie 而被丢掉。
             val list = cookieStore.getOrPut(url.host) { mutableListOf() }
             cookies.forEach { fresh ->
                 list.removeAll { it.name == fresh.name }
                 list.add(fresh)
             }
         }
+    }
 
-        override fun loadForRequest(url: HttpUrl): List<Cookie> =
+    private val cookieJar = object : CookieJar {
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+            synchronized(cookieLock) {
+                val list = cookieStore.getOrPut(url.host) { mutableListOf() }
+                cookies.forEach { fresh ->
+                    list.removeAll { it.name == fresh.name }
+                    list.add(fresh)
+                }
+            }
+        }
+
+        override fun loadForRequest(url: HttpUrl): List<Cookie> = synchronized(cookieLock) {
             cookieStore[url.host].orEmpty().filter { it.matches(url) }
+        }
     }
 
     private val client = OkHttpClient.Builder()
@@ -205,7 +228,7 @@ class AiStudioKernelClient {
             .get()
             .build()
         val raw = client.newCall(request).execute().use { it.body?.string().orEmpty() }
-        AppLogger.info("环境信息响应：${raw.take(300)}")
+        AppLogger.info("环境信息响应：${AiStudioProtocol.redactSecrets(raw).take(300)}")
         return AiStudioProtocol.unwrap(raw, "查询环境信息")
     }
 
@@ -234,7 +257,7 @@ class AiStudioKernelClient {
             .post(body.toRequestBody("application/x-www-form-urlencoded; charset=utf-8".toMediaType()))
             .build()
         val raw = client.newCall(request).execute().use { it.body?.string().orEmpty() }
-        AppLogger.info("运行状态响应：${raw.take(300)}")
+        AppLogger.info("运行状态响应：${AiStudioProtocol.redactSecrets(raw).take(300)}")
         return AiStudioProtocol.unwrap(raw, "查询内核环境")
     }
 
@@ -358,11 +381,13 @@ class AiStudioKernelClient {
      * 只带账号 Cookie（BDUSS 等）会被 302 回登录页；这也是为什么以前“手动连接
      * ComfyUI 要手粘 Cookie”。这里把网关下发的这份导出给 ComfyUI 连接复用。
      */
-    fun exportCookies(): String = cookieStore.values
-        .asSequence()
-        .flatten()
-        .distinctBy { it.name }
-        .joinToString("; ") { "${it.name}=${it.value}" }
+    fun exportCookies(): String = synchronized(cookieLock) {
+        cookieStore.values
+            .asSequence()
+            .flatten()
+            .distinctBy { it.name }
+            .joinToString("; ") { "${it.name}=${it.value}" }
+    }
 
     /**
      * 当前已捕获的 Cookie **名字**（不含值）。
@@ -370,13 +395,15 @@ class AiStudioKernelClient {
      * 仅用于诊断：判断网关是否下发了项目级 Cookie（`ide-proxy`、`user-*`）。
      * 值等同账号密码，绝不写进日志。
      */
-    fun cookieNames(): List<String> = cookieStore.values
-        .asSequence()
-        .flatten()
-        .map { it.name }
-        .distinct()
-        .sorted()
-        .toList()
+    fun cookieNames(): List<String> = synchronized(cookieLock) {
+        cookieStore.values
+            .asSequence()
+            .flatten()
+            .map { it.name }
+            .distinct()
+            .sorted()
+            .toList()
+    }
 
     /** 是否已拿到 api_serving 反代鉴权必需的项目级 Cookie。 */
     fun hasProjectCookies(): Boolean {
@@ -477,11 +504,13 @@ class AiStudioKernelClient {
         if (!xsrf.isNullOrBlank()) put("X-XSRFToken", xsrf)
     }
 
-    private fun currentXsrf(): String? = cookieStore.values
-        .asSequence()
-        .flatten()
-        .firstOrNull { it.name == "_xsrf" }
-        ?.value
+    private fun currentXsrf(): String? = synchronized(cookieLock) {
+        cookieStore.values
+            .asSequence()
+            .flatten()
+            .firstOrNull { it.name == "_xsrf" }
+            ?.value
+    }
 
     private fun get(
         account: AiStudioAccount,
