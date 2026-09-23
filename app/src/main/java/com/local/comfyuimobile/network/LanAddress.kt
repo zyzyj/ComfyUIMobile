@@ -69,7 +69,8 @@ object LanAddress {
         }
     }
 
-    /** 去掉认证信息后的纯地址，用于展示和 WebView 加载。 */    fun withoutCredentials(url: String): String {
+    /** 去掉认证信息后的纯地址，用于展示和 WebView 加载。 */
+    fun withoutCredentials(url: String): String {
         val schemeEnd = url.indexOf("://")
         if (schemeEnd < 0) return url
         val scheme = url.substring(0, schemeEnd + 3)

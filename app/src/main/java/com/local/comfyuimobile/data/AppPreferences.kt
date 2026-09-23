@@ -207,6 +207,17 @@ class AppPreferences(private val context: Context) {
         )
     }.getOrDefault(LlmConfig())
 
+    /**
+     * 保存 AI Studio 账号。
+     *
+     * 凭据（cookie / bdToken）**明文**写入 DataStore，未做加密——这是有意选择：
+     * Android 官方的 security-crypto 已被 Google 弃用，而自建 Keystore 加密对
+     * 本场景（个人自用客户端，Cookie 本就等同设备登录态）收益有限、迁移风险不低。
+     * 真正挡住的是外泄而非本地读取：`AndroidManifest` 已设 allowBackup=false，
+     * 且 data_extraction_rules 把 datastore 整个目录排除在云备份与新机迁移之外
+     * （与 ComfyUI 服务器 Cookie 同一套处理），所以设备 root / 手动导出仍是唯一
+     * 能读到它的路径——那是用户自己掌控的范围。
+     */
     suspend fun saveAiStudioAccounts(accounts: List<AiStudioAccount>, activeId: String) {
         context.dataStore.edit { preferences ->
             preferences[Keys.aiStudioAccounts] = JSONArray().apply {

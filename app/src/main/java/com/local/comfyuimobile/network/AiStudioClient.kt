@@ -247,81 +247,6 @@ class AiStudioClient {
         return "已提交停止请求"
     }
 
-    suspend fun projectStatus(account: AiStudioAccount, projectId: String): JSONObject =
-        request(
-            account,
-            AiStudioProtocol.PATH_PROJECT_STATUS,
-            "POST",
-            AiStudioProtocol.formEncode(mapOf("projectId" to projectId)),
-            "查询项目状态",
-        )
-
-    /** 新建 Notebook 项目，返回新项目 id。 */
-    suspend fun createProject(account: AiStudioAccount, name: String, description: String = ""): String {
-        val result = request(
-            account,
-            AiStudioProtocol.PATH_PROJECT_ADD,
-            "POST",
-            AiStudioProtocol.formEncode(AiStudioProtocol.createProjectBody(name, description)),
-            "新建项目",
-        )
-        // 前端拿到的是 result.projectId
-        val id = result.optString("projectId").ifBlank { result.optString("id") }
-        if (id.isBlank()) throw AiStudioException("新建项目失败：响应里没有 projectId")
-        return id
-    }
-
-    /**
-     * 生成项目版本，返回 versionId。
-     *
-     * 真实调用（前端核实）：`POST /studio/project/version/add`，body
-     * `{projectId, fileList, versionName, uploadDirectly}`。
-     * **公开项目前必须先有版本** —— 否则平台直接回“当前项目没有版本”。
-     * 新建的空项目默认自带 main.ipynb，所以 fileList 传空数组即可让平台打包当前内容。
-     */
-    suspend fun createVersion(
-        account: AiStudioAccount,
-        projectId: String,
-        versionName: String,
-    ): String {
-        val body = JSONObject()
-            .put("projectId", projectId)
-            .put("fileList", org.json.JSONArray())
-            .put("versionName", versionName)
-            .put("uploadDirectly", true)
-            .toString()
-        val result = request(
-            account,
-            AiStudioProtocol.PATH_PROJECT_VERSION_ADD,
-            "POST_JSON",
-            body,
-            "生成版本",
-        )
-        return result.optString("versionId").ifBlank { result.optString("id") }
-    }
-
-    /** 把项目设为公开。 */
-    suspend fun publishProject(account: AiStudioAccount, projectId: String) {
-        request(
-            account,
-            AiStudioProtocol.PATH_PROJECT_PUBLIC,
-            "POST",
-            AiStudioProtocol.formEncode(mapOf("projectId" to projectId)),
-            "设为公开",
-        )
-    }
-
-    /** 删除项目。 */
-    suspend fun deleteProject(account: AiStudioAccount, projectId: String) {
-        request(
-            account,
-            AiStudioProtocol.PATH_PROJECT_DELETE,
-            "POST",
-            AiStudioProtocol.formEncode(mapOf("projectId" to projectId)),
-            "删除项目",
-        )
-    }
-
     // ===== 内部 =====
 
     private suspend fun request(
@@ -364,9 +289,8 @@ class AiStudioClient {
             val raw = resp.body?.string().orEmpty()
             lastRawResponse = raw.take(4000)
             when {
-                resp.code == 302 || resp.code == 301 -> throw AiStudioException(
-                    "${action}失败：登录已失效，请重新登录 AI Studio",
-                )
+                // 注：不判 301/302——OkHttp 默认 followRedirects=true，重定向会被自动
+                // 跟随，落到登录页 HTML 时由下面的 startsWith("<") 分支兜住。
                 !resp.isSuccessful -> throw AiStudioException(
                     "${action}失败：HTTP ${resp.code}",
                 )
