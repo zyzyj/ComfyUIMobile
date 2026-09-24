@@ -4960,12 +4960,13 @@ private fun terminalAnnotatedLine(line: String, base: Color): AnnotatedString = 
         }
         val params = line.substring(esc + 2, end)
         params.split(';').forEach { token ->
-            when (val code = token.toIntOrNull()) {
+            val code = token.toIntOrNull() ?: return@forEach
+            when (code) {
                 0 -> { fg = null; bold = false }
                 1 -> bold = true
-                30..37 -> fg = TERMINAL_ANSI_COLORS[code - 30]
+                in 30..37 -> fg = TERMINAL_ANSI_COLORS[code - 30]
                 39 -> fg = null
-                90..97 -> fg = TERMINAL_ANSI_COLORS[code - 90 + 8]
+                in 90..97 -> fg = TERMINAL_ANSI_COLORS[code - 90 + 8]
                 else -> Unit
             }
         }
