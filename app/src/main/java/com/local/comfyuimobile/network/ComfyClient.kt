@@ -37,6 +37,14 @@ data class UploadResponse(val name: String, val subfolder: String, val type: Str
 class PromptSubmissionException(
     message: String,
     val nodeProblems: Map<String, List<String>>,
+    /**
+     * 这次失败的 HTTP 状态码。0 表示不是服务器回的（如网络异常）。
+     *
+     * 用于区分"参数校验失败（400）"与"反代网关拒绝（401/403/429/5xx）"——后者可刷新
+     * Cookie 重试，前者重试没意义。以前只靠中文文案传递信息，判断方要反向解析字符串，
+     * 改一个字就坏。
+     */
+    val httpCode: Int = 0,
 ) : IllegalStateException(message)
 
 class ComfyClient {
@@ -340,6 +348,13 @@ class ComfyClient {
         clientId: String,
         workflowPath: String,
         workflowName: String,
+        /**
+         * 遇到**反代网关拒绝**（而非 ComfyUI 参数校验失败）时，用它刷新一次登录 Cookie 再重试。
+         *
+         * 由调用方提供（ComfyClient 不掌握 AI Studio 的项目级 Cookie），单机直连场景传 null
+         * 则跳过刷新、仍会重试一次。
+         */
+        refreshAuthCookie: (suspend () -> Unit)? = null,
     ): QueueResponse = withContext(Dispatchers.IO) {
         val body = JSONObject()
             .put("client_id", clientId)
@@ -356,6 +371,31 @@ class ComfyClient {
                     ),
             )
         val request = Request.Builder().url("$baseUrl/prompt").post(body.toString().toRequestBody(jsonMedia)).build()
+        // 最多两次：第一次被反代网关拒绝（403/401/5xx + 非 JSON）时刷新 Cookie 再试一次。
+        // 只有"请求没到 ComfyUI"的失败才重试——那种情况重试不会重复入队；
+        // ComfyUI 自己回的 400 + JSON（参数校验失败）与 200 后的解析失败都不重试。
+        var attempt = 0
+        while (true) {
+            attempt += 1
+            val outcome = runCatching { submitPromptOnce(request) }
+            val error = outcome.exceptionOrNull()
+            if (error == null) return@withContext outcome.getOrThrow()
+            if (error is CancellationException) throw error
+            if (attempt >= 2 || !isGatewayRejection(error)) throw error
+            AppLogger.warn(
+                "提交生成被网关拒绝（${error.message}），刷新登录 Cookie 后重试一次",
+                error,
+            )
+            runCatching { refreshAuthCookie?.invoke() }
+                .onFailure { AppLogger.warn("刷新登录 Cookie 失败，仍按原 Cookie 重试", it) }
+            delay(GATEWAY_RETRY_DELAY_MS)
+        }
+        @Suppress("UNREACHABLE_CODE")
+        throw IllegalStateException("提交生成未返回结果")
+    }
+
+    /** 单次提交：发送请求并解析响应。所有"这次请求结果如何"的判断都在这里。 */
+    private fun submitPromptOnce(request: Request): QueueResponse {
         client.newCall(request).execute().use { httpResponse ->
             val responseBody = httpResponse.body?.string().orEmpty()
             // v0.1.78：失败响应允许正文不是 JSON（代理经常回整页 HTML），顶个空对象
@@ -372,16 +412,31 @@ class ComfyClient {
                 JSONObject()
             }
             if (!httpResponse.isSuccessful) {
+                // 把响应体压成一行记进日志。以前这条路径什么都不记，于是 403 到底是什么
+                // 原因（网关拒绝？登录墙？限流？）在日志里无从查证——这次的"403"排查
+                // 就被卡在这一点上。
+                AppLogger.warn(
+                    "提交生成失败：HTTP ${httpResponse.code} ${PlatformResponseGuard.describe(httpResponse.code, responseBody)}",
+                )
                 val error = response.optJSONObject("error")
-                val message = when (error?.optString("type")) {
-                    "prompt_outputs_failed_validation" -> "部分部件参数校验失败，请查看标红的部件"
-                    "prompt_no_outputs" -> "当前工作流没有可执行的输出节点"
-                    "invalid_prompt" -> "生成参数格式无效"
+                // 正文不是 JSON（网关把请求挡在门外，没走到 ComfyUI 的 JSON 错误体）+ 状态码
+                // 属于网关拒绝类：判为"网关拒绝"而非"参数校验失败"。
+                val bodyIsJson = responseBody.trimStart().startsWith("{")
+                val gatewayRejected = !bodyIsJson && httpResponse.code in GATEWAY_REJECT_CODES
+                val message = when {
+                    error?.optString("type") == "prompt_outputs_failed_validation" -> "部分部件参数校验失败，请查看标红的部件"
+                    error?.optString("type") == "prompt_no_outputs" -> "当前工作流没有可执行的输出节点"
+                    error?.optString("type") == "invalid_prompt" -> "生成参数格式无效"
+                    gatewayRejected -> "反代网关拒绝了提交请求（HTTP ${httpResponse.code}），可能是登录态失效或网关限流，正在自动重试"
                     else -> error?.optString("message").takeUnless { it.isNullOrBlank() }
                         ?.let { "服务器校验失败：$it" }
                         ?: "服务器拒绝了生成参数（HTTP ${httpResponse.code}）"
                 }
-                throw PromptSubmissionException(message, parseNodeProblems(response.optJSONObject("node_errors")))
+                throw PromptSubmissionException(
+                    message,
+                    parseNodeProblems(response.optJSONObject("node_errors")),
+                    httpCode = httpResponse.code,
+                )
             }
             // v0.1.78：同样别让它退化成 "No value for prompt_id"——说清楚服务器回了什么。
             val promptId = response.optString("prompt_id")
@@ -390,13 +445,21 @@ class ComfyClient {
                     "服务器没有返回任务编号，无法跟踪进度（${PlatformResponseGuard.describe(httpResponse.code, responseBody)}）",
                 )
             }
-            QueueResponse(
+            return QueueResponse(
                 promptId = promptId,
                 number = response.optInt("number"),
                 nodeErrors = response.optJSONObject("node_errors"),
             )
         }
     }
+
+    /**
+     * 这次失败是不是"反代网关拒绝"（可以刷新 Cookie 重试），而不是 ComfyUI 的参数校验失败。
+     *
+     * 判据：状态码属于网关拒绝类。ComfyUI 的参数校验失败是 400，不在其中。
+     */
+    private fun isGatewayRejection(error: Throwable): Boolean =
+        error is PromptSubmissionException && error.httpCode in GATEWAY_REJECT_CODES
 
     suspend fun upload(
         filename: String,
@@ -730,10 +793,26 @@ class ComfyClient {
         const val PROBE_ATTEMPTS = 3
         /** 两次探测之间的等待，下标 0 对应第 2 次尝试前的等待。 */
         val PROBE_RETRY_DELAYS_MS = longArrayOf(1_500L, 3_000L)
+        /**
+         * **反代网关拒绝**两次提交之间的等待。
+         *
+         * 真机现象（2026-09-24 21:18~21:31）：同一工作流、同一参数连续提交，
+         * 有时成功（~800ms）有时 403（~140ms 就被挡回）。403 不是 ComfyUI 的参数校验
+         * 失败（那会返回 400 + JSON），而是百度 api_serving 网关的会话/限流拒绝——
+         * 它连后端都没碰。先刷新一次 Cookie、稍微等一下再试，能吃掉这个瞬时窗口。
+         */
+        const val GATEWAY_RETRY_DELAY_MS = 1_200L
         /** 下载时嗅探响应开头的字节数：够看清是不是网页，又不会把整张大图读进内存。 */
         const val SNIFF_BYTES = 2048L
         /** 主动关闭 WebSocket 用的状态码与原因，onClosed 靠它认出"这是自己关的"。 */
         const val NORMAL_CLOSURE = 1000
         const val CLOSE_REASON = "switch server"
+        /**
+         * 反代网关"拒绝提交"时会回的状态码。
+         *
+         * 401/403：会话/登录态被网关拒；429：限流；5xx：网关或后端瞬时故障。
+         * 这些情况下请求根本没到 ComfyUI，刷新 Cookie 后重试是安全的（不会重复入队）。
+         */
+        val GATEWAY_REJECT_CODES = setOf(401, 403, 429, 500, 502, 503, 504)
     }
 }

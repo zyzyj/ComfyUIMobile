@@ -415,6 +415,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     /**
+     * 重新取一次项目级 Cookie 并刷新给 ComfyUI 客户端（供网关拒绝时重试前调用）。
+     *
+     * 项目级 Cookie（`ide-proxy`、`user-{uid}-{pid}`）是会轮换的，而客户端里那份只在
+     * 连接那一刻设过（见 connect）；之后终端重连拿到了新值，却没同步给 HTTP 客户端。
+     * 网关间发的 403 有可能就在这个轮换窗口里。
+     */
+    private suspend fun refreshComfyAuthCookie() {
+        val configured = _state.value.serverCookie
+        val cookie = if (isAiStudioServingAddress(client.serverUrl())) {
+            AiStudioProtocol.mergeCookies(configured, kernelClient.exportCookies())
+        } else {
+            configured
+        }
+        if (cookie.isBlank()) return
+        client.setAuthCookie(cookie)
+        bridge?.setAuthCookie(cookie)
+        AuthCookieProvider.current = cookie
+        if (cookie != configured) {
+            _state.update { it.copy(serverCookie = cookie) }
+            val profile = _state.value.activeServer
+            if (profile != null) {
+                runCatching { preferences.saveServer(profile.copy(cookie = cookie)) }
+                    .onFailure { AppLogger.warn("新 Cookie 落盘失败（本次会话仍有效）", it) }
+            }
+        }
+    }
+
+    /**
      * 连接运行中项目暴露的 ComfyUI（`{baseUrl}api_serving/8188`）。
      *
      * 这个地址是平台的反向代理，必须带齐平台登录 Cookie（含项目级 `ide-proxy`），
@@ -827,6 +855,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onOpen = {
                 terminalManualClose = false
                 AppLogger.info("控制台：终端已连接 $name")
+                // 终端连上意味着刚刚做过一次真实项目请求，CookieJar 里的项目级 Cookie
+                // （ide-proxy、user-{uid}-{pid}）已是最新。项目级 Cookie 会轮换，而
+                // ComfyUI 客户端里那份只在连接那一刻设过——跟新一下，减少网关 403 的窗口。
+                viewModelScope.launch { runCatching { refreshComfyAuthCookie() } }
                 _state.update {
                     it.copy(
                         aiStudio = it.aiStudio.copy(
@@ -2363,6 +2395,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         clientId,
                         workflowPath,
                         workflowName,
+                        refreshAuthCookie = { refreshComfyAuthCookie() },
                     )
                 } catch (error: PromptSubmissionException) {
                     _state.update { it.copy(nodeProblems = error.nodeProblems) }
@@ -2733,6 +2766,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             clientId,
             run.workflowPath,
             run.workflowName,
+            refreshAuthCookie = { refreshComfyAuthCookie() },
         )
         awaitingQueueJobIds.add(response.promptId)
         submittedAt[response.promptId] = System.currentTimeMillis()
@@ -2814,6 +2848,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         clientId,
                         workflow.entry.path,
                         workflow.entry.name,
+                        refreshAuthCookie = { refreshComfyAuthCookie() },
                     )
                 } catch (error: PromptSubmissionException) {
                     _state.update { it.copy(nodeProblems = error.nodeProblems) }
