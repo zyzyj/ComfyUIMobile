@@ -16,6 +16,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -164,6 +167,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.ripple
 import androidx.compose.material3.Text
@@ -576,7 +580,13 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                 title = {
                     when (page) {
                         MainPage.ACCOUNT -> Text("账号", style = MaterialTheme.typography.titleMedium)
-                        MainPage.CONSOLE -> Text("控制台", style = MaterialTheme.typography.titleMedium)
+                        MainPage.CONSOLE -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("控制台", style = MaterialTheme.typography.titleMedium)
+                            // ComfyUI 服务入口收成一个圆形电脑图标，紧跟在标题旁边：
+                            // 点击向右展开出现连接/断开按钮（自动连接没连上时的备用方案，
+                            // 用户明确要求把它从底部卡片挪到这里）。
+                            ComfyServiceChip(state, viewModel)
+                        }
                         else -> Column {
                             Text(state.activeServer?.name.orEmpty(), style = MaterialTheme.typography.titleMedium)
                             Text(
@@ -3481,8 +3491,32 @@ private fun SettingsToggleRow(
             )
         }
         Spacer(Modifier.width(12.dp))
-        Switch(checked, onCheckedChange)
+        AppSwitch(checked, onCheckedChange)
     }
+}
+
+/**
+ * 统一样式的开关。
+ *
+ * M3 默认的 off 态轨道色是 surfaceVariant（本项目亮色下 0xFFEEF0F4），铺在白玻璃卡上
+ * 几乎看不见，圆点也没有边界——用户反馈「未开启状态不好看」。这里：
+ *  - off 轨道用更深的 outlineVariant，圆点给白色并加一点描边，两个状态下都有轮廓；
+ *  - on 轨道用主题强调色（而非默认值），与 App 其他选中态一致。
+ */
+@Composable
+private fun AppSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Switch(
+        checked = checked,
+        onCheckedChange = onCheckedChange,
+        colors = SwitchDefaults.colors(
+            checkedThumbColor = Color.White,
+            checkedTrackColor = MaterialTheme.colorScheme.primary,
+            checkedBorderColor = MaterialTheme.colorScheme.primary,
+            uncheckedThumbColor = MaterialTheme.colorScheme.surface,
+            uncheckedTrackColor = MaterialTheme.colorScheme.outlineVariant,
+            uncheckedBorderColor = MaterialTheme.colorScheme.outline,
+        ),
+    )
 }
 
 @Composable
@@ -3685,7 +3719,7 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
-                                Switch(rule.enabled, { viewModel.setCacheRuleEnabled(rule, it) })
+                                AppSwitch(rule.enabled) { viewModel.setCacheRuleEnabled(rule, it) }
                                 IconButton(onClick = { viewModel.removeCacheRule(rule) }) {
                                     Icon(Icons.Outlined.Delete, "删除白名单")
                                 }
@@ -4500,6 +4534,95 @@ private fun RawResponseCard(raw: String, context: Context) {
 
 // ===================== 控制台页 =====================
 
+/**
+ * 顶栏里的 ComfyUI 服务入口：一个圆形电脑图标，点击**向右展开**出现连接/断开按钮。
+ *
+ * 放在「控制台」标题旁而不是底部单独一张卡：底部那张卡占一大块面积，却常年只用来看
+ * 一个状态。收成图标后它就是个**备用入口**——自动连接没连上时，点一下图标、再点「连接」
+ * 手动重试。
+ */
+@Composable
+private fun ComfyServiceChip(state: AppUiState, viewModel: MainViewModel) {
+    val panel = state.aiStudio
+    val comfyUrl = panel.comfyUiUrl
+    val comfyConnected = comfyUrl != null &&
+        state.status == ConnectionStatus.CONNECTED &&
+        state.activeServer?.baseUrl?.let { LanAddress.sameServer(it, comfyUrl) } == true
+    val connecting = state.status == ConnectionStatus.CONNECTING && state.activeServer == null
+    // 展开态是瞬时 UI 状态；每次进入控制台都是新的，默认收起。
+    var expanded by remember { mutableStateOf(false) }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .padding(start = 10.dp)
+                .size(32.dp)
+                .clip(CircleShape)
+                .background(
+                    when {
+                        comfyConnected -> MaterialTheme.colorScheme.primaryContainer
+                        connecting -> MaterialTheme.colorScheme.secondaryContainer
+                        else -> MaterialTheme.colorScheme.surfaceVariant
+                    },
+                )
+                .clickable(enabled = comfyUrl != null && !connecting) { expanded = !expanded },
+            contentAlignment = Alignment.Center,
+        ) {
+            if (connecting) {
+                CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp)
+            } else {
+                Icon(
+                    Icons.Outlined.Computer,
+                    if (comfyConnected) "ComfyUI 已连接" else "ComfyUI 服务",
+                    Modifier.size(17.dp),
+                    tint = when {
+                        comfyConnected -> MaterialTheme.colorScheme.primary
+                        comfyUrl != null -> MaterialTheme.colorScheme.onSurfaceVariant
+                        else -> MaterialTheme.colorScheme.outline
+                    },
+                )
+            }
+        }
+        // 向右展开：先现出状态文字，再是操作按钮。用 expandHorizontally 而不是直接
+        // 显隐，是因为它从图标边缘"长出来"，比突然冒出的按钮自然。
+        AnimatedVisibility(
+            visible = expanded && comfyUrl != null,
+            enter = expandHorizontally() + fadeIn(),
+            exit = shrinkHorizontally() + fadeOut(),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(start = 8.dp),
+            ) {
+                Text(
+                    if (comfyConnected) "已连接" else "未连接",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (comfyConnected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (comfyConnected) {
+                    OutlinedButton(
+                        onClick = { viewModel.disconnect() },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp),
+                    ) { Text("断开", style = MaterialTheme.typography.labelMedium) }
+                } else {
+                    Button(
+                        onClick = {
+                            // 走 aiStudioRefreshComfyUi 而不是直接 connect：它会先重置
+                            // autoConnectAttempted 再探测。这才是真正的「重试」——自动连接
+                            // 失败后光调 connect 不会让后续自动连接再有机会。
+                            viewModel.aiStudioRefreshComfyUi()
+                            expanded = false
+                        },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp),
+                    ) { Text("连接", style = MaterialTheme.typography.labelMedium) }
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
@@ -4518,11 +4641,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
         }
     }
 
-    // ComfyUI 是否就是当前连着的这台服务器。
-    val comfyUrl = panel.comfyUiUrl
-    val comfyConnected = comfyUrl != null &&
-        state.status == ConnectionStatus.CONNECTED &&
-        state.activeServer?.baseUrl?.let { LanAddress.sameServer(it, comfyUrl) } == true
+    // ComfyUI 服务入口已上移到标题栏（见 ComfyServiceChip），这里不再需要。
 
     Column(
         modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
@@ -4810,84 +4929,6 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
             }
         }
 
-        // ========== ComfyUI 服务 ==========
-        // 只关心「云端那个 ComfyUI 服务起来没、连上没」——比之前那张混着
-        // 探测/连接/断开三个按钮的卡片清楚。
-        if (comfyUrl != null) {
-            GlassCard(modifier = Modifier.fillMaxWidth(), strong = comfyConnected) {
-                Row(
-                    modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Box(
-                        Modifier
-                            .size(30.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (comfyConnected) MaterialTheme.colorScheme.primaryContainer
-                                else MaterialTheme.colorScheme.surfaceVariant,
-                            ),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Outlined.Computer,
-                            null,
-                            Modifier.size(17.dp),
-                            tint = if (comfyConnected) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Column(Modifier.weight(1f)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            if (state.status == ConnectionStatus.CONNECTING && state.activeServer == null) {
-                                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
-                            }
-                            Text(
-                                when {
-                                    comfyConnected -> "ComfyUI 已连接"
-                                    state.status == ConnectionStatus.CONNECTING -> "正在连接…"
-                                    else -> "ComfyUI 服务待连接"
-                                },
-                                style = MaterialTheme.typography.titleSmall,
-                            )
-                        }
-                        Text(
-                            comfyUrl,
-                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    if (comfyConnected) {
-                        OutlinedButton(
-                            onClick = { viewModel.disconnect() },
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                        ) { Text("断开") }
-                    } else {
-                        // 主操作是「连接」；「探测」是从「不知道起没起」到「知道」的
-                        // 中间步骤，收成文字按钮，别和连接并列抢注意力。
-                        TextButton(onClick = { viewModel.aiStudioRefreshComfyUi() }) { Text("探测") }
-                        Button(
-                            onClick = { viewModel.connectAiStudioComfyUi(comfyUrl) },
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
-                        ) { Text("连接") }
-                    }
-                }
-            }
-        }
-
-        panel.message?.let { msg ->
-            Text(
-                msg,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
-            )
-        }
         panel.error?.let { err ->
             Text(
                 err,

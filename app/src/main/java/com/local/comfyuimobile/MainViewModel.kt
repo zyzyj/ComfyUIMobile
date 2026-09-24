@@ -1572,6 +1572,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         systemStats = stats,
                         bridgeReady = true,
                         loading = false,
+                        // 连上后把 ComfyUI 那张卡的提示语（如「检测到 ComfyUI 启动，
+                        // 正在自动连接…」「正在探测 ComfyUI…」）清掉。以前不清，
+                        // 于是已经连上了底部还挂着「正在自动连接…」（用户反馈）。
+                        aiStudio = it.aiStudio.copy(message = null),
                         selectedWorkflow = sameServerDocument,
                         fields = sameServerDocument?.fields.orEmpty(),
                         workflowDraftConflictRequired = if (sameServerDocument == null) false else it.workflowDraftConflictRequired,
