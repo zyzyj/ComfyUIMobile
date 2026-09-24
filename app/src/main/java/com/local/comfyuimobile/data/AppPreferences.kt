@@ -25,6 +25,8 @@ data class StoredSettings(
     val submittedJobs: Set<String> = emptySet(),
     val autoSaveResults: Boolean = true,
     val localDraftsEnabled: Boolean = false,
+    /** 每日自动签到 + 领算力（默认开：不自动就断签）。 */
+    val autoDailyTasks: Boolean = true,
     val lastUpdateCheck: Long = 0L,
     val recentWorkflows: List<String> = emptyList(),
     val cacheOutputRules: List<CacheOutputRule> = emptyList(),
@@ -47,6 +49,7 @@ class AppPreferences(private val context: Context) {
         val submittedJobs = stringPreferencesKey("submitted_jobs")
         val autoSaveResults = booleanPreferencesKey("auto_save_results")
         val localDraftsEnabled = booleanPreferencesKey("local_drafts_enabled")
+        val autoDailyTasks = booleanPreferencesKey("auto_daily_tasks")
         val lastUpdateCheck = longPreferencesKey("last_update_check")
         val recentWorkflow = stringPreferencesKey("recent_workflow")
         val recentWorkflows = stringPreferencesKey("recent_workflows")
@@ -68,6 +71,7 @@ class AppPreferences(private val context: Context) {
             submittedJobs = decodeStrings(preferences[Keys.submittedJobs].orEmpty()).toSet(),
             autoSaveResults = preferences[Keys.autoSaveResults] ?: true,
             localDraftsEnabled = preferences[Keys.localDraftsEnabled] ?: false,
+            autoDailyTasks = preferences[Keys.autoDailyTasks] ?: true,
             lastUpdateCheck = preferences[Keys.lastUpdateCheck] ?: 0L,
             recentWorkflows = decodeStrings(preferences[Keys.recentWorkflows].orEmpty())
                 .ifEmpty { listOfNotNull(preferences[Keys.recentWorkflow]?.takeIf(String::isNotBlank)) }
@@ -114,6 +118,10 @@ class AppPreferences(private val context: Context) {
 
     suspend fun setLocalDraftsEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.localDraftsEnabled] = enabled }
+    }
+
+    suspend fun setAutoDailyTasks(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.autoDailyTasks] = enabled }
     }
 
     suspend fun setLastUpdateCheck(timestamp: Long) {

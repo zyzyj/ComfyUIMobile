@@ -238,6 +238,8 @@ data class AppUiState(
     val submittedJobIds: Set<String> = emptySet(),
     val autoSaveResults: Boolean = false,
     val localDraftsEnabled: Boolean = false,
+    /** 每日自动签到 + 领算力。 */
+    val autoDailyTasks: Boolean = true,
     val loggingEnabled: Boolean = false,
     val loading: Boolean = false,
     val scanning: Boolean = false,
