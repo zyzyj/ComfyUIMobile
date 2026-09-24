@@ -3773,7 +3773,6 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
     )
-    )
 }
 
 @Composable
