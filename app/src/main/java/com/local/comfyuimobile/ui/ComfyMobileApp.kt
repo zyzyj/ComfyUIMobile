@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.graphics.drawable.ColorDrawable
+import android.os.Build
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Toast
@@ -2209,6 +2210,13 @@ private fun ImageGalleryViewer(
         SideEffect {
             dialogWindow?.apply {
                 addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN)
+                // WMS 侧的同一约束的另一张皮：窗口默认 fitInsetsTypes = 系统栏 +
+                // 刘海区，WMS 会把窗口框压进系统栏内。setDecorFitsSystemWindows(false)
+                // 理论上会清零它，但不同 ROM 行为不一（MIUI 上已被实测坑过），这里
+                // 显式清零，双保险。仅 API 30+ 有此字段。
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    attributes = attributes.also { it.fitInsetsTypes = 0 }
+                }
                 setLayout(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
