@@ -57,6 +57,8 @@ private val LightScheme = lightColorScheme(
     onTertiaryContainer = Color(0xFF242B38),
     background = Paper,
     onBackground = Ink,
+    // surface 保持不透明：它还被对话框、菜单等不需要玻璃感的组件用着。
+    // 真正要透出极光的地方（Scaffold 容器、顶/底栏）已在调用处单独设为半透明。
     surface = CardLight,
     onSurface = Ink,
     surfaceVariant = Color(0xFFEEF0F4),

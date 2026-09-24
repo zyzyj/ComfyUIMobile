@@ -15,6 +15,15 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -39,6 +48,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -149,9 +159,11 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
+import androidx.compose.material3.ripple
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -321,7 +333,11 @@ fun ComfyMobileApp(viewModel: MainViewModel, bridge: ComfyBridge) {
         // v0.1.90：不再以「有没有连上服务器」决定进哪个页面。以前未连接就只能停在
         // 连接页，账号与控制台这类功能全被挡住。现在有服务器地址就走完整界面，
         // 连接表单收进账号页的可展开卡片里。
-        ConnectedApp(state, viewModel, snackbar)
+        //
+        // 液态玻璃改造：极光渐变底铺在最下，上面所有玻璃面板透出它才有"玻璃感"。
+        AuroraBackground {
+            ConnectedApp(state, viewModel, snackbar)
+        }
         // v0.1.88：AI 提示词助手挂在最外层，参数页和快捷页都能弹出来。
         if (state.aiAssistTarget != null) AiAssistDialog(state, viewModel)
         key(bridge.webView) {
@@ -354,8 +370,17 @@ fun ComfyMobileApp(viewModel: MainViewModel, bridge: ComfyBridge) {
 private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar: SnackbarHostState) {
     var settings by remember { mutableStateOf(false) }
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
+            // 顶栏用半透明玻璃：下面滚过的内容隐约透出来，是液态玻璃最直观的特征。
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = if (isSystemInDarkTheme()) {
+                        Color(0xFF14181E).copy(alpha = 0.62f)
+                    } else {
+                        Color.White.copy(alpha = 0.55f)
+                    },
+                ),
                 title = {},
                 actions = {
                     IconButton(onClick = { settings = true }) {
@@ -582,7 +607,12 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
         },
         bottomBar = {
             NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface,
+                // 底部栏同样半透明玻璃，并与顶栏呼应。
+                containerColor = if (isSystemInDarkTheme()) {
+                    Color(0xFF14181E).copy(alpha = 0.68f)
+                } else {
+                    Color.White.copy(alpha = 0.62f)
+                },
                 tonalElevation = 0.dp,
             ) {
                 MainPage.bottomBarEntries.forEach { target ->
@@ -608,26 +638,47 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
-            when (page) {
-                MainPage.ACCOUNT -> AccountScreen(state, viewModel)
-                MainPage.CONSOLE -> ConsoleScreen(state, viewModel)
-                MainPage.WORKFLOWS -> WorkflowScreen(state, viewModel, onOpenParameters = { page = MainPage.PARAMETERS })
-                MainPage.PARAMETERS -> ParameterScreen(state, viewModel)
-                MainPage.RESULTS -> ResultScreen(
-                    state = state,
-                    viewModel = viewModel,
-                    source = resultSource,
-                    onSourceChange = {
-                        resultSource = it
-                        resultAlbumId = null
-                    },
-                    layout = resultLayout,
-                    onLayoutChange = { resultLayout = it },
-                    selectedAlbumId = resultAlbumId,
-                    onSelectedAlbumChange = { resultAlbumId = it },
-                )
-                MainPage.TASKS -> TaskScreen(state, viewModel)
-                MainPage.QUICK -> QuickGenScreen(state, viewModel)
+            // 页面切换过渡：淡入 + 微上浮（180ms）。比直接硬切更有"换了页"的
+            // 空间感，又不至于慢到拖着不过去。用 AnimatedContent 而不是 Crossfade，
+            // 因为前者还能拿到进出方向做位移。
+            AnimatedContent(
+                targetState = page,
+                transitionSpec = {
+                    val forward = targetState.ordinal > initialState.ordinal
+                    (fadeIn(tween(200, easing = FastOutSlowInEasing)) +
+                        slideInVertically(tween(220, easing = FastOutSlowInEasing)) { h ->
+                            (if (forward) h else -h) / 14
+                        })
+                        .togetherWith(
+                            fadeOut(tween(120)) +
+                                slideOutVertically(tween(180, easing = FastOutSlowInEasing)) { h ->
+                                    (if (forward) -h else h) / 14
+                                },
+                        )
+                },
+                label = "page",
+            ) { targetPage ->
+                when (targetPage) {
+                    MainPage.ACCOUNT -> AccountScreen(state, viewModel)
+                    MainPage.CONSOLE -> ConsoleScreen(state, viewModel)
+                    MainPage.WORKFLOWS -> WorkflowScreen(state, viewModel, onOpenParameters = { page = MainPage.PARAMETERS })
+                    MainPage.PARAMETERS -> ParameterScreen(state, viewModel)
+                    MainPage.RESULTS -> ResultScreen(
+                        state = state,
+                        viewModel = viewModel,
+                        source = resultSource,
+                        onSourceChange = {
+                            resultSource = it
+                            resultAlbumId = null
+                        },
+                        layout = resultLayout,
+                        onLayoutChange = { resultLayout = it },
+                        selectedAlbumId = resultAlbumId,
+                        onSelectedAlbumChange = { resultAlbumId = it },
+                    )
+                    MainPage.TASKS -> TaskScreen(state, viewModel)
+                    MainPage.QUICK -> QuickGenScreen(state, viewModel)
+                }
             }
             if (state.loading || state.generating) {
                 // 必须消费掉点击事件，否则遮罩期间的触摸会穿透到底层列表，
@@ -858,30 +909,54 @@ private fun WorkflowRow(
     onDelete: (() -> Unit)? = null,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
-    // 以前用 surfaceVariant 整块填底，在同样偏灰的页面上就是一片灰块堆叠
-    // （截图里一眼看不出层级）。改成：白底 + 淡描边，选中时才用强调色染底。
-    OutlinedCard(
-        modifier = Modifier.fillMaxWidth().combinedClickable(
-            onClick = onClick,
-            onDoubleClick = onDoubleClick,
-            onLongClick = { if (onDelete != null) menuExpanded = true },
-        ),
-        colors = CardDefaults.outlinedCardColors(
-            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
-            else MaterialTheme.colorScheme.surface,
-        ),
-        border = BorderStroke(
-            1.dp,
-            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
-            else MaterialTheme.colorScheme.outlineVariant,
-        ),
+    val interaction = remember { MutableInteractionSource() }
+    var appeared by remember { mutableStateOf(false) }
+    // 列表项入场：逐个淡入 + 轻微上浮，避免整屏卡片"啪"地一次出现。
+    // 只跑一次（appeared 锁住），滚动回来不会再触发。
+    LaunchedEffect(Unit) { appeared = true }
+    val appearAlpha by animateFloatAsState(
+        targetValue = if (appeared) 1f else 0f,
+        animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+        label = "rowAlpha",
+    )
+    val appearShift by animateFloatAsState(
+        targetValue = if (appeared) 0f else 24f,
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+        label = "rowShift",
+    )
+    // 液态玻璃卡：半透明底透出极光渐变，按下时轻微缩小给触感反馈。
+    GlassCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                alpha = appearAlpha
+                translationY = appearShift
+            }
+            .pressScale(interaction)
+            .combinedClickable(
+                interactionSource = interaction,
+                indication = ripple(),
+                onClick = onClick,
+                onDoubleClick = onDoubleClick,
+                onLongClick = { if (onDelete != null) menuExpanded = true },
+            ),
+        strong = true,
     ) {
         Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                if (entry.isDirectory) Icons.Outlined.Folder else Icons.Outlined.FileOpen,
-                null,
-                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Box(
+                Modifier.size(34.dp).clip(CircleShape).background(
+                    if (selected) MaterialTheme.colorScheme.primaryContainer
+                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (entry.isDirectory) Icons.Outlined.Folder else Icons.Outlined.FileOpen,
+                    null,
+                    Modifier.size(19.dp),
+                    tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(entry.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -3961,7 +4036,8 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
 @Composable
 private fun AccountIdentityCard(panel: AiStudioState, onLogin: () -> Unit, onSelectAccount: (String) -> Unit) {
     val account = panel.activeAccount()
-    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+    // 玻璃卡：这是账号页最顶部的身份条，放在极光渐变上最能体现"液态玻璃"。
+    GlassCard(modifier = Modifier.fillMaxWidth(), strong = true) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (account == null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -4032,7 +4108,7 @@ private fun ResourceTile(
     onClick: (() -> Unit)? = null,
 ) {
     val cardModifier = if (onClick != null) modifier.clickable(onClick = onClick) else modifier
-    OutlinedCard(modifier = cardModifier) {
+    GlassCard(modifier = cardModifier) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 Box(
@@ -4063,7 +4139,7 @@ private fun ProjectCard(project: AiStudioProject, panel: AiStudioState, viewMode
     // v0.1.98：整张卡片不再可点。以前 onClick 挂在 OutlinedCard 上，会与
     // 内部按钮抢事件（点「选择 GPU 启动」反而触发卡片展开/收起），这就是
     // “选了也没反应”的根因之一。现在只有按钮可点。
-    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+    GlassCard(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -4344,14 +4420,15 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
 
         // —— ComfyUI：连上终端后平台会给出运行中项目的访问地址 ——
         if (comfyUrl != null) {
-            Surface(
+            GlassCard(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(10.dp),
-                color = if (comfyConnected) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surfaceVariant,
+                strong = comfyConnected,
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier.background(
+                        if (comfyConnected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                        else androidx.compose.ui.graphics.Color.Transparent,
+                    ).padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
