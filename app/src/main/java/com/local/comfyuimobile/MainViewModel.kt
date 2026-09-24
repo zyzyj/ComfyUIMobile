@@ -21,6 +21,7 @@ import com.local.comfyuimobile.bridge.FieldValue
 import com.local.comfyuimobile.bridge.AdvancedEditorSession
 import com.local.comfyuimobile.bridge.WorkflowImageReader
 import com.local.comfyuimobile.data.AppPreferences
+import com.local.comfyuimobile.data.MAX_QUICK_COMMANDS
 import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.data.AuthCookieProvider
 import com.local.comfyuimobile.data.LocalResultCache
@@ -264,6 +265,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         aiStudio = _state.value.aiStudio.copy(
                             accounts = stored.aiStudioAccounts,
                             activeAccountId = stored.aiStudioActiveId.ifBlank { null },
+                            consoleQuickCommands = stored.consoleQuickCommands,
                         ),
                     )
                 }
@@ -913,9 +915,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleDraft = command)) }
     }
 
+    /** 控制台：添加一条自定义快捷命令（去重、封顶）。 */
+    fun aiStudioAddConsoleQuickCommand(command: String) {
+        val trimmed = command.trim()
+        if (trimmed.isBlank()) return
+        val current = _state.value.aiStudio.consoleQuickCommands
+        if (current.contains(trimmed)) return
+        val updated = (current + trimmed).take(MAX_QUICK_COMMANDS)
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleQuickCommands = updated)) }
+        persistConsoleQuickCommands(updated)
+    }
+
+    /** 控制台：删除一条快捷命令。 */
+    fun aiStudioRemoveConsoleQuickCommand(command: String) {
+        val updated = _state.value.aiStudio.consoleQuickCommands.filterNot { it == command }
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleQuickCommands = updated)) }
+        persistConsoleQuickCommands(updated)
+    }
+
+    private fun persistConsoleQuickCommands(commands: List<String>) {
+        viewModelScope.launch {
+            runCatching { preferences.saveConsoleQuickCommands(commands) }
+                .onFailure { AppLogger.error("保存终端快捷命令失败", it) }
+        }
+    }
+
     /** 控制台：用户在输入框里打字。 */
     fun aiStudioUpdateConsoleDraft(value: String) {
         _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleDraft = value)) }
+    }
+
+    /**
+     * 控制台：告知远端终端当前列宽。
+     *
+     * 不报的话 PTY 按默认 80 列排版，窄屏上长行会被远端硬折成两截，是终端
+     * "看着乱"的来源之一（`resize()` 一直存在但全项目无人调用）。
+     */
+    fun aiStudioResizeConsole(cols: Int) {
+        kernelClient.resize(cols, CONSOLE_ROWS)
     }
 
     /**
@@ -5123,6 +5160,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val BATCH_ITEM_TIMEOUT_MS = 20 * 60_000L
         /** 控制台终端最多保留的行数：长时间跑命令（如装依赖）也会刷出成千上万行。 */
         const val TERMINAL_MAX_LINES = 2_000
+        /** 上报给远端 PTY 的行数。列数由界面实测宽度决定（见 aiStudioResizeConsole）。 */
+        const val CONSOLE_ROWS = 40
         /** 控制台终端断线重连退避（毫秒）。最后一次失败后不再自动重试，提示手动重连。 */
         val TERMINAL_RECONNECT_DELAYS_MS = longArrayOf(2_000L, 5_000L, 10_000L, 20_000L)
         /** ComfyUI 启动完成时终端会打印的特征行（命中即尝试自动连接）。 */

@@ -582,6 +582,27 @@ object AiStudioProtocol {
      */
     fun stripAnsi(text: String): String = ANSI_PATTERN.replace(text, "")
 
+    /**
+     * 清洗终端输出：**保留 ANSI 颜色码**，只剔掉其它控制序列。
+     *
+     * 与 [stripAnsi] 的差别：以前把颜色码一并剥掉，于是 `ls --color` 的着色、
+     * 彩色提示符全变成一片白，一屏文字又密又平（用户反馈「终端文字很杂乱」）。
+     * 这里只去「不该显示给人看」的部分——OSC（设标题）、CSI（括号粘贴模式、清行
+     * 等），把 SGR（`ESC[…m`，颜色/加粗）留给界面渲染。
+     */
+    fun sanitizeTerminalOutput(text: String): String {
+        val colored = ANSI_PATTERN.replace(text) { match ->
+            val seq = match.value
+            if (seq.startsWith("\u001B[") && seq.endsWith("m")) seq else ""
+        }
+        // ESC 要留着（它是颜色序列的开头），其余不可见控制字符丢掉。
+        return buildString(colored.length) {
+            colored.forEach { ch ->
+                if (ch == '\n' || ch == '\r' || ch == '\t' || ch == '\u001B' || ch.code >= 32) append(ch)
+            }
+        }
+    }
+
     private val ANSI_PATTERN = Regex(
         // CSI：ESC [ 参数 中间字节 结束字节
         "\u001B\\[[0-9;?]*[ -/]*[@-~]" +
