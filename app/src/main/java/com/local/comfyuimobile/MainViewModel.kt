@@ -2989,8 +2989,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .put("id", UUID.randomUUID().toString())
                     .put("revision", 0)
                     .toString()
+                var storedOnServer = serverStoreAvailable
                 val saved = if (serverStoreAvailable) {
-                    client.writeWorkflow(destination, savedJson, overwrite = false)
+                    // 已知支持云端存储才会走到这里，但并非万无一失：能力标记可能已过期
+                    // （上次成功、这次平台改了策略）。真机证据：AI Studio 的 api_serving
+                    // 对 /userdata 的 POST 回 405，以前这里没有降级，另存直接报错。
+                    // 这里补上与 saveWorkflow 一致的降级。
+                    try {
+                        client.writeWorkflow(destination, savedJson, overwrite = false)
+                    } catch (error: IllegalStateException) {
+                        if (!isUserdataUnavailable(error)) throw error
+                        AppLogger.warn("服务器不支持云端工作流，另存降级为仅本机", error)
+                        storedOnServer = false
+                        WorkflowEntry(
+                            name = fileName,
+                            path = "workflows/$fileName",
+                            isDirectory = false,
+                            size = savedJson.toByteArray().size.toLong(),
+                            modified = System.currentTimeMillis() / 1000.0,
+                        )
+                    }
                 } else {
                     // v0.1.72：不支持云端存储时，"另存为"就是在本机留一份副本——
                     // 快照 + 草稿，下次打开照常用。
@@ -3041,9 +3059,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         // 而 refreshWorkflowsInternal 的失败分支只在"列表原本为空"之外
                         // 才不覆盖——真机上另存后副本就是不出现在列表里。直接把新副本
                         // 并入现有列表，不再依赖一次注定失败的重拉。
-                        workflows = if (serverStoreAvailable) it.workflows
+                        workflows = if (storedOnServer) it.workflows
                         else (it.workflows.filterNot { entry -> entry.path == saved.path } + saved),
-                        notice = if (serverStoreAvailable) "已另存为 $fileName" else "已另存到本机 $fileName（此服务器不支持云端存储）",
+                        notice = if (storedOnServer) "已另存为 $fileName" else "已另存到本机 $fileName（此服务器不支持云端存储）",
                     )
                 }
                 refreshWorkflowsInternal()

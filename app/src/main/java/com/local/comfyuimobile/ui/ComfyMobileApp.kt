@@ -16,9 +16,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandHorizontally
-import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -71,6 +68,7 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -580,13 +578,7 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                 title = {
                     when (page) {
                         MainPage.ACCOUNT -> Text("账号", style = MaterialTheme.typography.titleMedium)
-                        MainPage.CONSOLE -> Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("控制台", style = MaterialTheme.typography.titleMedium)
-                            // ComfyUI 服务入口收成一个圆形电脑图标，紧跟在标题旁边：
-                            // 点击向右展开出现连接/断开按钮（自动连接没连上时的备用方案，
-                            // 用户明确要求把它从底部卡片挪到这里）。
-                            ComfyServiceChip(state, viewModel)
-                        }
+                        MainPage.CONSOLE -> Text("控制台", style = MaterialTheme.typography.titleMedium)
                         else -> Column {
                             Text(state.activeServer?.name.orEmpty(), style = MaterialTheme.typography.titleMedium)
                             Text(
@@ -623,6 +615,9 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                             )
                         }
                     }
+                    // ComfyUI 服务入口：圆形电脑图标，在设置按钮左边。点在图标下方
+                    // 展开连接/断开按钮（自动连接没连上时的备用方案）。
+                    ComfyServiceChip(state, viewModel)
                     IconButton(onClick = { settings = true }) { Icon(Icons.Outlined.Settings, "设置") }
                 },
             )
@@ -4535,11 +4530,14 @@ private fun RawResponseCard(raw: String, context: Context) {
 // ===================== 控制台页 =====================
 
 /**
- * 顶栏里的 ComfyUI 服务入口：一个圆形电脑图标，点击**向右展开**出现连接/断开按钮。
+ * 顶栏里的 ComfyUI 服务入口：一个圆形电脑图标（在「设置」左边），点击在图标**下方展开**
+ * 一个小面板，里面是状态 + 连接/断开按钮；再点图标收回。
  *
- * 放在「控制台」标题旁而不是底部单独一张卡：底部那张卡占一大块面积，却常年只用来看
- * 一个状态。收成图标后它就是个**备用入口**——自动连接没连上时，点一下图标、再点「连接」
- * 手动重试。
+ * 用 DropdownMenu 而不是 AnimatedVisibility：它是系统的弹出层，不会被 TopAppBar 裁剪，
+ * 自带「点外部关闭」「跟随锚点定位」这些行为，正是"向下展开"要的效果。
+ *
+ * 为什么它值得存在：自动连接有可能失败（WS 被反代抬断、探测时机太早等）。以前
+ * 底部有一整张卡片守着这个备用入口，现在收成图标，不再占页面面积。
  */
 @Composable
 private fun ComfyServiceChip(state: AppUiState, viewModel: MainViewModel) {
@@ -4549,63 +4547,83 @@ private fun ComfyServiceChip(state: AppUiState, viewModel: MainViewModel) {
         state.status == ConnectionStatus.CONNECTED &&
         state.activeServer?.baseUrl?.let { LanAddress.sameServer(it, comfyUrl) } == true
     val connecting = state.status == ConnectionStatus.CONNECTING && state.activeServer == null
-    // 展开态是瞬时 UI 状态；每次进入控制台都是新的，默认收起。
     var expanded by remember { mutableStateOf(false) }
 
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Box {
         Box(
             modifier = Modifier
-                .padding(start = 10.dp)
-                .size(32.dp)
+                .padding(end = 4.dp)
+                .size(40.dp)
                 .clip(CircleShape)
-                .background(
-                    when {
-                        comfyConnected -> MaterialTheme.colorScheme.primaryContainer
-                        connecting -> MaterialTheme.colorScheme.secondaryContainer
-                        else -> MaterialTheme.colorScheme.surfaceVariant
-                    },
-                )
                 .clickable(enabled = comfyUrl != null && !connecting) { expanded = !expanded },
             contentAlignment = Alignment.Center,
         ) {
-            if (connecting) {
-                CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp)
-            } else {
-                Icon(
-                    Icons.Outlined.Computer,
-                    if (comfyConnected) "ComfyUI 已连接" else "ComfyUI 服务",
-                    Modifier.size(17.dp),
-                    tint = when {
-                        comfyConnected -> MaterialTheme.colorScheme.primary
-                        comfyUrl != null -> MaterialTheme.colorScheme.onSurfaceVariant
-                        else -> MaterialTheme.colorScheme.outline
-                    },
-                )
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(
+                        when {
+                            comfyConnected -> MaterialTheme.colorScheme.primaryContainer
+                            connecting -> MaterialTheme.colorScheme.secondaryContainer
+                            else -> MaterialTheme.colorScheme.surfaceVariant
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (connecting) {
+                    CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(
+                        Icons.Outlined.Computer,
+                        if (comfyConnected) "ComfyUI 已连接" else "ComfyUI 服务",
+                        Modifier.size(17.dp),
+                        tint = when {
+                            comfyConnected -> MaterialTheme.colorScheme.primary
+                            comfyUrl != null -> MaterialTheme.colorScheme.onSurfaceVariant
+                            else -> MaterialTheme.colorScheme.outline
+                        },
+                    )
+                }
             }
         }
-        // 向右展开：先现出状态文字，再是操作按钮。用 expandHorizontally 而不是直接
-        // 显隐，是因为它从图标边缘"长出来"，比突然冒出的按钮自然。
-        AnimatedVisibility(
-            visible = expanded && comfyUrl != null,
-            enter = expandHorizontally() + fadeIn(),
-            exit = shrinkHorizontally() + fadeOut(),
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.padding(start = 8.dp),
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            Column(
+                Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Box(
+                        Modifier.size(8.dp).clip(CircleShape).background(
+                            if (comfyConnected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outline,
+                        ),
+                    )
+                    Text(
+                        if (comfyConnected) "ComfyUI 已连接" else "ComfyUI 未连接",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
                 Text(
-                    if (comfyConnected) "已连接" else "未连接",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (comfyConnected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    comfyUrl ?: "终端连上后才会得到服务地址",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 220.dp),
                 )
+                Spacer(Modifier.height(6.dp))
                 if (comfyConnected) {
                     OutlinedButton(
-                        onClick = { viewModel.disconnect() },
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp),
-                    ) { Text("断开", style = MaterialTheme.typography.labelMedium) }
+                        onClick = {
+                            viewModel.disconnect()
+                            expanded = false
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("断开") }
                 } else {
                     Button(
                         onClick = {
@@ -4615,8 +4633,9 @@ private fun ComfyServiceChip(state: AppUiState, viewModel: MainViewModel) {
                             viewModel.aiStudioRefreshComfyUi()
                             expanded = false
                         },
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp),
-                    ) { Text("连接", style = MaterialTheme.typography.labelMedium) }
+                        enabled = comfyUrl != null,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("连接") }
                 }
             }
         }
@@ -4643,287 +4662,294 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
 
     // ComfyUI 服务入口已上移到标题栏（见 ComfyServiceChip），这里不再需要。
 
-    Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        // ========== 终端窗 ==========
-        // 把「状态、操作、输出、输入」收进同一个窗里：标题栏是状态与操作，
-        // 中间是输出，底部内嵌输入行。以前这四件事是四个独立区块往下堆，
-        // 看起来像五个不相干的东西摞在一起。
-        GlassCard(modifier = Modifier.fillMaxWidth().weight(1f), strong = true) {
-            Column(Modifier.fillMaxSize()) {
-                // —— 标题栏：状态点 + 状态 + 操作 ——
-                // ⚠️ 「连接/断开」必须常驻：上一版重做时只留了中斡/清屏/复制三个图标，
-                // 把连接入口弄丢了（用户截图里找不到按钮）。且它是主操作，给实心按钮
-                // 而不是图标——未连接时右上角一眼就能看到「连接」。
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+    Column(Modifier.fillMaxSize()) {
+        // ========== 终端（铺满顶栏与底栏之间的整个中间区域）==========
+        // 不再用玻璃卡包起来：用户希望中间区域全交给终端。标题栏（状态+操作）
+        // 与输入行直接贴在深色终端底上，整页就是一块终端。
+        //
+        // 标题栏：状态点 + 状态 + 操作。
+        // ⚠️ 「连接/断开」必须常驻：以前重做时只留了中断/清屏/复制三个图标，
+        // 把连接入口弄丢了（用户截图里找不到按钮）。
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(TerminalBg)
+                .padding(start = 14.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Box(
+                Modifier.size(9.dp).clip(CircleShape).background(
+                    when {
+                        panel.consoleBusy -> MaterialTheme.colorScheme.tertiary
+                        panel.consoleConnected -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.outline,
+                    },
+                ),
+            )
+            Column(Modifier.weight(1f)) {
+                Text("终端", style = MaterialTheme.typography.titleSmall, color = TerminalText)
+                Text(
+                    when {
+                        panel.consoleBusy -> "正在连接…"
+                        panel.consoleConnected -> "已连接 · 项目环境"
+                        else -> "未连接",
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TerminalText.copy(alpha = 0.6f),
+                )
+            }
+            if (panel.consoleBusy) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            }
+            // 已连接时的次要操作：中断（Ctrl+C）/ 清屏 / 复制。
+            if (panel.consoleConnected) {
+                IconButton(onClick = { viewModel.aiStudioInterruptConsole() }) {
+                    Icon(Icons.Outlined.Warning, "中断当前命令", Modifier.size(20.dp), tint = TerminalText)
+                }
+            }
+            IconButton(
+                onClick = { viewModel.aiStudioClearConsole() },
+                enabled = panel.terminalLines.isNotEmpty(),
+            ) {
+                Icon(
+                    Icons.Outlined.Delete, "清屏", Modifier.size(20.dp),
+                    tint = if (panel.terminalLines.isNotEmpty()) TerminalText
+                    else TerminalText.copy(alpha = 0.35f),
+                )
+            }
+            IconButton(
+                onClick = {
+                    val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                    manager?.setPrimaryClip(ClipData.newPlainText("终端输出", panel.terminalLines.joinToString("\n")))
+                    Toast.makeText(context, "已复制终端内容", Toast.LENGTH_SHORT).show()
+                },
+                enabled = panel.terminalLines.isNotEmpty(),
+            ) {
+                Icon(
+                    Icons.Outlined.ContentCopy, "复制全部输出", Modifier.size(20.dp),
+                    tint = if (panel.terminalLines.isNotEmpty()) TerminalText
+                    else TerminalText.copy(alpha = 0.35f),
+                )
+            }
+            // 主操作：连接 / 断开（一直显示，不可缺）。
+            if (panel.consoleConnected) {
+                OutlinedButton(
+                    onClick = { viewModel.aiStudioDisconnectConsole() },
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                ) { Text("断开") }
+            } else {
+                Button(
+                    onClick = { viewModel.aiStudioConnectConsole() },
+                    enabled = !panel.consoleBusy,
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                ) { Text("连接") }
+            }
+        }
+
+        HorizontalDivider(color = TerminalText.copy(alpha = 0.12f))
+
+        // —— 输出区（深底浅字，等宽；支持 ANSI 着色）——
+        BoxWithConstraints(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .background(TerminalBg),
+        ) {
+            // 把实测列数报给远端 PTY（按等宽字估算），否则它按默认 80 列
+            // 排版，窄屏上长行硬折。
+            val density = LocalDensity.current
+            val cols = remember(maxWidth, density.fontScale) {
+                with(density) {
+                    val charWidthPx = 12.5.sp.toPx() * 0.6f
+                    (maxWidth.toPx() / charWidthPx).toInt().coerceIn(20, 200)
+                }
+            }
+            LaunchedEffect(cols, panel.consoleConnected) {
+                if (panel.consoleConnected) viewModel.aiStudioResizeConsole(cols)
+            }
+            if (panel.terminalLines.isEmpty()) {
+                Column(
+                    Modifier.fillMaxSize().padding(16.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Box(
-                        Modifier.size(9.dp).clip(CircleShape).background(
-                            when {
-                                panel.consoleBusy -> MaterialTheme.colorScheme.tertiary
-                                panel.consoleConnected -> MaterialTheme.colorScheme.primary
-                                else -> MaterialTheme.colorScheme.outline
-                            },
-                        ),
+                    Icon(
+                        Icons.Outlined.PlayArrow,
+                        null,
+                        Modifier.size(30.dp),
+                        tint = TerminalText.copy(alpha = 0.45f),
                     )
-                    Column(Modifier.weight(1f)) {
-                        Text("终端", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        if (panel.consoleConnected) "终端已就绪，在下方输入命令" else "点右上角「连接」启动终端",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TerminalText.copy(alpha = 0.65f),
+                    )
+                }
+            } else {
+                LazyColumn(
+                    state = terminalState,
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
+                ) {
+                    items(panel.terminalLines) { line ->
+                        // 逐行包 SelectionContainer：支持长按选择复制，又不干扰
+                        // LazyColumn 自身的滚动。
+                        SelectionContainer {
+                            Text(
+                                terminalAnnotatedLine(line.ifEmpty { " " }, TerminalText),
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.5.sp,
+                                    lineHeight = 20.sp,
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // —— 内嵌输入行 ——
+        // 底色故意比输出区**略亮**（TerminalInputBg vs TerminalBg）：
+        // 以前输入行与输出区同色，发送按钮又是深色，三者糊成一片，用户
+        // 看不出哪里能打字、按钮在哪。
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(TerminalInputBg)
+                .padding(start = 12.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                "$",
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                ),
+                color = TerminalPrompt,
+            )
+            BasicTextField(
+                value = panel.consoleDraft,
+                onValueChange = viewModel::aiStudioUpdateConsoleDraft,
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                enabled = panel.consoleConnected,
+                textStyle = MaterialTheme.typography.bodySmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    color = TerminalText,
+                ),
+                cursorBrush = SolidColor(TerminalPrompt),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = {
+                    viewModel.aiStudioSendCommand(panel.consoleDraft.trim())
+                }),
+                decorationBox = { inner ->
+                    if (panel.consoleDraft.isEmpty()) {
                         Text(
-                            when {
-                                panel.consoleBusy -> "正在连接…"
-                                panel.consoleConnected -> "已连接 · 项目环境"
-                                else -> "未连接"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            if (panel.consoleConnected) "输入命令" else "先连接终端",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = TerminalText.copy(alpha = 0.4f),
                         )
                     }
-                    if (panel.consoleBusy) {
-                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                    }
-                    // 已连接时的次要操作：中断（Ctrl+C）/ 清屏 / 复制。
-                    if (panel.consoleConnected) {
-                        IconButton(onClick = { viewModel.aiStudioInterruptConsole() }) {
-                            Icon(Icons.Outlined.Warning, "中断当前命令", Modifier.size(20.dp))
-                        }
-                    }
-                    IconButton(
-                        onClick = { viewModel.aiStudioClearConsole() },
-                        enabled = panel.terminalLines.isNotEmpty(),
-                    ) { Icon(Icons.Outlined.Delete, "清屏", Modifier.size(20.dp)) }
-                    IconButton(
-                        onClick = {
-                            val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                            manager?.setPrimaryClip(ClipData.newPlainText("终端输出", panel.terminalLines.joinToString("\n")))
-                            Toast.makeText(context, "已复制终端内容", Toast.LENGTH_SHORT).show()
-                        },
-                        enabled = panel.terminalLines.isNotEmpty(),
-                    ) { Icon(Icons.Outlined.ContentCopy, "复制全部输出", Modifier.size(20.dp)) }
-                    // 主操作：连接 / 断开（一直显示，不可缺）。
-                    if (panel.consoleConnected) {
-                        OutlinedButton(
-                            onClick = { viewModel.aiStudioDisconnectConsole() },
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                        ) { Text("断开") }
-                    } else {
-                        Button(
-                            onClick = { viewModel.aiStudioConnectConsole() },
-                            enabled = !panel.consoleBusy,
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
-                        ) { Text("连接") }
-                    }
-                }
+                    inner()
+                },
+            )
+            // 「展开命令」入口：与发送键并排，点开就是个可增删的命令面板。
+            IconButton(
+                onClick = { commandsExpanded = !commandsExpanded },
+                modifier = Modifier.size(34.dp),
+            ) {
+                Icon(
+                    if (commandsExpanded) Icons.Outlined.ExpandMore else Icons.Outlined.ExpandLess,
+                    "常用命令",
+                    Modifier.size(20.dp),
+                    tint = TerminalText.copy(alpha = 0.85f),
+                )
+            }
+            // 发送键：青绿实心 + 白箭头，在深底上一眼可见。
+            FilledIconButton(
+                onClick = { viewModel.aiStudioSendCommand(panel.consoleDraft.trim()) },
+                enabled = panel.consoleConnected && panel.consoleDraft.isNotBlank(),
+                modifier = Modifier.size(34.dp),
+            ) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "发送", Modifier.size(18.dp)) }
+        }
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-                // —— 输出区（深底浅字，等宽；支持 ANSI 着色）——
-                BoxWithConstraints(
-                    Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .background(TerminalBg),
-                ) {
-                    // 把实测列数报给远端 PTY（按等宽字估算），否则它按默认 80 列
-                    // 排版，窄屏上长行硬折。
-                    val density = LocalDensity.current
-                    val cols = remember(maxWidth, density.fontScale) {
-                        with(density) {
-                            val charWidthPx = 12.5.sp.toPx() * 0.6f
-                            (maxWidth.toPx() / charWidthPx).toInt().coerceIn(20, 200)
-                        }
-                    }
-                    LaunchedEffect(cols, panel.consoleConnected) {
-                        if (panel.consoleConnected) viewModel.aiStudioResizeConsole(cols)
-                    }
-                    if (panel.terminalLines.isEmpty()) {
-                        Column(
-                            Modifier.fillMaxSize().padding(16.dp),
-                            verticalArrangement = Arrangement.Center,
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            Icon(
-                                Icons.Outlined.PlayArrow,
-                                null,
-                                Modifier.size(30.dp),
-                                tint = TerminalText.copy(alpha = 0.45f),
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                if (panel.consoleConnected) "终端已就绪，在下方输入命令" else "点右上角「连接」启动终端",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TerminalText.copy(alpha = 0.65f),
-                            )
-                        }
-                    } else {
-                        LazyColumn(
-                            state = terminalState,
-                            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
-                        ) {
-                            items(panel.terminalLines) { line ->
-                                // 逐行包 SelectionContainer：支持长按选择复制，又不干扰
-                                // LazyColumn 自身的滚动。
-                                SelectionContainer {
-                                    Text(
-                                        terminalAnnotatedLine(line.ifEmpty { " " }, TerminalText),
-                                        style = MaterialTheme.typography.bodySmall.copy(
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 12.5.sp,
-                                            lineHeight = 20.sp,
-                                        ),
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // —— 内嵌输入行 ——
-                // 底色故意比输出区**略亮**（TerminalInputBg vs TerminalBg）：
-                // 以前输入行与输出区同色，发送按钮又是深色，三者糊成一片，用户
-                // 看不出哪里能打字、按钮在哪。
+        // —— 常用命令面板（展开后可点、可删、可加）——
+        if (commandsExpanded) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .background(TerminalInputBg)
+                    .padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(TerminalInputBg)
-                        .padding(start = 12.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
-                        "$",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                        ),
-                        color = TerminalPrompt,
-                    )
-                    BasicTextField(
-                        value = panel.consoleDraft,
-                        onValueChange = viewModel::aiStudioUpdateConsoleDraft,
+                        "常用命令",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TerminalText.copy(alpha = 0.6f),
                         modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        enabled = panel.consoleConnected,
-                        textStyle = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                            color = TerminalText,
-                        ),
-                        cursorBrush = SolidColor(TerminalPrompt),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(onSend = {
-                            viewModel.aiStudioSendCommand(panel.consoleDraft.trim())
-                        }),
-                        decorationBox = { inner ->
-                            if (panel.consoleDraft.isEmpty()) {
-                                Text(
-                                    if (panel.consoleConnected) "输入命令" else "先连接终端",
-                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                    color = TerminalText.copy(alpha = 0.4f),
-                                )
-                            }
-                            inner()
-                        },
                     )
-                    // 「展开命令」入口：与发送键并排，点开就是个可增删的命令面板。
-                    IconButton(
-                        onClick = { commandsExpanded = !commandsExpanded },
-                        modifier = Modifier.size(34.dp),
+                    TextButton(onClick = { addingCommand = !addingCommand }) {
+                        Text(if (addingCommand) "收起" else "添加")
+                    }
+                }
+                if (addingCommand) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Icon(
-                            if (commandsExpanded) Icons.Outlined.ExpandMore else Icons.Outlined.ExpandLess,
-                            "常用命令",
-                            Modifier.size(20.dp),
-                            tint = TerminalText.copy(alpha = 0.85f),
+                        OutlinedTextField(
+                            value = newCommandDraft,
+                            onValueChange = { newCommandDraft = it },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            placeholder = { Text("如 comfyui --cpu", style = MaterialTheme.typography.bodySmall) },
+                            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        )
+                        Button(
+                            onClick = {
+                                viewModel.aiStudioAddConsoleQuickCommand(newCommandDraft)
+                                newCommandDraft = ""
+                            },
+                            enabled = newCommandDraft.isNotBlank(),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                        ) { Text("添加") }
+                    }
+                }
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    panel.consoleQuickCommands.forEach { item ->
+                        InputChip(
+                            selected = false,
+                            onClick = { viewModel.aiStudioSetConsoleInput(item) },
+                            label = { Text(item, style = MaterialTheme.typography.labelMedium) },
+                            trailingIcon = {
+                                Icon(
+                                    Icons.Outlined.Close,
+                                    "删除",
+                                    Modifier.size(14.dp).clickable {
+                                        viewModel.aiStudioRemoveConsoleQuickCommand(item)
+                                    },
+                                )
+                            },
                         )
                     }
-                    // 发送键：青绿实心 + 白箭头，在深底上一眼可见。
-                    FilledIconButton(
-                        onClick = { viewModel.aiStudioSendCommand(panel.consoleDraft.trim()) },
-                        enabled = panel.consoleConnected && panel.consoleDraft.isNotBlank(),
-                        modifier = Modifier.size(34.dp),
-                    ) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "发送", Modifier.size(18.dp)) }
-                }
-
-                // —— 常用命令面板（展开后可点、可删、可加）——
-                if (commandsExpanded) {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .background(TerminalInputBg)
-                            .padding(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                "常用命令",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TerminalText.copy(alpha = 0.6f),
-                                modifier = Modifier.weight(1f),
-                            )
-                            TextButton(onClick = { addingCommand = !addingCommand }) {
-                                Text(if (addingCommand) "收起" else "添加")
-                            }
-                        }
-                        if (addingCommand) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                OutlinedTextField(
-                                    value = newCommandDraft,
-                                    onValueChange = { newCommandDraft = it },
-                                    modifier = Modifier.weight(1f),
-                                    singleLine = true,
-                                    placeholder = { Text("如 comfyui --cpu", style = MaterialTheme.typography.bodySmall) },
-                                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                )
-                                Button(
-                                    onClick = {
-                                        viewModel.aiStudioAddConsoleQuickCommand(newCommandDraft)
-                                        newCommandDraft = ""
-                                    },
-                                    enabled = newCommandDraft.isNotBlank(),
-                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                                ) { Text("添加") }
-                            }
-                        }
-                        FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            panel.consoleQuickCommands.forEach { item ->
-                                InputChip(
-                                    selected = false,
-                                    onClick = { viewModel.aiStudioSetConsoleInput(item) },
-                                    label = { Text(item, style = MaterialTheme.typography.labelMedium) },
-                                    trailingIcon = {
-                                        Icon(
-                                            Icons.Outlined.Close,
-                                            "删除",
-                                            Modifier.size(14.dp).clickable {
-                                                viewModel.aiStudioRemoveConsoleQuickCommand(item)
-                                            },
-                                        )
-                                    },
-                                )
-                            }
-                            if (panel.consoleQuickCommands.isEmpty()) {
-                                Text(
-                                    "还没有常用命令，点「添加」建一条",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = TerminalText.copy(alpha = 0.5f),
-                                )
-                            }
-                        }
+                    if (panel.consoleQuickCommands.isEmpty()) {
+                        Text(
+                            "还没有常用命令，点「添加」建一条",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TerminalText.copy(alpha = 0.5f),
+                        )
                     }
                 }
             }
@@ -4934,6 +4960,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                 err,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
             )
         }
     }
