@@ -4683,7 +4683,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     when {
                         panel.consoleBusy -> MaterialTheme.colorScheme.tertiary
                         panel.consoleConnected -> MaterialTheme.colorScheme.primary
-                        else -> MaterialTheme.colorScheme.outline,
+                        else -> MaterialTheme.colorScheme.outline
                     },
                 ),
             )
@@ -4693,7 +4693,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     when {
                         panel.consoleBusy -> "正在连接…"
                         panel.consoleConnected -> "已连接 · 项目环境"
-                        else -> "未连接",
+                        else -> "未连接"
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = TerminalText.copy(alpha = 0.6f),
