@@ -184,6 +184,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -2185,17 +2186,32 @@ private fun ImageGalleryViewer(
     }
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            // 官方 edge-to-edge 指南要求的全屏 Dialog 两件套之一：让内容延伸到
+            // 系统栏后面（另一件是 usePlatformDefaultWidth=false，已具备）。
+            decorFitsSystemWindows = false,
+        ),
     ) {
         // 全屏约束：Dialog 默认高度是 wrap_content，内容超出窗口会把底部操作栏
         // 挤出屏幕；窗口背景设为纯黑，沉浸查看时不会透出底层的服务器地址栏。
+        //
+        // ⚠️ 窗口属性必须在**首帧测量前**设好。以前用 LaunchedEffect 设窗口，
+        // 它在首次组合之后才跑——DecorView 已经按「默认窗口尺寸（从状态栏下方
+        // 开始）」量完了，再改尺寸也只改一半：MIUI/Android 15 上的表现正是
+        // 用户截图那样——顶部露出底下页面的顶栏（本该是系统时间的区域被一个
+        // “看不见的卡片”占了），底部图标被顶出屏幕外。securePolicy 等属性在
+        // Dialog 创建时同步生效，而窗口尺寸要在这里同步设，不能等。
         val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
-        LaunchedEffect(dialogWindow) {
+        SideEffect {
             dialogWindow?.apply {
                 setLayout(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 )
+                // 内容不再让出系统栏（真沉浸），insets 交给 Compose 的
+                // statusBarsPadding / navigationBarsPadding 自己处理。
+                WindowCompat.setDecorFitsSystemWindows(this, false)
                 setBackgroundDrawable(ColorDrawable(android.graphics.Color.BLACK))
             }
         }
@@ -2264,9 +2280,8 @@ private fun ImageGalleryViewer(
                     }
                     Row(
                         Modifier.fillMaxWidth().align(Alignment.BottomCenter)
-                            // v0.1.67：之前是 0.68 透明黑底，部分机型仍会被系统手势条盖住；
-                            // 这里换成纯黑，并保留横向滚动（小屏上图标不会被挤出屏幕），
-                            // 纵向 padding 从 8dp 加到 10dp，让五个图标 + 「更多」有充分点击区。
+                            // v0.1.67：纯黑底 + 横向滚动（小屏上图标不会被挤出屏幕）。
+                            // 让出手势条/导航栏高度，避免图标被系统手势区盖住。
                             .background(Color.Black)
                             .navigationBarsPadding()
                             .horizontalScroll(rememberScrollState())
