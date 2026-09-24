@@ -942,6 +942,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         kernelClient.sendRawInput("\u0003")
     }
 
+    /**
+     * 控制台：向终端发一个原始按键序列（不需要回车）。
+     *
+     * 软键盘打不出 ESC/TAB/方向键这些控制字符，但 shell 里到处要用（vim 退出、
+     * 命令补全、翻历史）。由界面上的「特殊键」行调用。
+     */
+    fun aiStudioSendKey(raw: String) {
+        if (!_state.value.aiStudio.consoleConnected) return
+        kernelClient.sendRawInput(raw)
+    }
+
     /** 控制台：把常用命令快速填到输入框（不直接执行，由用户确认）。 */
     fun aiStudioSetConsoleInput(command: String) {
         _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleDraft = command)) }
