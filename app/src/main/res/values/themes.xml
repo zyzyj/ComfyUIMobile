@@ -1,11 +1,21 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
+    <!--
+      仅作为窗口级兜底：真正的配色在 Compose 的 ComfyMobileTheme 里。
+      这里负责两件 Compose 管不到的事——启动窗口的背景与系统栏颜色，
+      避免 App 冷启动瞬间闪出 M3 默认紫。
+
+      状态栏/导航栏用品牌深墨色（与 Compose 暗色 PaperDark #101215 一致），
+      而不是默认黑；colorAccent 原来是 M3 默认紫 #8A7DFF，现改为品牌青绿，
+      它会影响文本选择手柄、系统对话框等非 Compose 控件。
+    -->
     <style name="Theme.ComfyUIMobile" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:statusBarColor">#111318</item>
-        <item name="android:navigationBarColor">#111318</item>
+        <item name="android:statusBarColor">#101215</item>
+        <item name="android:navigationBarColor">#101215</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <item name="android:colorAccent">#8A7DFF</item>
+        <item name="android:colorAccent">#0E7C86</item>
+        <item name="android:windowBackground">#F6F7F9</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:forceDarkAllowed" tools:targetApi="q">false</item>
     </style>
