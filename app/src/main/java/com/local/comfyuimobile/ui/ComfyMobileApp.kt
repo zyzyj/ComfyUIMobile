@@ -11,6 +11,7 @@ import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.graphics.drawable.ColorDrawable
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -2196,15 +2197,18 @@ private fun ImageGalleryViewer(
         // 全屏约束：Dialog 默认高度是 wrap_content，内容超出窗口会把底部操作栏
         // 挤出屏幕；窗口背景设为纯黑，沉浸查看时不会透出底层的服务器地址栏。
         //
-        // ⚠️ 窗口属性必须在**首帧测量前**设好。以前用 LaunchedEffect 设窗口，
-        // 它在首次组合之后才跑——DecorView 已经按「默认窗口尺寸（从状态栏下方
-        // 开始）」量完了，再改尺寸也只改一半：MIUI/Android 15 上的表现正是
-        // 用户截图那样——顶部露出底下页面的顶栏（本该是系统时间的区域被一个
-        // “看不见的卡片”占了），底部图标被顶出屏幕外。securePolicy 等属性在
-        // Dialog 创建时同步生效，而窗口尺寸要在这里同步设，不能等。
+        // ⚠️ 根因（v0.2.31）：Dialog 窗口默认**不含** FLAG_LAYOUT_IN_SCREEN。
+        // AOSP 的 DecorView 对此有专门处理：没有这个标志时它会“确保 dialog 不
+        // 越过状态栏/导航栏”（consumes the system insets）。结果是窗口顶部被挤到
+        // 状态栏下方、高度却仍按整屏算 → 整体下移一个状态栏高度：顶部露出底层
+        // 页面的内容（用户截图中状态栏区域的灰色，其实不是状态栏本身而是底下的
+        // 主界面透出），底部图标被顶出屏幕。
+        // 之前两版分别用 LaunchedEffect / SideEffect 调 setLayout，都没加这个
+        // 标志，所以两次都无效。这里必须把标志补上，窗口才真铺满整屏。
         val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
         SideEffect {
             dialogWindow?.apply {
+                addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN)
                 setLayout(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
