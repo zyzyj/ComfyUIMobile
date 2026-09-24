@@ -87,6 +87,14 @@ data class AiStudioState(
     val startingProjectId: String? = null,
     val stoppingProjectId: String? = null,
     /**
+     * 环境地址已确认可用的项目 ID。
+     *
+     * 平台的 `running=true` 只是**受理回执**（实测提交后 4 秒就变 true），
+     * 真正的环境分配还要 6~24 秒（繁忙时数分钟）。这个字段记录「我们已经确认
+     * 拿到环境地址」，用来区分「已受理」与「真的可用」，避免界面过早报「运行中」。
+     */
+    val environmentReadyProjectId: String? = null,
+    /**
      * 社区积分。null 表示**没读到**，不是 0 —— 界面要显示「—」而不是编一个数。
      * 平台接口改版是常态，把「未知」和「真的是 0」区分开才不会骗人。
      */

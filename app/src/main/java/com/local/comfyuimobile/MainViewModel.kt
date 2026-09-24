@@ -1171,6 +1171,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             ),
                         )
                     }
+                    // 冷启动时 environmentReadyProjectId 是空的，运行中的项目会被
+                    // 当成"正在启动环境…"一直转圈。这里后台补确认一次（不调 enter，
+                    // 只问 baseinfo），确认到就把它标为 ready。
+                    val running = page.projects.firstOrNull { it.running }
+                    if (running != null &&
+                        _state.value.aiStudio.environmentReadyProjectId != running.projectId
+                    ) {
+                        val ready = runCatching {
+                            kernelClient.peekEndpoint(account, running.projectId)
+                        }.getOrNull() != null
+                        if (ready) {
+                            _state.update {
+                                it.copy(
+                                    aiStudio = it.aiStudio.copy(
+                                        environmentReadyProjectId = running.projectId,
+                                    ),
+                                )
+                            }
+                        }
+                    }
                 }
                 .onFailure { error -> failAiStudio("读取项目列表失败", error) }
         }
@@ -1222,15 +1242,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             it.copy(
                                 aiStudio = it.aiStudio.copy(
                                     message = "机器已分配，正在启动环境…（已等 ${waitedSeconds} 秒）",
+                                    // 环境未确认可用前，不把它标成 ready，项目卡
+                                    // 就会显示"正在启动环境…"而不是误导性的"运行中"。
+                                    environmentReadyProjectId = null,
                                 ),
                             )
                         }
                         return@repeat
                     }
+                    AppLogger.info("AI Studio 项目状态已更新：$projectId running=${project.running} 环境已就绪")
+                    _state.update {
+                        it.copy(
+                            aiStudio = it.aiStudio.copy(
+                                message = "环境已就绪",
+                                environmentReadyProjectId = projectId,
+                            ),
+                        )
+                    }
+                    return@launch
                 }
+                // 停止方向：running=false 就是真的停了。
                 AppLogger.info("AI Studio 项目状态已更新：$projectId running=${project.running}")
                 _state.update {
-                    it.copy(aiStudio = it.aiStudio.copy(message = if (wantRunning) "环境已就绪" else "已停止"))
+                    it.copy(
+                        aiStudio = it.aiStudio.copy(
+                            message = "已停止",
+                            environmentReadyProjectId = it.aiStudio.environmentReadyProjectId
+                                ?.takeIf { id -> id != projectId },
+                        ),
+                    )
                 }
                 return@launch
             }
