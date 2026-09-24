@@ -42,6 +42,7 @@ import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -150,6 +151,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -204,6 +206,10 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
@@ -4500,6 +4506,10 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
     val panel = state.aiStudio
     val terminalState = rememberLazyListState()
     val context = LocalContext.current
+    // 常用命令面板的展开/添加态：纯 UI 瞬时状态，不必进 ViewModel。
+    var commandsExpanded by remember { mutableStateOf(false) }
+    var addingCommand by remember { mutableStateOf(false) }
+    var newCommandDraft by remember { mutableStateOf("") }
 
     // 新输出到了就滚到底，不然用户看不到刚跑出来的日志。
     LaunchedEffect(panel.terminalLines.size) {
@@ -4592,13 +4602,25 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-                // —— 输出区（深底浅字，等宽；长按可选中复制）——
-                Box(
+                // —— 输出区（深底浅字，等宽；支持 ANSI 着色）——
+                BoxWithConstraints(
                     Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                        .background(MaterialTheme.colorScheme.inverseSurface),
+                        .background(TerminalBg),
                 ) {
+                    // 把实测列数报给远端 PTY（按等宽字估算），否则它按默认 80 列
+                    // 排版，窄屏上长行硬折。
+                    val density = LocalDensity.current
+                    val cols = remember(maxWidth, density.fontScale) {
+                        with(density) {
+                            val charWidthPx = 12.5.sp.toPx() * 0.6f
+                            (maxWidth.toPx() / charWidthPx).toInt().coerceIn(20, 200)
+                        }
+                    }
+                    LaunchedEffect(cols, panel.consoleConnected) {
+                        if (panel.consoleConnected) viewModel.aiStudioResizeConsole(cols)
+                    }
                     if (panel.terminalLines.isEmpty()) {
                         Column(
                             Modifier.fillMaxSize().padding(16.dp),
@@ -4609,13 +4631,13 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                                 Icons.Outlined.PlayArrow,
                                 null,
                                 Modifier.size(30.dp),
-                                tint = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = 0.5f),
+                                tint = TerminalText.copy(alpha = 0.45f),
                             )
                             Spacer(Modifier.height(8.dp))
                             Text(
                                 if (panel.consoleConnected) "终端已就绪，在下方输入命令" else "点右上角「连接」启动终端",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = 0.7f),
+                                color = TerminalText.copy(alpha = 0.65f),
                             )
                         }
                     } else {
@@ -4628,12 +4650,12 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                                 // LazyColumn 自身的滚动。
                                 SelectionContainer {
                                     Text(
-                                        line.ifEmpty { " " },
+                                        terminalAnnotatedLine(line.ifEmpty { " " }, TerminalText),
                                         style = MaterialTheme.typography.bodySmall.copy(
                                             fontFamily = FontFamily.Monospace,
-                                            lineHeight = 19.sp,
+                                            fontSize = 12.5.sp,
+                                            lineHeight = 20.sp,
                                         ),
-                                        color = MaterialTheme.colorScheme.inverseOnSurface,
                                     )
                                 }
                             }
@@ -4641,14 +4663,17 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     }
                 }
 
-                // —— 内嵌输入行（与输出同底，像真正的终端提示符）——
+                // —— 内嵌输入行 ——
+                // 底色故意比输出区**略亮**（TerminalInputBg vs TerminalBg）：
+                // 以前输入行与输出区同色，发送按钮又是深色，三者糊成一片，用户
+                // 看不出哪里能打字、按钮在哪。
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.inverseSurface)
-                        .padding(start = 12.dp, end = 6.dp, top = 2.dp, bottom = 6.dp),
+                        .background(TerminalInputBg)
+                        .padding(start = 12.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
                         "$",
@@ -4656,7 +4681,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
                         ),
-                        color = MaterialTheme.colorScheme.primary,
+                        color = TerminalPrompt,
                     )
                     BasicTextField(
                         value = panel.consoleDraft,
@@ -4666,9 +4691,9 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                         enabled = panel.consoleConnected,
                         textStyle = MaterialTheme.typography.bodySmall.copy(
                             fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.inverseOnSurface,
+                            color = TerminalText,
                         ),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        cursorBrush = SolidColor(TerminalPrompt),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                         keyboardActions = KeyboardActions(onSend = {
                             viewModel.aiStudioSendCommand(panel.consoleDraft.trim())
@@ -4676,38 +4701,111 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                         decorationBox = { inner ->
                             if (panel.consoleDraft.isEmpty()) {
                                 Text(
-                                    if (panel.consoleConnected) "输入命令，如 comfyui" else "先连接终端",
+                                    if (panel.consoleConnected) "输入命令" else "先连接终端",
                                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                    color = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = 0.45f),
+                                    color = TerminalText.copy(alpha = 0.4f),
                                 )
                             }
                             inner()
                         },
                     )
+                    // 「展开命令」入口：与发送键并排，点开就是个可增删的命令面板。
+                    IconButton(
+                        onClick = { commandsExpanded = !commandsExpanded },
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Icon(
+                            if (commandsExpanded) Icons.Outlined.ExpandMore else Icons.Outlined.ExpandLess,
+                            "常用命令",
+                            Modifier.size(20.dp),
+                            tint = TerminalText.copy(alpha = 0.85f),
+                        )
+                    }
+                    // 发送键：青绿实心 + 白箭头，在深底上一眼可见。
                     FilledIconButton(
                         onClick = { viewModel.aiStudioSendCommand(panel.consoleDraft.trim()) },
                         enabled = panel.consoleConnected && panel.consoleDraft.isNotBlank(),
-                        modifier = Modifier.size(36.dp),
+                        modifier = Modifier.size(34.dp),
                     ) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "发送", Modifier.size(18.dp)) }
                 }
-            }
-        }
 
-        // ========== 快捷命令 ==========
-        // 以前是横向滚动的芯片行，还把「复制全部」这个对输出的操作混在命令里
-        // （复制已移到终端标题栏）。现在改成自动换行的 FlowRow，命令一屏看全，
-        // 不用左右滑。
-        if (panel.consoleConnected) {
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                CONSOLE_QUICK_COMMANDS.forEach { item ->
-                    AssistChip(
-                        onClick = { viewModel.aiStudioSetConsoleInput(item) },
-                        label = { Text(item, style = MaterialTheme.typography.labelMedium) },
-                    )
+                // —— 常用命令面板（展开后可点、可删、可加）——
+                if (commandsExpanded) {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(TerminalInputBg)
+                            .padding(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "常用命令",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TerminalText.copy(alpha = 0.6f),
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(onClick = { addingCommand = !addingCommand }) {
+                                Text(if (addingCommand) "收起" else "添加")
+                            }
+                        }
+                        if (addingCommand) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                OutlinedTextField(
+                                    value = newCommandDraft,
+                                    onValueChange = { newCommandDraft = it },
+                                    modifier = Modifier.weight(1f),
+                                    singleLine = true,
+                                    placeholder = { Text("如 comfyui --cpu", style = MaterialTheme.typography.bodySmall) },
+                                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                )
+                                Button(
+                                    onClick = {
+                                        viewModel.aiStudioAddConsoleQuickCommand(newCommandDraft)
+                                        newCommandDraft = ""
+                                    },
+                                    enabled = newCommandDraft.isNotBlank(),
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                ) { Text("添加") }
+                            }
+                        }
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            panel.consoleQuickCommands.forEach { item ->
+                                InputChip(
+                                    selected = false,
+                                    onClick = { viewModel.aiStudioSetConsoleInput(item) },
+                                    label = { Text(item, style = MaterialTheme.typography.labelMedium) },
+                                    trailingIcon = {
+                                        Icon(
+                                            Icons.Outlined.Close,
+                                            "删除",
+                                            Modifier.size(14.dp).clickable {
+                                                viewModel.aiStudioRemoveConsoleQuickCommand(item)
+                                            },
+                                        )
+                                    },
+                                )
+                            }
+                            if (panel.consoleQuickCommands.isEmpty()) {
+                                Text(
+                                    "还没有常用命令，点「添加」建一条",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TerminalText.copy(alpha = 0.5f),
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -4801,14 +4899,76 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
 }
 
 /**
- * 控制台快捷命令：点一下填进输入框（不直接执行，避免误触）。
+ * 终端配色。
  *
- * 选了跑 ComfyUI 最常打的那几条：启动、看目录、看显卡、看磁盘、看进程。
+ * 自带一套色值而不复用 M3 的 inverseSurface：因为终端需要固定的"深色背景"
+ * （不管 App 是亮色还是暗色主题），且输入行要与输出区有可见的层次差。
  */
-private val CONSOLE_QUICK_COMMANDS = listOf(
-    "comfyui",
-    "ls",
-    "nvidia-smi",
-    "df -h",
-    "ps aux | grep python",
+private val TerminalBg = Color(0xFF17191F)
+private val TerminalInputBg = Color(0xFF242833)
+private val TerminalText = Color(0xFFD6DEEB)
+private val TerminalPrompt = Color(0xFF4DD0D8)
+
+/** 终端 ANSI 16 色（近 VS Code 暗色主题，不刺眼）。 */
+private val TERMINAL_ANSI_COLORS = listOf(
+    Color(0xFF3F3F46), // 0 黑（调亮一点，否则在深底上看不见）
+    Color(0xFFF07178), // 1 红
+    Color(0xFFA5D6A7), // 2 绿
+    Color(0xFFFFCB6B), // 3 黄
+    Color(0xFF82AAFF), // 4 蓝
+    Color(0xFFC792EA), // 5 洋红
+    Color(0xFF89DDFF), // 6 青
+    Color(0xFFD6DEEB), // 7 白
+    Color(0xFF6B7280), // 8 亮黑
+    Color(0xFFFF9DA3), // 9 亮红
+    Color(0xFFC3E88D), // 10 亮绿
+    Color(0xFFFFE082), // 11 亮黄
+    Color(0xFFA4C8FF), // 12 亮蓝
+    Color(0xFFE0AAFF), // 13 亮洋红
+    Color(0xFFB2EBF2), // 14 亮青
+    Color(0xFFFFFFFF), // 15 亮白
 )
+
+/**
+ * 把一行带 ANSI SGR 序列的终端文本转成 [AnnotatedString]。
+ *
+ * 只处理颜色与加粗（终端输出里 99% 是这些）；其他 SGR（下划线、闪烁等）忽略即可，
+ * 不能因为遇到不认识的码就把整行当纯文本——那样 ls 的着色就白保留了。
+ */
+private fun terminalAnnotatedLine(line: String, base: Color): AnnotatedString = buildAnnotatedString {
+    var fg: Color? = null
+    var bold = false
+    var index = 0
+    while (index < line.length) {
+        val esc = line.indexOf('\u001B', index)
+        if (esc < 0) {
+            withStyle(SpanStyle(color = fg ?: base, fontWeight = if (bold) FontWeight.Bold else null)) {
+                append(line.substring(index))
+            }
+            break
+        }
+        if (esc > index) {
+            withStyle(SpanStyle(color = fg ?: base, fontWeight = if (bold) FontWeight.Bold else null)) {
+                append(line.substring(index, esc))
+            }
+        }
+        // 找 SGR 结尾 'm'（形如 ESC[...m）
+        val end = line.indexOf('m', esc + 2)
+        if (end < 0) {
+            index = esc + 1
+            continue
+        }
+        val params = line.substring(esc + 2, end)
+        params.split(';').forEach { token ->
+            when (val code = token.toIntOrNull()) {
+                0 -> { fg = null; bold = false }
+                1 -> bold = true
+                30..37 -> fg = TERMINAL_ANSI_COLORS[code - 30]
+                39 -> fg = null
+                90..97 -> fg = TERMINAL_ANSI_COLORS[code - 90 + 8]
+                else -> Unit
+            }
+        }
+        index = end + 1
+    }
+}

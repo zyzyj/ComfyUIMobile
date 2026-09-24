@@ -18,6 +18,22 @@ import org.json.JSONObject
 
 private val Context.dataStore by preferencesDataStore(name = "comfy_mobile")
 
+/**
+ * 终端快捷命令的出厂默认值。
+ *
+ * 只在用户从未设置过时用（偏好里没有这个 key 时）。一旦用户增删过，就以他自己的列表为准
+ * ——包括删到空，那时不会再被默认值填回来。
+ */
+val DEFAULT_CONSOLE_QUICK_COMMANDS = listOf(
+    "comfyui",
+    "nvidia-smi",
+    "ls -lh ~/models/loras",
+    "tail -n 50 /tmp/comfyui.log",
+)
+
+/** 终端快捷命令条数上限（避免偏好无限膨胀 + 界面刷不完）。 */
+const val MAX_QUICK_COMMANDS = 30
+
 data class StoredSettings(
     val profiles: List<ServerProfile> = emptyList(),
     val activeServerUrl: String = "",
@@ -27,6 +43,11 @@ data class StoredSettings(
     val localDraftsEnabled: Boolean = false,
     /** 每日自动签到 + 领算力（默认开：不自动就断签）。 */
     val autoDailyTasks: Boolean = true,
+    /**
+     * 控制台终端快捷命令。从未设置过时（偏好里没这个 key）用出厂默认值；
+     * 用户删到空也存成"已设置"的空列表，不会被默认值又填回来。
+     */
+    val consoleQuickCommands: List<String> = emptyList(),
     val lastUpdateCheck: Long = 0L,
     val recentWorkflows: List<String> = emptyList(),
     val cacheOutputRules: List<CacheOutputRule> = emptyList(),
@@ -50,6 +71,7 @@ class AppPreferences(private val context: Context) {
         val autoSaveResults = booleanPreferencesKey("auto_save_results")
         val localDraftsEnabled = booleanPreferencesKey("local_drafts_enabled")
         val autoDailyTasks = booleanPreferencesKey("auto_daily_tasks")
+        val consoleQuickCommands = stringPreferencesKey("console_quick_commands")
         val lastUpdateCheck = longPreferencesKey("last_update_check")
         val recentWorkflow = stringPreferencesKey("recent_workflow")
         val recentWorkflows = stringPreferencesKey("recent_workflows")
@@ -72,6 +94,9 @@ class AppPreferences(private val context: Context) {
             autoSaveResults = preferences[Keys.autoSaveResults] ?: true,
             localDraftsEnabled = preferences[Keys.localDraftsEnabled] ?: false,
             autoDailyTasks = preferences[Keys.autoDailyTasks] ?: true,
+            consoleQuickCommands = preferences[Keys.consoleQuickCommands]
+                ?.let { decodeStrings(it) }
+                ?: DEFAULT_CONSOLE_QUICK_COMMANDS,
             lastUpdateCheck = preferences[Keys.lastUpdateCheck] ?: 0L,
             recentWorkflows = decodeStrings(preferences[Keys.recentWorkflows].orEmpty())
                 .ifEmpty { listOfNotNull(preferences[Keys.recentWorkflow]?.takeIf(String::isNotBlank)) }
@@ -122,6 +147,14 @@ class AppPreferences(private val context: Context) {
 
     suspend fun setAutoDailyTasks(enabled: Boolean) {
         context.dataStore.edit { it[Keys.autoDailyTasks] = enabled }
+    }
+
+    suspend fun saveConsoleQuickCommands(commands: List<String>) {
+        context.dataStore.edit {
+            it[Keys.consoleQuickCommands] = encodeStrings(
+                commands.map(String::trim).filter(String::isNotBlank).distinct().take(MAX_QUICK_COMMANDS),
+            )
+        }
     }
 
     suspend fun setLastUpdateCheck(timestamp: Long) {

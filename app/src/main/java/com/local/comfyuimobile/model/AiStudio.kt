@@ -126,6 +126,11 @@ data class AiStudioState(
      */
     val consoleDraft: String = "comfyui",
     /**
+     * 终端快捷命令。放在状态里以便持久化，并让「命令」面板能增删。
+     * 首次安装时由偏好层给出默认值（见 AppPreferences）。
+     */
+    val consoleQuickCommands: List<String> = emptyList(),
+    /**
      * 运行中项目暴露的 ComfyUI 地址。
      *
      * 平台前端会把终端里出现的 `http://127.0.0.1:{port}` 自动改写成

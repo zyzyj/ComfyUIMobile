@@ -322,8 +322,9 @@ class AiStudioKernelClient {
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     val raw = AiStudioProtocol.parseTerminalOutput(text) ?: return
-                    // 剥掉 ANSI 控制序列与不可见控制字符，否则界面上是一堆乱码。
-                    val clean = AiStudioProtocol.stripControlChars(AiStudioProtocol.stripAnsi(raw))
+                    // 只剔 OSC/CSI 等控制序列，**保留** ANSI 颜色码——由界面渲染成颜色，
+                    // 不然 ls 的着色、彩色提示符全没了，一屏白字看起来又乱又平。
+                    val clean = AiStudioProtocol.sanitizeTerminalOutput(raw)
                     if (clean.isNotEmpty()) onOutput(clean)
                 }
 
