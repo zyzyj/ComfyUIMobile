@@ -143,4 +143,49 @@ class ResultParserTest {
         assertNull(ResultParser.extractSeed(prompt))
         assertNull(ResultParser.extractSeed(null))
     }
+
+    // ===== 正向提示词提取 =====
+
+    @Test
+    fun positivePromptFollowsSamplerPositiveLinkEvenWhenNegativeNodeIdIsSmaller() {
+        // 用户实测 bug：工作流里正向节点 77、负向节点 75，旧逻辑取第一个遍历到的
+        // TextEncode，把负向提示词当成正向显示。正确判据是 KSampler 的 positive 输入连线。
+        val prompt = JSONObject(
+            """{
+              "75":{"class_type":"CLIPTextEncode","inputs":{"text":"bad hands, lowres"}},
+              "77":{"class_type":"CLIPTextEncode","inputs":{"text":"masterpiece, white hair cat girl"}},
+              "81":{"class_type":"KSampler","inputs":{"seed":1,"positive":["77",0],"negative":["75",0]}}
+            }""",
+        )
+        assertEquals(
+            "masterpiece, white hair cat girl",
+            ResultParser.extractPositivePrompt(prompt),
+        )
+    }
+
+    @Test
+    fun positivePromptFallsBackToPositiveTitledNodeWhenSamplerLinkMissing() {
+        // 采样器连线判不出（第三方节点不带 positive 输入名）时，按画布节点标题兜底。
+        val prompt = JSONObject(
+            """{
+              "2":{"class_type":"CLIPTextEncode","inputs":{"text":"negative text"}},
+              "5":{"class_type":"CLIPTextEncode","inputs":{"text":"positive text"}}
+            }""",
+        )
+        assertEquals(
+            "positive text",
+            ResultParser.extractPositivePrompt(prompt, mapOf("5" to "Positive Prompt", "2" to "Negative Prompt")),
+        )
+    }
+
+    @Test
+    fun positivePromptLastResortTakesFirstTextEncode() {
+        // 什么判据都没有时保持旧行为：第一个文本节点，至少能显示点什么。
+        val prompt = JSONObject(
+            """{
+              "9":{"class_type":"CLIPTextEncode","inputs":{"text":"some text"}}
+            }""",
+        )
+        assertEquals("some text", ResultParser.extractPositivePrompt(prompt))
+    }
 }
