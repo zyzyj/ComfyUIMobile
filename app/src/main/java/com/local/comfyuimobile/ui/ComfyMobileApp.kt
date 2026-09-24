@@ -48,6 +48,8 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -78,6 +80,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -142,6 +145,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -186,6 +190,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
@@ -200,6 +205,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.ImeAction
@@ -4477,17 +4483,9 @@ private fun RawResponseCard(raw: String, context: Context) {
     }
 }
 
-// ===================== v0.1.90：控制台页 =====================
+// ===================== 控制台页 =====================
 
-/**
- * 控制台页。
- *
- * 对应「启动项目后那个终端」。这里刻意**不做一个真的终端模拟器**——
- * 手机上敲命令行是折磨。取而代之：上半部分是常用操作（启动/停止/装环境），
- * 下半部分是这些操作的输出回显。想看结果，看这里就够了。
- *
- * v0.1.91：标题栏由外层 ConnectedApp 统一提供，本页不再自带 Scaffold。
- */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
     val panel = state.aiStudio
@@ -4501,71 +4499,225 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
         }
     }
 
-    // ComfyUI 是否就是当前连着的这台服务器（决定按钮文案与状态点颜色）。
+    // ComfyUI 是否就是当前连着的这台服务器。
     val comfyUrl = panel.comfyUiUrl
     val comfyConnected = comfyUrl != null &&
         state.status == ConnectionStatus.CONNECTED &&
         state.activeServer?.baseUrl?.let { LanAddress.sameServer(it, comfyUrl) } == true
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // —— 终端状态 + 操作（压成一行，不占地方）——
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Box(
-                Modifier.size(8.dp).clip(CircleShape).background(
-                    if (panel.consoleConnected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.outline,
-                ),
-            )
-            Text(
-                if (panel.consoleConnected) "终端已连接" else "未连接终端",
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.weight(1f),
-            )
-            if (panel.consoleBusy) {
-                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-            }
-            // 中断：跑 ComfyUI 这类前台进程时能停掉它（发 Ctrl+C）。
-            if (panel.consoleConnected) {
-                TextButton(onClick = { viewModel.aiStudioInterruptConsole() }) { Text("中断") }
-            }
-            // 清屏：只要有输出就能清，不要求处于连接状态（以前绑在连接上，断开后清不掉）。
-            TextButton(
-                onClick = { viewModel.aiStudioClearConsole() },
-                enabled = panel.terminalLines.isNotEmpty(),
-            ) { Text("清屏") }
-            TextButton(
-                onClick = {
-                    if (panel.consoleConnected) viewModel.aiStudioDisconnectConsole()
-                    else viewModel.aiStudioConnectConsole()
-                },
-                enabled = !panel.consoleBusy,
-            ) { Text(if (panel.consoleConnected) "断开" else "连接") }
-        }
-
-        // —— ComfyUI：连上终端后平台会给出运行中项目的访问地址 ——
-        if (comfyUrl != null) {
-            GlassCard(
-                modifier = Modifier.fillMaxWidth(),
-                strong = comfyConnected,
-            ) {
+        // ========== 终端窗 ==========
+        // 把「状态、操作、输出、输入」收进同一个窗里：标题栏是状态与操作，
+        // 中间是输出，底部内嵌输入行。以前这四件事是四个独立区块往下堆，
+        // 看起来像五个不相干的东西摞在一起。
+        GlassCard(modifier = Modifier.fillMaxWidth().weight(1f), strong = true) {
+            Column(Modifier.fillMaxSize()) {
+                // —— 标题栏：状点 + 状态 + 操作 ——
                 Row(
-                    modifier = Modifier.background(
-                        if (comfyConnected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-                        else androidx.compose.ui.graphics.Color.Transparent,
-                    ).padding(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box(
+                        Modifier.size(9.dp).clip(CircleShape).background(
+                            if (panel.consoleConnected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outline,
+                        ),
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text("终端", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            when {
+                                panel.consoleBusy -> "正在连接…"
+                                panel.consoleConnected -> "已连接 · 项目环境"
+                                else -> "未连接"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (panel.consoleBusy) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    }
+                    // 对「正在跑的东西」的操作：中断当前命令（Ctrl+C）。
+                    if (panel.consoleConnected) {
+                        IconButton(onClick = { viewModel.aiStudioInterruptConsole() }) {
+                            Icon(Icons.Outlined.Close, "中断当前命令", Modifier.size(20.dp))
+                        }
+                    }
+                    // 对「已有输出」的操作：清屏 / 复制。
+                    IconButton(
+                        onClick = { viewModel.aiStudioClearConsole() },
+                        enabled = panel.terminalLines.isNotEmpty(),
+                    ) { Icon(Icons.Outlined.Delete, "清屏", Modifier.size(20.dp)) }
+                    IconButton(
+                        onClick = {
+                            val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                            manager?.setPrimaryClip(ClipData.newPlainText("终端输出", panel.terminalLines.joinToString("\n")))
+                            Toast.makeText(context, "已复制终端内容", Toast.LENGTH_SHORT).show()
+                        },
+                        enabled = panel.terminalLines.isNotEmpty(),
+                    ) { Icon(Icons.Outlined.ContentCopy, "复制全部输出", Modifier.size(20.dp)) }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                // —— 输出区（深底浅字，等宽；长按可选中复制）——
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .background(MaterialTheme.colorScheme.inverseSurface),
+                ) {
+                    if (panel.terminalLines.isEmpty()) {
+                        Column(
+                            Modifier.fillMaxSize().padding(16.dp),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Icon(
+                                Icons.Outlined.PlayArrow,
+                                null,
+                                Modifier.size(30.dp),
+                                tint = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = 0.5f),
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                if (panel.consoleConnected) "终端已就绪，在下方输入命令" else "点右上角连接终端",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = 0.7f),
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            state = terminalState,
+                            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
+                        ) {
+                            items(panel.terminalLines) { line ->
+                                // 逐行包 SelectionContainer：支持长按选择复制，又不干扰
+                                // LazyColumn 自身的滚动。
+                                SelectionContainer {
+                                    Text(
+                                        line.ifEmpty { " " },
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontFamily = FontFamily.Monospace,
+                                            lineHeight = 19.sp,
+                                        ),
+                                        color = MaterialTheme.colorScheme.inverseOnSurface,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // —— 内嵌输入行（与输出同底，像真正的终端提示符）——
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.inverseSurface)
+                        .padding(start = 12.dp, end = 6.dp, top = 2.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Icon(Icons.Outlined.Computer, null, Modifier.size(16.dp))
+                    Text(
+                        "$",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                        ),
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    BasicTextField(
+                        value = panel.consoleDraft,
+                        onValueChange = viewModel::aiStudioUpdateConsoleDraft,
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        enabled = panel.consoleConnected,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.inverseOnSurface,
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = {
+                            viewModel.aiStudioSendCommand(panel.consoleDraft.trim())
+                        }),
+                        decorationBox = { inner ->
+                            if (panel.consoleDraft.isEmpty()) {
+                                Text(
+                                    if (panel.consoleConnected) "输入命令，如 comfyui" else "先连接终端",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                    color = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = 0.45f),
+                                )
+                            }
+                            inner()
+                        },
+                    )
+                    FilledIconButton(
+                        onClick = { viewModel.aiStudioSendCommand(panel.consoleDraft.trim()) },
+                        enabled = panel.consoleConnected && panel.consoleDraft.isNotBlank(),
+                        modifier = Modifier.size(36.dp),
+                    ) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "发送", Modifier.size(18.dp)) }
+                }
+            }
+        }
+
+        // ========== 快捷命令 ==========
+        // 以前是横向滚动的芯片行，还把「复制全部」这个对输出的操作混在命令里
+        // （复制已移到终端标题栏）。现在改成自动换行的 FlowRow，命令一屏看全，
+        // 不用左右滑。
+        if (panel.consoleConnected) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                CONSOLE_QUICK_COMMANDS.forEach { item ->
+                    AssistChip(
+                        onClick = { viewModel.aiStudioSetConsoleInput(item) },
+                        label = { Text(item, style = MaterialTheme.typography.labelMedium) },
+                    )
+                }
+            }
+        }
+
+        // ========== ComfyUI 服务 ==========
+        // 只关心「云端那个 ComfyUI 服务起来没、连上没」——比之前那张混着
+        // 探测/连接/断开三个按钮的卡片清楚。
+        if (comfyUrl != null) {
+            GlassCard(modifier = Modifier.fillMaxWidth(), strong = comfyConnected) {
+                Row(
+                    modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Box(
+                        Modifier
+                            .size(30.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (comfyConnected) MaterialTheme.colorScheme.primaryContainer
+                                else MaterialTheme.colorScheme.surfaceVariant,
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Outlined.Computer,
+                            null,
+                            Modifier.size(17.dp),
+                            tint = if (comfyConnected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            // 连接中给一个小旋转圈：自动连接不再锁全屏后，用户从这里看进度。
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
                             if (state.status == ConnectionStatus.CONNECTING && state.activeServer == null) {
                                 CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
                             }
@@ -4573,9 +4725,9 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                                 when {
                                     comfyConnected -> "ComfyUI 已连接"
                                     state.status == ConnectionStatus.CONNECTING -> "正在连接…"
-                                    else -> "ComfyUI 待连接"
+                                    else -> "ComfyUI 服务待连接"
                                 },
-                                style = MaterialTheme.typography.labelMedium,
+                                style = MaterialTheme.typography.titleSmall,
                             )
                         }
                         Text(
@@ -4587,109 +4739,45 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                         )
                     }
                     if (comfyConnected) {
-                        TextButton(onClick = { viewModel.disconnect() }) { Text("断开") }
+                        OutlinedButton(
+                            onClick = { viewModel.disconnect() },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        ) { Text("断开") }
                     } else {
+                        // 主操作是「连接」；「探测」是从「不知道起没起」到「知道」的
+                        // 中间步骤，收成文字按钮，别和连接并列抢注意力。
                         TextButton(onClick = { viewModel.aiStudioRefreshComfyUi() }) { Text("探测") }
-                        TextButton(onClick = { viewModel.connectAiStudioComfyUi(comfyUrl) }) { Text("连接") }
+                        Button(
+                            onClick = { viewModel.connectAiStudioComfyUi(comfyUrl) },
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                        ) { Text("连接") }
                     }
                 }
             }
-        }
-
-        // —— 终端输出：深色底 + 浅色等宽字，模拟真终端；支持长按选择复制 ——
-        // 取色用 inverseSurface/inverseOnSurface：浅色主题下是深底浅字，深色主题下自动反转。
-        Surface(
-            modifier = Modifier.fillMaxWidth().weight(1f),
-            shape = RoundedCornerShape(10.dp),
-            color = MaterialTheme.colorScheme.inverseSurface,
-        ) {
-            if (panel.terminalLines.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        if (panel.consoleConnected) "终端已就绪，输入命令回车执行" else "尚未连接终端",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.inverseOnSurface,
-                    )
-                }
-            } else {
-                LazyColumn(
-                    state = terminalState,
-                    modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 8.dp),
-                ) {
-                    items(panel.terminalLines) { line ->
-                        // 逐行包 SelectionContainer：既支持长按选择复制，又不干扰
-                        // LazyColumn 自身的滚动（整块包住会让选中时的自动滚动变碍）。
-                        SelectionContainer {
-                            Text(
-                                line.ifEmpty { " " },
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    lineHeight = 20.sp,
-                                ),
-                                color = MaterialTheme.colorScheme.inverseOnSurface,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // —— 快捷命令：点一下填进输入框（不直接执行，避免误触）——
-        Row(
-            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("快捷", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            CONSOLE_QUICK_COMMANDS.forEach { item ->
-                AssistChip(
-                    onClick = { viewModel.aiStudioSetConsoleInput(item) },
-                    label = { Text(item, style = MaterialTheme.typography.labelSmall) },
-                    enabled = panel.consoleConnected,
-                )
-            }
-            AssistChip(
-                onClick = {
-                    val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                    manager?.setPrimaryClip(ClipData.newPlainText("终端输出", panel.terminalLines.joinToString("\n")))
-                    Toast.makeText(context, "已复制终端内容", Toast.LENGTH_SHORT).show()
-                },
-                label = { Text("复制全部", style = MaterialTheme.typography.labelSmall) },
-                enabled = panel.terminalLines.isNotEmpty(),
-            )
-        }
-
-        // —— 命令输入行 ——
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = panel.consoleDraft,
-                onValueChange = viewModel::aiStudioUpdateConsoleDraft,
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                enabled = panel.consoleConnected,
-                placeholder = { Text("输入命令，如 comfyui") },
-                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = {
-                    viewModel.aiStudioSendCommand(panel.consoleDraft.trim())
-                }),
-            )
-            Button(
-                onClick = { viewModel.aiStudioSendCommand(panel.consoleDraft.trim()) },
-                enabled = panel.consoleConnected && panel.consoleDraft.isNotBlank(),
-            ) { Text("发送") }
         }
 
         panel.message?.let { msg ->
-            Text(msg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+            Text(
+                msg,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
         }
         panel.error?.let { err ->
-            Text(err, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            Text(
+                err,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
         }
     }
 }
 
-/** 控制台快捷命令：点一下填进输入框，由用户确认后执行。 */
+/**
+ * 控制台快捷命令：点一下填进输入框（不直接执行，避免误触）。
+ *
+ * 选了跑 ComfyUI 最常打的那几条：启动、看目录、看显卡、看磁盘、看进程。
+ */
 private val CONSOLE_QUICK_COMMANDS = listOf(
     "comfyui",
     "ls",
