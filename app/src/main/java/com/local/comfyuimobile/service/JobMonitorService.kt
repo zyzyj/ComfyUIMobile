@@ -55,6 +55,19 @@ class JobMonitorService : Service() {
     private val workflowPaths = ConcurrentHashMap<String, String>()
     private val serverUrls = ConcurrentHashMap<String, String>()
     private val authCookies = ConcurrentHashMap<String, String>()
+    /**
+     * 每个任务最后一次收到「真实进度」的时刻（由 updateMonitor 写入）。
+     *
+     * 为什么需要它：进度只来自 ComfyUI 的 WebSocket，而真机上反代会每 2~30 秒把它
+     * 掐断一次，断线期间一条 progress 都收不到。旧实现下通知条就**冻在最后一次的
+     * 百分比**上不动，看起来像卡死（用户反馈"通知栏进度条不是实时进度"）。
+     * 轮询线程据此把"长时间没新进度"的通知改成不确定进度条，至少不骗人。
+     */
+    private val progressUpdatedAt = ConcurrentHashMap<String, Long>()
+    /** 超过这么久没收到新进度，就把通知改成不确定进度条。 */
+    private val progressStaleMillis = 20_000L
+    /** 已把通知切成"不确定进度"的任务；重新收到真实进度时移除。 */
+    private val staleNotified = java.util.Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
     // v0.1.86：连接保活状态。非空表示"用户还连着这台服务器"，没有任务时前台服务也要留着。
     @Volatile private var keepAliveServer: String = ""
     @Volatile private var keepAliveName: String = ""
@@ -117,7 +130,9 @@ class JobMonitorService : Service() {
             monitors.remove(promptId)?.cancel()
             workflowNames.remove(promptId)
             workflowPaths.remove(promptId)
-            serverUrls.remove(promptId)
+serverUrls.remove(promptId)
+            progressUpdatedAt.remove(promptId)
+            staleNotified.remove(promptId)
             runCatching { releaseBackgroundLocks() }
             runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
             stopSelf(startId)
@@ -155,7 +170,9 @@ class JobMonitorService : Service() {
             monitors.remove(promptId)?.cancel()
             workflowNames.remove(promptId)
             workflowPaths.remove(promptId)
-            serverUrls.remove(promptId)
+serverUrls.remove(promptId)
+            progressUpdatedAt.remove(promptId)
+            staleNotified.remove(promptId)
             stopIfIdle()
             return START_NOT_STICKY
         }
@@ -167,6 +184,9 @@ class JobMonitorService : Service() {
             val percent = intent.getIntExtra(EXTRA_PROGRESS, -1)
             val node = intent.getStringExtra(EXTRA_NODE).orEmpty()
             val name = workflowNames[promptId].orEmpty().ifBlank { "ComfyUI 工作流" }
+            // 记下"刚收到真实进度"，轮询线程据此判断通知里的进度是不是已经陈旧。
+            progressUpdatedAt[promptId] = System.currentTimeMillis()
+            staleNotified.remove(promptId)
             startForeground(
                 FOREGROUND_ID,
                 notification(
@@ -210,6 +230,10 @@ class JobMonitorService : Service() {
             while (isActive) {
                 runCatching { readStatus(baseUrl, promptId) }.onSuccess { status ->
                     consecutivePollFailures = 0
+                    // 进度只来自 WebSocket，而反代会周期性把它掐断——断线期间这条通知就
+                    // 冻在旧百分比上。轮询每次回来检查一下：超过阈值没新进度，就把进度条
+                    // 改成不确定态（动态滚动），并标明已等待时长，避免看起来像卡死。
+                    refreshStaleProgressNotification(promptId, baseUrl, workflowName, workflowPath)
                     if (status.completed) {
                         if (status.error) {
                             getSystemService(NotificationManager::class.java)
@@ -305,7 +329,9 @@ class JobMonitorService : Service() {
                         monitors.remove(promptId)
                         workflowNames.remove(promptId)
                         workflowPaths.remove(promptId)
-                        serverUrls.remove(promptId)
+serverUrls.remove(promptId)
+                        progressUpdatedAt.remove(promptId)
+                        staleNotified.remove(promptId)
                         stopIfIdle()
                         return@launch
                     }
@@ -330,7 +356,9 @@ class JobMonitorService : Service() {
                         monitors.remove(promptId)
                         workflowNames.remove(promptId)
                         workflowPaths.remove(promptId)
-                        serverUrls.remove(promptId)
+serverUrls.remove(promptId)
+                        progressUpdatedAt.remove(promptId)
+                        staleNotified.remove(promptId)
                         authCookies.remove(promptId)
                         getSystemService(NotificationManager::class.java)
                             .notify(
@@ -361,6 +389,42 @@ class JobMonitorService : Service() {
         releaseBackgroundLocks()
         scope.cancel()
         super.onDestroy()
+    }
+
+    /**
+     * 进度长时间无更新时，把前台通知改成"不确定进度 + 已用时"。
+     *
+     * 背景：生图进度只由 ComfyUI 的 WebSocket 推送，而 AI Studio 这类反代对 /ws 很暴力
+     * （真机日志里每 2~30 秒掐一次），断线期间一条进度都收不到。旧实现下通知条就冻在
+     * 最后一次百分比上，用户看到的是"进度条不动了"。这里在轮询循环里补救：只要超过
+     * [progressStaleMillis] 没收到新进度，就重画成不确定进度条（系统会画成流动动画），
+     * 文案换成已等待时长，至少能看出"还在跑"。
+     *
+     * 已切成不确定态的不重复 startForeground（避免每次轮询都无谓刷新通知）。
+     * 一旦重新收到真实进度，updateMonitor 会把 staleNotified 清掉，下次陈旧时又能切。
+     */
+    private fun refreshStaleProgressNotification(
+        promptId: String,
+        baseUrl: String,
+        workflowName: String,
+        workflowPath: String,
+    ) {
+        val updatedAt = progressUpdatedAt[promptId] ?: return
+        if (System.currentTimeMillis() - updatedAt <= progressStaleMillis) return
+        if (!staleNotified.add(promptId)) return
+        val waited = ((System.currentTimeMillis() - updatedAt) / 1000).coerceAtLeast(0)
+        startForeground(
+            FOREGROUND_ID,
+            notification(
+                "正在生成",
+                listOf(workflowName, "已有 $waited 秒没有新进度，仍在运行").joinToString(" · "),
+                ongoing = true,
+                progress = -1,
+                promptId = promptId,
+                baseUrl = baseUrl,
+                workflowPath = workflowPath,
+            ),
+        )
     }
 
     private fun readStatus(baseUrl: String, promptId: String): PollStatus {

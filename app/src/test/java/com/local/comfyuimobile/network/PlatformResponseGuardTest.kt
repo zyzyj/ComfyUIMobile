@@ -173,6 +173,26 @@ class PlatformResponseGuardTest {
     }
 
     @Test
+    fun plainText405IsUnsupportedSoSaveFallsBackToLocal() {
+        // 真机证据：AI Studio 的 api_serving 反代对 /userdata 的 POST 回的是纯文本
+        // `405: Method Not Allowed`（不是 HTML）。改动前只按"正文是网页"判 unsupported，
+        // 它被判成普通失败 → 既不上报"服务器不支持",也不降级到本地草稿，用户看到
+        // "工作流保存失败"。405 现在必须判为 unsupported。
+        val error = runCatching { PlatformResponseGuard.guard(405, "405: Method Not Allowed") }
+            .exceptionOrNull() as PlatformResponseException
+        assertTrue(error.unsupported)
+    }
+
+    @Test
+    fun json404StaysSupportedBecauseDirectoryMayJustBeMissing() {
+        // 404 + JSON 正文仍不判 unsupported：可能只是 workflows 目录还没建，
+        // 属于暂时性错误，不该因一次 404 就把整个云端存储功能禁掉。
+        val error = runCatching { PlatformResponseGuard.guard(404, """{"error":{"message":"not found"}}""") }
+            .exceptionOrNull() as PlatformResponseException
+        assertFalse(error.unsupported)
+    }
+
+    @Test
     fun authWallHtmlReportsLoginInsteadOfUnsupported() {
         // v0.1.70：反代的登录墙常以 403 + 普通错误页出现（日志 19:40:39 那次
         // 报成了"该服务器不支持此接口"，其实是 Cookie 没带对，重试也不会好）。

@@ -23,6 +23,16 @@ object PlatformResponseGuard {
     /** 判定为"不支持此接口"的 HTTP 码。 */
     private val UNSUPPORTED_CODES = setOf(400, 404, 405, 501)
 
+    /**
+     * 光看 HTTP 码就能断定"服务端根本没路由这个方法"的码。
+     *
+     * 405（Method Not Allowed）/ 501（Not Implemented）语义明确：这个请求方法在这个路径上
+     * 不会被处理，不重试也不亏。**不把 400/404 放进来**：它们可能是"请求体有问题"或
+     * "目录还没建"这类暂时性错误，重试有意义，不该直接判死刑（那两个字码仍靠"正文是
+     * 网页"来判不支持，与改动前一致）。
+     */
+    private val NEVER_ROUTED_CODES = setOf(405, 501)
+
     /** 反向代理的登录墙常见码：返回 HTML 时按"需要登录"报，而不是"不支持"。 */
     private val AUTH_CODES = setOf(401, 403)
 
@@ -109,12 +119,16 @@ object PlatformResponseGuard {
     /**
      * 判定"这个平台根本不支持该接口"。
      *
-     * 只看正文是不是网页，不看 HTTP 码：ComfyUI 自己的 API 路由从不返回 HTML，
-     * 而反向代理（AI Studio 等）不支持的接口一律返回整页 HTML。反过来，404 也可能
-     * 是正常业务错误——比如 workflows 目录还没建、或者文件刚被别的设备删了，
-     * 这类 404 的正文是 JSON，属于暂时性错误，重试就好，不该据此禁用整个功能。
+     * 正文是网页时确定不支持：ComfyUI 自己的 API 路由从不返回 HTML，而反向代理
+     * （AI Studio 等）不支持的接口一律返回整页 HTML。
+     *
+     * 另外，**405/501 光看码就够**：它们意味着这个方法在服务端根本没被路由，重试多少次
+     * 结果都一样。真机证据：AI Studio 的 api_serving 反代对 `/userdata` 的 POST 回的是
+     * 纯文本 `405: Method Not Allowed`（不是 HTML），以前只按 HTML 判定，于是它既没被
+     * 当成"不支持"、也没降级到本地草稿，用户看到的就是"工作流保存失败"。
      */
-    private fun isUnsupported(httpCode: Int, body: String): Boolean = isHtml(body)
+    private fun isUnsupported(httpCode: Int, body: String): Boolean =
+        isHtml(body) || httpCode in NEVER_ROUTED_CODES
 
     /** 该接口是否被这个平台支持——不支持的不该反复重试。 */
     fun isUnsupportedResponse(httpCode: Int, body: String): Boolean = isUnsupported(httpCode, body)
