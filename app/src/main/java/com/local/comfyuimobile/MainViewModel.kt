@@ -180,6 +180,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 用户一旦手动改动 Cookie 输入框（包括主动清空），就再也不许自动回填覆盖，
      * 否则"清空重填"这个动作会被下一次 DataStore 推送直接抹掉。
      */
+    /** 每日自动签到 + 领算力开关（内存镜像，打开 App 时从偏好恢复）。 */
+    private var autoDailyTasksEnabled = true
+
     private var cookieSeededAddress: String? = null
     private var cookiePersistJob: Job? = null
     // ===== v0.1.88 AI 提示词助手 =====
@@ -250,6 +253,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         submittedJobIds = stored.submittedJobs,
                         autoSaveResults = stored.autoSaveResults,
                         localDraftsEnabled = stored.localDraftsEnabled,
+                        autoDailyTasks = stored.autoDailyTasks,
                         cacheOutputRules = stored.cacheOutputRules,
                         cacheClearedAt = stored.cacheClearedAt,
                         favoriteResultKeys = stored.favoriteResultKeys,
@@ -266,6 +270,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (submittedJobsChanged && _state.value.activeServer != null) {
                     refreshTasksInternal()
                 }
+                // 每日自动任务：偏好恢复后同步内存开关，并在有账号时跑一次。
+                // 放在这里而不是 onCreate，是因为账号是从 DataStore 异步读出来的，
+                // onCreate 时它还不在。aiStudioAutoDailyTasks 自身幂等（平台会告诉
+                // 我们今天签过没），偏好每次推送都调也无害。
+                autoDailyTasksEnabled = stored.autoDailyTasks
+                if (stored.autoDailyTasks) aiStudioAutoDailyTasks()
                 if (!stored.localDraftsEnabled) {
                     // v0.1.86：只在"用户主动把开关关掉"的那一刻清一次。
                     //
@@ -577,6 +587,58 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 .onFailure { error -> failAiStudio("签到失败", error) }
         }
+    }
+
+    /**
+     * 每日自动签到 + 领算力（打开 App / 切账号时自动跑一次）。
+     *
+     * 平台能拿到的积分就两类：① 每日签到（连续签到递增，断签重头）；
+     * ② 一次性任务（完善资料/公开项目/模型/数据集/报名课程）——后者必须
+     * 真实创作内容，脚本代劳会被风控，不做。所以"自动获取积分"的边界就是
+     * 签到 + 领每日算力，这两件小事漏一天就断签，自动化的价值正在这里。
+     *
+     * 幂等：平台用 `isFinishSign` 告诉我们今天签过没有，签过就直接跳过；
+     * 这样不管是每次冷启动还是切账号，都不会重复发请求。
+     */
+    fun aiStudioAutoDailyTasks() {
+        if (!autoDailyTasksEnabled) return
+        val account = _state.value.aiStudio.activeAccount() ?: return
+        if (aiStudioActionJob?.isActive == true) return
+        aiStudioActionJob = viewModelScope.launch {
+            // 先查今天的签到状态（同时把积分/算力刷新一遍，一举两得）。
+            val (points, signedToday) = runCatching { aiStudio.fetchPointsInfo(account) }
+                .getOrDefault(null to null)
+            val alreadySigned = signedToday == true
+            if (!alreadySigned) {
+                runCatching { aiStudio.signIn(account) }
+                    .onSuccess {
+                        AppLogger.info("每日自动签到成功：${account.displayName()}")
+                        _state.update { it.copy(aiStudio = it.aiStudio.copy(signedInToday = true)) }
+                    }
+                    .onFailure { error ->
+                        if (error is CancellationException) throw error
+                        AppLogger.warn("每日自动签到失败（不影响其它功能）", error)
+                    }
+            } else {
+                AppLogger.info("每日自动签到：今天已签过，跳过")
+            }
+            // 领每日算力：平台把"今日已领过"当正常结果返回，不会报错。
+            runCatching { aiStudio.receiveResource(account) }
+                .onSuccess { AppLogger.info("每日自动领算力：$it") }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    AppLogger.warn("每日自动领算力失败（不影响其它功能）", error)
+                }
+            if (alreadySigned || points != null) return@launch
+            // 两者都没结果时，静默刷新一次资源面板。
+            aiStudioRefreshAccount()
+        }
+    }
+
+    /** 开关：每日自动签到 + 领算力。 */
+    fun setAutoDailyTasks(enabled: Boolean) {
+        autoDailyTasksEnabled = enabled
+        viewModelScope.launch { runCatching { preferences.setAutoDailyTasks(enabled) } }
     }
 
     /**

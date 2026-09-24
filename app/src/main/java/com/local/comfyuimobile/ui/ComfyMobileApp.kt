@@ -3425,6 +3425,54 @@ private fun MissingNodesCard(missing: List<String>) {
     }
 }
 
+/**
+ * 设置页的一个分组。
+ *
+ * 设置项以前是一条条线性往下堆（截图里一屏堆了 8 组，只能靠横线分隔，
+ * 分不清哪里到哪里）。这里改成「一张玻璃卡 = 一个分组」：标题在卡内、
+ * 左侧一条强调竖条，卡片之间留 10dp——层级一眼可辨，也贴合液态玻璃的观感。
+ */
+@Composable
+private fun SettingsSection(title: String, content: @Composable () -> Unit) {
+    GlassCard(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(
+                    Modifier
+                        .width(3.dp)
+                        .height(15.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(MaterialTheme.colorScheme.primary),
+                )
+                Text(title, style = MaterialTheme.typography.titleSmall)
+            }
+            content()
+        }
+    }
+}
+
+/** 一行开关设置：左文右开关，纵向排布不变。 */
+@Composable
+private fun SettingsToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(checked, onCheckedChange)
+    }
+}
+
 @Composable
 private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismiss: () -> Unit) {
     val context = LocalContext.current
@@ -3491,18 +3539,59 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
         onDismissRequest = onDismiss,
         title = { Text("设置") },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("服务器", style = MaterialTheme.typography.titleSmall)
-                Text(state.activeServer?.baseUrl ?: "尚未连接")
-                state.activeServer?.lastSeen?.takeIf { it > 0L }?.let { Text("最后在线：${formatTime(it)}") }
-                state.systemStats?.let { stats ->
-                    Text("ComfyUI ${stats.comfyVersion} · 前端 ${stats.frontendVersion}")
-                    stats.devices.forEach { Text("${it.name}\n显存 ${formatSize(it.vramFree)} / ${formatSize(it.vramTotal)} 可用") }
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                // —— 服务器 ——
+                SettingsSection("服务器") {
+                    Text(
+                        state.activeServer?.baseUrl ?: "尚未连接",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    state.activeServer?.lastSeen?.takeIf { it > 0L }?.let {
+                        Text(
+                            "最后在线：${formatTime(it)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    state.systemStats?.let { stats ->
+                        Text(
+                            "ComfyUI ${stats.comfyVersion} · 前端 ${stats.frontendVersion}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        stats.devices.forEach {
+                            Text(
+                                "${it.name} · 显存 ${formatSize(it.vramFree)} / ${formatSize(it.vramTotal)} 可用",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (state.activeServer != null) {
+                        OutlinedButton(onClick = { viewModel.disconnect() }, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Outlined.CloudOff, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("断开当前服务器")
+                        }
+                    }
                 }
-                OutlinedButton(onClick = viewModel::disconnect, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Outlined.CloudOff, null); Spacer(Modifier.width(6.dp)); Text("切换服务器")
+
+                // —— AI Studio ——
+                SettingsSection("AI Studio") {
+                    Text(
+                        "账号在「账号」页登录与管理",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    SettingsToggleRow(
+                        title = "每日自动签到并领算力",
+                        subtitle = "打开 App 时自动完成，连续签到才不会断；平台的一次性任务（公开项目、发布模型等）需真实创作内容，不代做",
+                        checked = state.autoDailyTasks,
+                        onCheckedChange = viewModel::setAutoDailyTasks,
+                    )
                 }
-                HorizontalDivider()
+
+                // —— AI 提示词助手 ——
                 LlmSettingsSection(
                     state = state,
                     expanded = llmExpanded,
@@ -3510,138 +3599,180 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                     onSave = viewModel::saveLlmConfig,
                     onTest = viewModel::testLlmConnection,
                 )
-                HorizontalDivider()
-                Text(
-                    "AI Studio 账号在「账号」页管理",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                HorizontalDivider()
-                Text("图片保存位置", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    if (state.saveFolderUri != null) {
-                        "已选择自定义目录，生成结果将保存到所选文件夹"
-                    } else {
-                        "生成结果默认保存到系统相册 Pictures/ComfyUIMobile"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = { saveFolderLauncher.launch(null) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Icon(Icons.Outlined.Folder, null); Spacer(Modifier.width(4.dp)); Text("选择目录")
-                    }
-                    if (state.saveFolderUri != null) {
+
+                // —— 图片保存 ——
+                SettingsSection("图片保存") {
+                    Text(
+                        if (state.saveFolderUri != null) {
+                            "已选择自定义目录，生成结果将保存到所选文件夹"
+                        } else {
+                            "生成结果默认保存到系统相册 Pictures/ComfyUIMobile"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(
-                            onClick = { viewModel.setSaveFolder(null) },
+                            onClick = { saveFolderLauncher.launch(null) },
                             modifier = Modifier.weight(1f),
                         ) {
-                            Icon(Icons.Outlined.Delete, null); Spacer(Modifier.width(4.dp)); Text("恢复默认")
+                            Icon(Icons.Outlined.Folder, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("选择目录")
+                        }
+                        if (state.saveFolderUri != null) {
+                            OutlinedButton(
+                                onClick = { viewModel.setSaveFolder(null) },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Icon(Icons.Outlined.Delete, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("恢复默认")
+                            }
+                        }
+                    }
+                    SettingsToggleRow(
+                        title = "生成完成自动保存到图片文件夹",
+                        subtitle = "任务完成后把最新结果自动写入上方选择的文件夹（未设置则只保留在本地作品）",
+                        checked = state.autoSaveResults,
+                        onCheckedChange = viewModel::setAutoSaveResults,
+                    )
+                }
+
+                // —— 本地作品白名单 ——
+                SettingsSection("本地作品保存白名单") {
+                    Text(
+                        "按输出部件类型对所有工作流生效，不绑定单个工作流。只保存本 App 提交的任务；电脑浏览器提交的任务不会进入本地。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (state.cacheOutputRules.isEmpty()) {
+                        Text(
+                            "尚未添加输出部件",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        state.cacheOutputRules.forEach { rule ->
+                            Row(
+                                Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(rule.nodeTitle.ifBlank { rule.nodeType }, style = MaterialTheme.typography.titleSmall)
+                                    Text(
+                                        "${rule.nodeType} · 适用于所有工作流",
+                                        maxLines = 1,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        rule.serverUrl,
+                                        maxLines = 1,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Switch(rule.enabled, { viewModel.setCacheRuleEnabled(rule, it) })
+                                IconButton(onClick = { viewModel.removeCacheRule(rule) }) {
+                                    Icon(Icons.Outlined.Delete, "删除白名单")
+                                }
+                            }
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = { confirmDeleteLocal = true },
+                        enabled = state.localResults.isNotEmpty(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Outlined.Delete, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("删除全部本地作品（${state.localResults.size} 项）")
+                    }
+                }
+
+                // —— 本地草稿 ——
+                SettingsSection("本地草稿") {
+                    SettingsToggleRow(
+                        title = "保存本地草稿",
+                        subtitle = "关闭后打开工作流直接读取服务器版本，不再保存或恢复未保存修改",
+                        checked = state.localDraftsEnabled,
+                        onCheckedChange = viewModel::setLocalDraftsEnabled,
+                    )
+                    if (state.localDraftsEnabled) {
+                        Text(
+                            "当前 ${state.localDraftCount} 个工作流有本地草稿",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        OutlinedButton(
+                            onClick = { confirmClearDrafts = true },
+                            enabled = state.localDraftCount > 0,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Outlined.Delete, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("清除全部本地草稿（${state.localDraftCount}）")
                         }
                     }
                 }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("生成完成自动保存到图片文件夹")
-                        Text(
-                            "任务完成后把最新结果自动写入上方选择的文件夹（未设置则只保留在本地作品）",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+
+                // —— 诊断日志 ——
+                SettingsSection("诊断日志") {
+                    SettingsToggleRow(
+                        title = "记录运行和闪退日志",
+                        subtitle = "不记录提示词、工作流正文或生成图片",
+                        checked = state.loggingEnabled,
+                        onCheckedChange = viewModel::setLoggingEnabled,
+                    )
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedButton(onClick = {
+                            diagnosticLog = viewModel.diagnosticLog()
+                            showDiagnosticLog = true
+                        }) { Text("查看日志") }
+                        OutlinedButton(onClick = {
+                            pendingLogExport = viewModel.diagnosticLog()
+                            logExportLauncher.launch("ComfyUIMobile-${System.currentTimeMillis()}.log")
+                        }) { Text("导出日志") }
+                        TextButton(onClick = viewModel::clearDiagnosticLog) { Text("清空日志") }
                     }
-                    Switch(state.autoSaveResults, viewModel::setAutoSaveResults)
                 }
-                HorizontalDivider()
-                Text("本地作品保存白名单", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "白名单按输出部件类型对所有工作流生效，不再绑定某一个工作流。只保存本 App 提交的任务；电脑浏览器提交的任务不会进入本地。",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                if (state.cacheOutputRules.isEmpty()) {
-                    Text("尚未添加输出部件", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else {
-                    state.cacheOutputRules.forEach { rule ->
-                        OutlinedCard(Modifier.fillMaxWidth()) {
-                            Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(rule.nodeTitle.ifBlank { rule.nodeType }, style = MaterialTheme.typography.titleSmall)
-                                    Text("${rule.nodeType} · 适用于所有工作流", maxLines = 1, style = MaterialTheme.typography.bodySmall)
-                                    Text(rule.serverUrl, maxLines = 1, style = MaterialTheme.typography.labelSmall)
-                                }
-                                Switch(rule.enabled, { viewModel.setCacheRuleEnabled(rule, it) })
-                                IconButton(onClick = { viewModel.removeCacheRule(rule) }) { Icon(Icons.Outlined.Delete, "删除白名单") }
+
+                // —— 软件更新 ——
+                SettingsSection("软件更新") {
+                    OutlinedButton(onClick = { viewModel.checkUpdate() }, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Outlined.Refresh, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("检查更新")
+                    }
+                    state.updateInfo?.let { info ->
+                        Text("发现 ${info.tag}", style = MaterialTheme.typography.bodyMedium)
+                        if (state.updateDownloading) {
+                            LinearProgressIndicator(
+                                progress = { state.updateDownloadProgress ?: 0f },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Text(
+                                "下载中 ${((state.updateDownloadProgress ?: 0f) * 100).toInt()}% · ${state.updateDownloadSource.orEmpty()}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            Button(onClick = viewModel::downloadUpdate, modifier = Modifier.fillMaxWidth()) {
+                                Icon(Icons.Outlined.Download, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("下载并安装")
                             }
                         }
                     }
                 }
-                OutlinedButton(onClick = { confirmDeleteLocal = true }, enabled = state.localResults.isNotEmpty()) {
-                    Icon(Icons.Outlined.Delete, null); Spacer(Modifier.width(4.dp)); Text("删除全部本地作品（${state.localResults.size} 项）")
-                }
-                HorizontalDivider()
-                Text("本地草稿", style = MaterialTheme.typography.titleSmall)
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("保存本地草稿")
-                        Text(
-                            "关闭后打开工作流直接读取服务器版本，不再保存或恢复未保存修改",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    Switch(state.localDraftsEnabled, viewModel::setLocalDraftsEnabled)
-                }
-                if (state.localDraftsEnabled) {
-                    Text("当前 ${state.localDraftCount} 个工作流有本地草稿", style = MaterialTheme.typography.bodySmall)
-                    OutlinedButton(onClick = { confirmClearDrafts = true }, enabled = state.localDraftCount > 0) {
-                        Icon(Icons.Outlined.Delete, null); Spacer(Modifier.width(4.dp)); Text("清除全部本地草稿（${state.localDraftCount}）")
-                    }
-                }
-                HorizontalDivider()
-                Text("诊断日志", style = MaterialTheme.typography.titleSmall)
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("记录运行和闪退日志")
-                        Text("不记录提示词、工作流正文或生成图片", style = MaterialTheme.typography.bodySmall)
-                    }
-                    Switch(state.loggingEnabled, viewModel::setLoggingEnabled)
-                }
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = {
-                        diagnosticLog = viewModel.diagnosticLog()
-                        showDiagnosticLog = true
-                    }) { Text("查看日志") }
-                    OutlinedButton(onClick = {
-                        pendingLogExport = viewModel.diagnosticLog()
-                        logExportLauncher.launch("ComfyUIMobile-${System.currentTimeMillis()}.log")
-                    }) { Text("导出日志") }
-                    TextButton(onClick = viewModel::clearDiagnosticLog) { Text("清空日志") }
-                }
-                HorizontalDivider()
-                 Text("软件更新", style = MaterialTheme.typography.titleSmall)
-                 OutlinedButton(onClick = { viewModel.checkUpdate() }) { Text("检查更新") }
-                 state.updateInfo?.let { info ->
-                     Text("发现 ${info.tag}")
-                     if (state.updateDownloading) {
-                         LinearProgressIndicator(
-                             progress = { state.updateDownloadProgress ?: 0f },
-                             modifier = Modifier.fillMaxWidth(),
-                         )
-                         Text(
-                             "下载中 ${((state.updateDownloadProgress ?: 0f) * 100).toInt()}% · ${state.updateDownloadSource.orEmpty()}",
-                             style = MaterialTheme.typography.bodySmall,
-                         )
-                     } else {
-                         Button(onClick = viewModel::downloadUpdate) {
-                             Icon(Icons.Outlined.Download, null); Spacer(Modifier.width(4.dp)); Text("下载并安装")
-                         }
-                     }
-                 }
-                if (state.activeServer != null) {
-                    OutlinedButton(onClick = { viewModel.disconnect(); onDismiss() }) { Icon(Icons.Outlined.CloudOff, null); Spacer(Modifier.width(4.dp)); Text("断开连接") }
-                }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
     )
 }
 
