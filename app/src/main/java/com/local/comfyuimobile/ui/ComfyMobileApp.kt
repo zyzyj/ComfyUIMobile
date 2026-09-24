@@ -602,22 +602,10 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                     }
                 },
                 actions = {
-                    // v0.1.97：账号/控制台页只留「设置」。断开连接、刷新都是
-                    // ComfyUI 连接语境的按钮，摆在这两页既无意义又显杂（用户反馈）。
-                    if (page != MainPage.ACCOUNT && page != MainPage.CONSOLE) {
-                        IconButton(onClick = viewModel::disconnect) {
-                            Icon(Icons.Outlined.CloudOff, "切换服务器")
-                        }
-                        IconButton(onClick = viewModel::refreshOrReconnect) {
-                            Icon(
-                                Icons.Outlined.Refresh,
-                                if (state.status == ConnectionStatus.CONNECTED) "刷新" else "重新连接",
-                            )
-                        }
-                    }
-                    // ComfyUI 服务入口：圆形电脑图标，在设置按钮左边。点在图标下方
-                    // 展开连接/断开按钮（自动连接没连上时的备用方案）。
-                    ComfyServiceChip(state, viewModel)
+                    // ComfyUI 服务入口：圆形电脑图标（在「设置」左边）。点击向下展开
+                    // 「刷新 / 连接 / 断开」——它把原来顶栏那两个旧图标（切换服务器、
+                    // 重新连接）的职责一并接管了，所以下面不再单独放它们。
+                    ComfyServiceChip(state, viewModel, onSwitchServer = { page = MainPage.ACCOUNT })
                     IconButton(onClick = { settings = true }) { Icon(Icons.Outlined.Settings, "设置") }
                 },
             )
@@ -4529,6 +4517,59 @@ private fun RawResponseCard(raw: String, context: Context) {
 
 // ===================== 控制台页 =====================
 
+/** 一个终端特殊键：显示文字 + 实际发给 PTY 的字节序列。 */
+private data class TerminalKey(val label: String, val sequence: String)
+
+/**
+ * 特殊键行内容。
+ *
+ * 挑选依据：这些是软键盘实际打不出、而 shell 里天天要用的控制字符。
+ * 参考 Termius / MuxPod / Mobile SSH 的「extra key row」都是同一路思路。
+ * 注意顺序：把 ESC 与 Ctrl 类放前面（vim、中断场景最常用）。
+ */
+private val TERMINAL_KEYS = listOf(
+    TerminalKey("ESC", "\u001B"),
+    TerminalKey("TAB", "\t"),
+    TerminalKey("Ctrl+C", "\u0003"),
+    TerminalKey("Ctrl+D", "\u0004"),
+    TerminalKey("Ctrl+L", "\u000C"),
+    TerminalKey("Ctrl+Z", "\u001A"),
+    TerminalKey("↑", "\u001B[A"),
+    TerminalKey("↓", "\u001B[B"),
+    TerminalKey("←", "\u001B[D"),
+    TerminalKey("→", "\u001B[C"),
+    TerminalKey("Home", "\u001B[H"),
+    TerminalKey("End", "\u001B[F"),
+    TerminalKey("PgUp", "\u001B[5~"),
+    TerminalKey("PgDn", "\u001B[6~"),
+    TerminalKey("⌫", "\u007F"),
+    TerminalKey("|", "|"),
+    TerminalKey("~", "~"),
+    TerminalKey("-", "-"),
+)
+
+/** 特殊键行 / 字号调节里的小按钮（等宽、深底浅字，与终端同调）。 */
+@Composable
+private fun TerminalKeyButton(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .clip(MaterialTheme.shapes.small)
+            .background(TerminalBg.copy(alpha = if (enabled) 1f else 0.5f))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+            color = if (enabled) TerminalText else TerminalText.copy(alpha = 0.35f),
+        )
+    }
+}
+
 /**
  * 顶栏里的 ComfyUI 服务入口：一个圆形电脑图标（在「设置」左边），点击在图标**下方展开**
  * 一个小面板，里面是状态 + 连接/断开按钮；再点图标收回。
@@ -4540,7 +4581,11 @@ private fun RawResponseCard(raw: String, context: Context) {
  * 底部有一整张卡片守着这个备用入口，现在收成图标，不再占页面面积。
  */
 @Composable
-private fun ComfyServiceChip(state: AppUiState, viewModel: MainViewModel) {
+private fun ComfyServiceChip(
+    state: AppUiState,
+    viewModel: MainViewModel,
+    onSwitchServer: () -> Unit,
+) {
     val panel = state.aiStudio
     val comfyUrl = panel.comfyUiUrl
     val comfyConnected = comfyUrl != null &&
@@ -4617,6 +4662,14 @@ private fun ComfyServiceChip(state: AppUiState, viewModel: MainViewModel) {
                 )
                 Spacer(Modifier.height(6.dp))
                 if (comfyConnected) {
+                    // 接管原顶栏「刷新」按钮的职责：轻量检查服务器连接。
+                    TextButton(
+                        onClick = {
+                            viewModel.refreshOrReconnect()
+                            expanded = false
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("刷新连接") }
                     OutlinedButton(
                         onClick = {
                             viewModel.disconnect()
@@ -4637,6 +4690,15 @@ private fun ComfyServiceChip(state: AppUiState, viewModel: MainViewModel) {
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("连接") }
                 }
+                // 接管原顶栏「切换服务器」按钮的职责：回到账号页选另一台。
+                TextButton(
+                    onClick = {
+                        viewModel.disconnect()
+                        onSwitchServer()
+                        expanded = false
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("切换服务器") }
             }
         }
     }
@@ -4652,6 +4714,13 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
     var commandsExpanded by remember { mutableStateOf(false) }
     var addingCommand by remember { mutableStateOf(false) }
     var newCommandDraft by remember { mutableStateOf("") }
+    // 特殊键行（ESC/TAB/方向键/Ctrl 组合…）的展开态。
+    //
+    // 为什么默认收起：移动端终端必须能发 ESC/TAB/方向键（软键盘打不出来），
+    // 但它同时会占掉一屏高度、把输入框挤小。做成可展开的抽屉，两者兼得。
+    var keysExpanded by remember { mutableStateOf(false) }
+    // 终端字号：12.5sp 偏小，给用户可调。
+    var fontSizeSp by remember { mutableStateOf(12.5f) }
 
     // 新输出到了就滚到底，不然用户看不到刚跑出来的日志。
     LaunchedEffect(panel.terminalLines.size) {
@@ -4759,9 +4828,9 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
             // 把实测列数报给远端 PTY（按等宽字估算），否则它按默认 80 列
             // 排版，窄屏上长行硬折。
             val density = LocalDensity.current
-            val cols = remember(maxWidth, density.fontScale) {
+            val cols = remember(maxWidth, density.fontScale, fontSizeSp) {
                 with(density) {
-                    val charWidthPx = 12.5.sp.toPx() * 0.6f
+                    val charWidthPx = fontSizeSp.sp.toPx() * 0.6f
                     (maxWidth.toPx() / charWidthPx).toInt().coerceIn(20, 200)
                 }
             }
@@ -4800,8 +4869,8 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                                 terminalAnnotatedLine(line.ifEmpty { " " }, TerminalText),
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontFamily = FontFamily.Monospace,
-                                    fontSize = 12.5.sp,
-                                    lineHeight = 20.sp,
+                                    fontSize = fontSizeSp.sp,
+                                    lineHeight = (fontSizeSp * 1.6f).sp,
                                 ),
                             )
                         }
@@ -4856,7 +4925,19 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     inner()
                 },
             )
-            // 「展开命令」入口：与发送键并排，点开就是个可增删的命令面板。
+            // 「特殊键」入口：软键盘打不出 ESC/TAB/方向键，需要它们时点开。
+            IconButton(
+                onClick = { keysExpanded = !keysExpanded },
+                modifier = Modifier.size(34.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.Tune,
+                    "特殊键",
+                    Modifier.size(19.dp),
+                    tint = if (keysExpanded) TerminalPrompt else TerminalText.copy(alpha = 0.85f),
+                )
+            }
+            // 「常用命令」入口：点开是个可增删的命令面板。
             IconButton(
                 onClick = { commandsExpanded = !commandsExpanded },
                 modifier = Modifier.size(34.dp),
@@ -4874,6 +4955,48 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                 enabled = panel.consoleConnected && panel.consoleDraft.isNotBlank(),
                 modifier = Modifier.size(34.dp),
             ) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "发送", Modifier.size(18.dp)) }
+        }
+
+        // —— 特殊键行（可展开）——
+        // 移动端终端的刚需：软键盘发不出 ESC/TAB/方向键/Ctrl 组合，但 shell 里到处要用
+        // （vim 退出、命令补全、翻历史、中断）。做成抽屉式，默认收起不挤压输入框。
+        if (keysExpanded) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .background(TerminalInputBg)
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    TERMINAL_KEYS.forEach { key ->
+                        TerminalKeyButton(key.label, enabled = panel.consoleConnected) {
+                            viewModel.aiStudioSendKey(key.sequence)
+                        }
+                    }
+                }
+                // 字号调节：参考里移动终端全都支持（捏合缩放），这里用 −/＋ 更精准。
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "字号",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TerminalText.copy(alpha = 0.6f),
+                    )
+                    Spacer(Modifier.weight(1f))
+                    TerminalKeyButton("A−", enabled = fontSizeSp > 9f) { fontSizeSp -= 1f }
+                    Text(
+                        "${fontSizeSp.toInt()}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TerminalText,
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                    )
+                    TerminalKeyButton("A+", enabled = fontSizeSp < 22f) { fontSizeSp += 1f }
+                }
+            }
         }
 
         // —— 常用命令面板（展开后可点、可删、可加）——
