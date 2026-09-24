@@ -3983,7 +3983,12 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
         if (result.resultCode == Activity.RESULT_OK) viewModel.onAiStudioLoggedIn()
     }
     LaunchedEffect(panel.activeAccountId) {
-        if (panel.activeAccount() != null) viewModel.aiStudioRefreshAccount()
+        if (panel.activeAccount() != null) {
+            viewModel.aiStudioRefreshAccount()
+            // 以前只刷资源、不拉项目列表，于是冷启动进账号页项目永远是空的，
+            // 要手动点「刷新」（用户反馈）。这里一并拉取，silent 避免闪圈。
+            if (panel.projects.isEmpty()) viewModel.aiStudioLoadProjects(silent = true)
+        }
     }
 
     LazyColumn(
@@ -4284,15 +4289,19 @@ private fun ProjectCard(project: AiStudioProject, panel: AiStudioState, viewMode
                         when {
                             starting -> "正在启动…"
                             stopping -> "正在停止…"
-                            project.running -> "运行中"
+                            // 平台的 running 只是受理回执，环境地址未确认前不报"运行中"——
+                            // 否则用户看到「运行中」就点连接，撞上"平台没有返回环境地址"。
+                            project.running && panel.environmentReadyProjectId == project.projectId -> "运行中"
+                            project.running -> "正在启动环境…"
                             else -> "已停止"
                         },
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (project.running || starting) MaterialTheme.colorScheme.primary
+                        color = if (starting || stopping || project.running) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (starting || stopping) {
+                // 项目已受理但环境还在分配时，给个转圈——比干等一个静态文案好。
+                if (starting || stopping || (project.running && panel.environmentReadyProjectId != project.projectId)) {
                     CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                 }
             }
@@ -4515,16 +4524,22 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
         // 看起来像五个不相干的东西摞在一起。
         GlassCard(modifier = Modifier.fillMaxWidth().weight(1f), strong = true) {
             Column(Modifier.fillMaxSize()) {
-                // —— 标题栏：状点 + 状态 + 操作 ——
+                // —— 标题栏：状态点 + 状态 + 操作 ——
+                // ⚠️ 「连接/断开」必须常驻：上一版重做时只留了中斡/清屏/复制三个图标，
+                // 把连接入口弄丢了（用户截图里找不到按钮）。且它是主操作，给实心按钮
+                // 而不是图标——未连接时右上角一眼就能看到「连接」。
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                    modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Box(
                         Modifier.size(9.dp).clip(CircleShape).background(
-                            if (panel.consoleConnected) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.outline,
+                            when {
+                                panel.consoleBusy -> MaterialTheme.colorScheme.tertiary
+                                panel.consoleConnected -> MaterialTheme.colorScheme.primary
+                                else -> MaterialTheme.colorScheme.outline
+                            },
                         ),
                     )
                     Column(Modifier.weight(1f)) {
@@ -4542,13 +4557,12 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     if (panel.consoleBusy) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                     }
-                    // 对「正在跑的东西」的操作：中断当前命令（Ctrl+C）。
+                    // 已连接时的次要操作：中断（Ctrl+C）/ 清屏 / 复制。
                     if (panel.consoleConnected) {
                         IconButton(onClick = { viewModel.aiStudioInterruptConsole() }) {
-                            Icon(Icons.Outlined.Close, "中断当前命令", Modifier.size(20.dp))
+                            Icon(Icons.Outlined.Warning, "中断当前命令", Modifier.size(20.dp))
                         }
                     }
-                    // 对「已有输出」的操作：清屏 / 复制。
                     IconButton(
                         onClick = { viewModel.aiStudioClearConsole() },
                         enabled = panel.terminalLines.isNotEmpty(),
@@ -4561,6 +4575,19 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                         },
                         enabled = panel.terminalLines.isNotEmpty(),
                     ) { Icon(Icons.Outlined.ContentCopy, "复制全部输出", Modifier.size(20.dp)) }
+                    // 主操作：连接 / 断开（一直显示，不可缺）。
+                    if (panel.consoleConnected) {
+                        OutlinedButton(
+                            onClick = { viewModel.aiStudioDisconnectConsole() },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        ) { Text("断开") }
+                    } else {
+                        Button(
+                            onClick = { viewModel.aiStudioConnectConsole() },
+                            enabled = !panel.consoleBusy,
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                        ) { Text("连接") }
+                    }
                 }
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -4586,7 +4613,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                             )
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                if (panel.consoleConnected) "终端已就绪，在下方输入命令" else "点右上角连接终端",
+                                if (panel.consoleConnected) "终端已就绪，在下方输入命令" else "点右上角「连接」启动终端",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = 0.7f),
                             )
