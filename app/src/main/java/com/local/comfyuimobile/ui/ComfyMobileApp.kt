@@ -74,57 +74,50 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Remove
-import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ChevronLeft
-import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.CloudOff
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.FileOpen
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.FavoriteBorder
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.MoreHoriz
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.SelectAll
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.UploadFile
-import androidx.compose.material.icons.filled.VideoFile
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Remove
+import androidx.compose.material.icons.outlined.ArrowDownward
+import androidx.compose.material.icons.outlined.ArrowDropDown
+import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.ChevronLeft
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.CloudOff
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.FileOpen
+import androidx.compose.material.icons.outlined.Favorite
+import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Save
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.SelectAll
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.UploadFile
+import androidx.compose.material.icons.outlined.VideoFile
+import androidx.compose.material.icons.outlined.Warning
+import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Bolt
-import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Computer
-import androidx.compose.material.icons.outlined.ExpandLess
-import androidx.compose.material.icons.outlined.ExpandMore
-import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Payments
-import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
-import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -138,6 +131,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -146,6 +140,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
@@ -271,9 +266,9 @@ private enum class MainPage(val label: String, val icon: ImageVector, val inBott
     RESULTS("结果", Icons.Outlined.Image),
     TASKS("任务", Icons.AutoMirrored.Outlined.List),
     QUICK("快捷", Icons.Outlined.PlayArrow),
-    // 图标沿用本文件已验证可用的 Icons.Default.Tune（Outlined 版不确定存在）；
+    // 图标沿用本文件已验证可用的 Icons.Outlined.Tune（Outlined 版不确定存在）；
     // 它不进底栏，实际不会渲染，这里只为保持枚举完整。
-    PARAMETERS("参数", Icons.Default.Tune, inBottomBar = false),
+    PARAMETERS("参数", Icons.Outlined.Tune, inBottomBar = false),
     ;
 
     companion object {
@@ -364,7 +359,7 @@ private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar
                 title = {},
                 actions = {
                     IconButton(onClick = { settings = true }) {
-                        Icon(Icons.Default.Settings, "设置")
+                        Icon(Icons.Outlined.Settings, "设置")
                     }
                 },
             )
@@ -375,7 +370,7 @@ private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar
             Modifier.fillMaxSize().padding(padding).padding(20.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Icon(Icons.Default.Wifi, null, Modifier.size(56.dp), tint = MaterialTheme.colorScheme.primary)
+            Icon(Icons.Outlined.Wifi, null, Modifier.size(56.dp), tint = MaterialTheme.colorScheme.primary)
             Text("ComfyUI 手机端", style = MaterialTheme.typography.headlineMedium)
             Text(
                 "连接你信任的 ComfyUI 服务器。支持局域网、VPN、公网 HTTPS 地址，" +
@@ -414,13 +409,13 @@ private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(onClick = { viewModel.connect() }, enabled = !state.loading) {
                     if (state.loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    else Icon(Icons.Default.Wifi, null)
+                    else Icon(Icons.Outlined.Wifi, null)
                     Spacer(Modifier.width(6.dp))
                     Text("连接")
                 }
                 OutlinedButton(onClick = viewModel::scanLan, enabled = !state.scanning) {
                     if (state.scanning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    else Icon(Icons.Default.Search, null)
+                    else Icon(Icons.Outlined.Search, null)
                     Spacer(Modifier.width(6.dp))
                     Text("扫描局域网")
                 }
@@ -505,7 +500,7 @@ private fun ConnectionProgressCard(state: AppUiState) {
 private fun ServerCard(profile: ServerProfile, onClick: () -> Unit, onDelete: (() -> Unit)? = null) {
     OutlinedCard(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.CheckCircle, null, tint = MaterialTheme.colorScheme.secondary)
+            Icon(Icons.Outlined.CheckCircle, null, tint = MaterialTheme.colorScheme.secondary)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(profile.name, style = MaterialTheme.typography.titleSmall)
@@ -513,7 +508,7 @@ private fun ServerCard(profile: ServerProfile, onClick: () -> Unit, onDelete: ((
                 Text(LanAddress.withoutCredentials(profile.baseUrl), style = MaterialTheme.typography.bodySmall)
             }
             Text(profile.comfyVersion, style = MaterialTheme.typography.labelSmall)
-            if (onDelete != null) IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "删除服务器") }
+            if (onDelete != null) IconButton(onClick = onDelete) { Icon(Icons.Outlined.Delete, "删除服务器") }
         }
     }
 }
@@ -564,7 +559,7 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                 },
                 navigationIcon = {
                     if (page != MainPage.ACCOUNT && page != MainPage.CONSOLE) {
-                        Icon(Icons.Default.Wifi, null, Modifier.padding(start = 12.dp), tint = MaterialTheme.colorScheme.secondary)
+                        Icon(Icons.Outlined.Wifi, null, Modifier.padding(start = 12.dp), tint = MaterialTheme.colorScheme.secondary)
                     }
                 },
                 actions = {
@@ -572,27 +567,40 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                     // ComfyUI 连接语境的按钮，摆在这两页既无意义又显杂（用户反馈）。
                     if (page != MainPage.ACCOUNT && page != MainPage.CONSOLE) {
                         IconButton(onClick = viewModel::disconnect) {
-                            Icon(Icons.Default.CloudOff, "切换服务器")
+                            Icon(Icons.Outlined.CloudOff, "切换服务器")
                         }
                         IconButton(onClick = viewModel::refreshOrReconnect) {
                             Icon(
-                                Icons.Default.Refresh,
+                                Icons.Outlined.Refresh,
                                 if (state.status == ConnectionStatus.CONNECTED) "刷新" else "重新连接",
                             )
                         }
                     }
-                    IconButton(onClick = { settings = true }) { Icon(Icons.Default.Settings, "设置") }
+                    IconButton(onClick = { settings = true }) { Icon(Icons.Outlined.Settings, "设置") }
                 },
             )
         },
         bottomBar = {
-            NavigationBar {
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp,
+            ) {
                 MainPage.bottomBarEntries.forEach { target ->
                     NavigationBarItem(
                         selected = page == target,
                         onClick = { page = target },
                         icon = { Icon(target.icon, null) },
-                        label = { Text(target.label) },
+                        label = { Text(target.label, style = MaterialTheme.typography.labelSmall) },
+                        colors = NavigationBarItemDefaults.colors(
+                            // 选中：青绿强调色 + 淡青底标；未选中：中性灰。
+                            // 不显式给值的话，选中态会拿 secondaryContainer（以前是 M3
+                            // 默认紫，现在已改中性灰，但直接指定更有保证）。
+                            selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
                     )
                 }
             }
@@ -673,7 +681,7 @@ private fun WorkflowScreen(state: AppUiState, viewModel: MainViewModel, onOpenPa
             onValueChange = { search = it },
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             label = { Text("搜索工作流") },
-            leadingIcon = { Icon(Icons.Default.Search, null) },
+            leadingIcon = { Icon(Icons.Outlined.Search, null) },
             singleLine = true,
         )
         Row(
@@ -693,7 +701,7 @@ private fun WorkflowScreen(state: AppUiState, viewModel: MainViewModel, onOpenPa
             FilledTonalButton(onClick = {
                 importLauncher.launch(arrayOf("application/json", "text/plain", "image/*"))
             }) {
-                Icon(Icons.Default.UploadFile, null); Spacer(Modifier.width(4.dp)); Text("打开工作流文件")
+                Icon(Icons.Outlined.UploadFile, null); Spacer(Modifier.width(4.dp)); Text("打开工作流文件")
             }
         }
         Text(
@@ -703,30 +711,80 @@ private fun WorkflowScreen(state: AppUiState, viewModel: MainViewModel, onOpenPa
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (state.previewWorkflow != null) {
+            // 以前 6 个按钮（打开参数/新建副本/改名/移动/导出/删除）横排，手机上
+            // 最后两个直接被截断（截图里「移动」只露半个字）。改成：主操作保留，
+            // 其余收进溢出菜单——一行干净，也不会再被挤掉。
+            var actionsExpanded by remember { mutableStateOf(false) }
             Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                Text(
+                    state.previewWorkflow.entry.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
                 Button(onClick = {
                     viewModel.openPreviewedWorkflow()
                     onOpenParameters()
                 }) { Text("打开参数") }
-                OutlinedButton(onClick = {
-                    dialogText = state.previewWorkflow.entry.name.substringBeforeLast('.')
-                    duplicateDialog = true
-                }) { Text("新建副本") }
-                OutlinedButton(onClick = {
-                    dialogText = state.previewWorkflow.entry.name.substringBeforeLast('.')
-                    renameDialog = true
-                }) { Text("改名") }
-                OutlinedButton(onClick = {
-                    dialogText = state.previewWorkflow.entry.path.substringBeforeLast('/', "workflows")
-                    moveDialog = true
-                }) { Text("移动") }
-                OutlinedButton(onClick = {
-                    state.previewWorkflow.let { export -> exportRaw = export.rawJson; exportLauncher.launch(export.entry.name) }
-                }) { Text("导出") }
-                OutlinedButton(onClick = { deleteDialog = true }) { Text("删除") }
+                Box {
+                    IconButton(onClick = { actionsExpanded = true }) {
+                        Icon(Icons.Outlined.MoreVert, "更多操作")
+                    }
+                    DropdownMenu(expanded = actionsExpanded, onDismissRequest = { actionsExpanded = false }) {
+                        DropdownMenuItem(
+                            text = { Text("新建副本") },
+                            leadingIcon = { Icon(Icons.Outlined.ContentCopy, null) },
+                            onClick = {
+                                actionsExpanded = false
+                                dialogText = state.previewWorkflow.entry.name.substringBeforeLast('.')
+                                duplicateDialog = true
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("改名") },
+                            leadingIcon = { Icon(Icons.Outlined.Edit, null) },
+                            onClick = {
+                                actionsExpanded = false
+                                dialogText = state.previewWorkflow.entry.name.substringBeforeLast('.')
+                                renameDialog = true
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("移动") },
+                            leadingIcon = { Icon(Icons.Outlined.Folder, null) },
+                            onClick = {
+                                actionsExpanded = false
+                                dialogText = state.previewWorkflow.entry.path.substringBeforeLast('/', "workflows")
+                                moveDialog = true
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("导出") },
+                            leadingIcon = { Icon(Icons.Outlined.Download, null) },
+                            onClick = {
+                                actionsExpanded = false
+                                state.previewWorkflow?.let { export ->
+                                    exportRaw = export.rawJson
+                                    exportLauncher.launch(export.entry.name)
+                                }
+                            },
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                            leadingIcon = { Icon(Icons.Outlined.Delete, null, tint = MaterialTheme.colorScheme.error) },
+                            onClick = {
+                                actionsExpanded = false
+                                deleteDialog = true
+                            },
+                        )
+                    }
+                }
             }
         }
         val filtered = WorkflowBrowser.entries(state.workflows, currentFolder, search)
@@ -800,28 +858,54 @@ private fun WorkflowRow(
     onDelete: (() -> Unit)? = null,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
-    Card(
+    // 以前用 surfaceVariant 整块填底，在同样偏灰的页面上就是一片灰块堆叠
+    // （截图里一眼看不出层级）。改成：白底 + 淡描边，选中时才用强调色染底。
+    OutlinedCard(
         modifier = Modifier.fillMaxWidth().combinedClickable(
             onClick = onClick,
             onDoubleClick = onDoubleClick,
             onLongClick = { if (onDelete != null) menuExpanded = true },
         ),
-        colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant),
+        colors = CardDefaults.outlinedCardColors(
+            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surface,
+        ),
+        border = BorderStroke(
+            1.dp,
+            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+            else MaterialTheme.colorScheme.outlineVariant,
+        ),
     ) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(if (entry.isDirectory) Icons.Default.Folder else Icons.Default.FileOpen, null)
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                if (entry.isDirectory) Icons.Outlined.Folder else Icons.Outlined.FileOpen,
+                null,
+                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(entry.name, style = MaterialTheme.typography.titleSmall)
-                Text(entry.path, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                Text(entry.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    entry.path,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
-            if (!entry.isDirectory) Text(formatSize(entry.size), style = MaterialTheme.typography.labelSmall)
+            if (!entry.isDirectory) {
+                Text(
+                    formatSize(entry.size),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         if (onDelete != null) {
             DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
                 DropdownMenuItem(
                     text = { Text("删除") },
-                    leadingIcon = { Icon(Icons.Default.Delete, null) },
+                    leadingIcon = { Icon(Icons.Outlined.Delete, null) },
                     onClick = { menuExpanded = false; onDelete() },
                 )
             }
@@ -925,7 +1009,7 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
                             )
                         }
                         Icon(
-                            if (recentMenuExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            if (recentMenuExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
                             "选择最近打开的工作流",
                         )
                     }
@@ -952,7 +1036,7 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
                                 },
                                 leadingIcon = {
                                     Icon(
-                                        if (entry.path == workflow.entry.path) Icons.Default.CheckCircle else Icons.Default.History,
+                                        if (entry.path == workflow.entry.path) Icons.Outlined.CheckCircle else Icons.Outlined.History,
                                         null,
                                     )
                                 },
@@ -968,20 +1052,22 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
                 }
             }
             Spacer(Modifier.weight(0.28f))
-            TextButton(onClick = { layoutDialog = true }, modifier = Modifier.height(42.dp)) { Text("表单布局") }
+            // 保存/另存分段控件：把两个动作绑进一个胶囊里，比两个并列按钮更紧凑、
+            // 也更明确"它们是同一组文件操作"。中间竖线分隔 + 等分宽度。
+            TextButton(onClick = { layoutDialog = true }, modifier = Modifier.height(40.dp)) { Text("表单布局") }
             Surface(
-                modifier = Modifier.width(158.dp).height(42.dp),
-                shape = RoundedCornerShape(21.dp),
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.width(152.dp).height(40.dp),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         Modifier.weight(1f).fillMaxHeight().clickable { viewModel.saveWorkflow() },
                         contentAlignment = Alignment.Center,
-                    ) { Text("保存", color = MaterialTheme.colorScheme.onSecondaryContainer) }
+                    ) { Text("保存", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface) }
                     Box(
-                        Modifier.width(1.dp).fillMaxHeight(0.58f).background(MaterialTheme.colorScheme.outlineVariant),
+                        Modifier.width(1.dp).fillMaxHeight(0.5f).background(MaterialTheme.colorScheme.outline),
                     )
                     Box(
                         Modifier.weight(1f).fillMaxHeight().clickable {
@@ -990,7 +1076,7 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
                             saveAsDialog = true
                         },
                         contentAlignment = Alignment.Center,
-                    ) { Text("另存", color = MaterialTheme.colorScheme.onSecondaryContainer) }
+                    ) { Text("另存", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface) }
                 }
             }
         }
@@ -1003,7 +1089,7 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
                 Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            Icons.Default.Refresh,
+                            Icons.Outlined.Refresh,
                             null,
                             Modifier.size(16.dp),
                             tint = MaterialTheme.colorScheme.primary,
@@ -1111,7 +1197,7 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
             IconButton(
                 onClick = { if (state.batchCount > 1) viewModel.setBatchCount(state.batchCount - 1) },
                 enabled = !state.generating,
-            ) { Icon(Icons.Default.Remove, "减少出图数量") }
+            ) { Icon(Icons.Outlined.Remove, "减少出图数量") }
             Text(
                 "${state.batchCount}",
                 modifier = Modifier.width(36.dp),
@@ -1121,7 +1207,7 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
             IconButton(
                 onClick = { if (state.batchCount < 16) viewModel.setBatchCount(state.batchCount + 1) },
                 enabled = !state.generating,
-            ) { Icon(Icons.Default.Add, "增加出图数量") }
+            ) { Icon(Icons.Outlined.Add, "增加出图数量") }
         }
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
@@ -1149,7 +1235,7 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
                 enabled = !state.generating && !state.loading && state.bridgeReady && localProblems.isEmpty(),
                 modifier = Modifier.weight(1f),
             ) {
-                Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text(if (state.generating) "生成中…" else "生成")
+                Icon(Icons.Outlined.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text(if (state.generating) "生成中…" else "生成")
             }
         }
         val firstProblem = localProblems.firstOrNull()?.let { problem ->
@@ -1303,7 +1389,7 @@ private fun NodeParameterCard(
                         if (active) Text("正在执行", color = Color(0xFF35C46A), style = MaterialTheme.typography.labelMedium)
                     }
                     Spacer(Modifier.width(6.dp))
-                    Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, if (expanded) "收起" else "展开")
+                    Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, if (expanded) "收起" else "展开")
                     if (node.outputMarkers.isNotEmpty()) Spacer(Modifier.width(8.dp))
                     ConnectionMarkerLabels(node.outputMarkers)
                 }
@@ -1445,10 +1531,10 @@ private fun ParameterEditor(
                 // v0.1.88：AI 提示词助手入口。放在"历史"左边，两者都是"往这个框里
                 // 塞内容"的动作，摆一起最符合直觉。
                 IconButton(onClick = onAiAssist, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Default.Edit, "AI 写提示词", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
+                    Icon(Icons.Outlined.Edit, "AI 写提示词", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
                 }
                 IconButton(onClick = onHistory, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Default.History, "历史", modifier = Modifier.size(20.dp))
+                    Icon(Icons.Outlined.History, "历史", modifier = Modifier.size(20.dp))
                 }
             }
         }
@@ -1477,7 +1563,7 @@ private fun ParameterEditor(
                     singleLine = true,
                 )
                 FilledTonalButton(onClick = onUpload, enabled = !field.linked) {
-                    Icon(if (field.kind == ParameterKind.VIDEO) Icons.Default.VideoFile else Icons.Default.UploadFile, null)
+                    Icon(if (field.kind == ParameterKind.VIDEO) Icons.Outlined.VideoFile else Icons.Outlined.UploadFile, null)
                     Spacer(Modifier.width(6.dp))
                     Text(if (field.kind == ParameterKind.VIDEO) "从视频相册选择并上传" else "从相册选择并上传")
                 }
@@ -1505,7 +1591,7 @@ private fun ComboField(field: ParameterField, viewModel: MainViewModel) {
     var query by remember { mutableStateOf("") }
     Box {
         OutlinedButton(onClick = { expanded = true }, enabled = !field.linked, modifier = Modifier.fillMaxWidth()) {
-            Text(field.displayValue, modifier = Modifier.weight(1f)); Icon(Icons.Default.ArrowDownward, null)
+            Text(field.displayValue, modifier = Modifier.weight(1f)); Icon(Icons.Outlined.ArrowDownward, null)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false; query = "" }) {
             if (field.options.size > 12) {
@@ -1586,7 +1672,7 @@ private fun ParameterHistoryScreen(state: AppUiState, viewModel: MainViewModel) 
             .padding(horizontal = 16.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Icon(Icons.Default.History, null, Modifier.size(42.dp), tint = MaterialTheme.colorScheme.primary)
+        Icon(Icons.Outlined.History, null, Modifier.size(42.dp), tint = MaterialTheme.colorScheme.primary)
         Text("最近打开的工作流", style = MaterialTheme.typography.titleLarge)
         Text(
             "点选一项即可恢复参数；也可以回到“工作流”页选择其他文件。",
@@ -1613,7 +1699,7 @@ private fun ParameterHistoryScreen(state: AppUiState, viewModel: MainViewModel) 
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Icon(Icons.Default.History, null, tint = MaterialTheme.colorScheme.primary)
+                        Icon(Icons.Outlined.History, null, tint = MaterialTheme.colorScheme.primary)
                         Column(Modifier.weight(1f)) {
                             Text(entry.name, style = MaterialTheme.typography.titleSmall, maxLines = 1)
                             Text(
@@ -1644,7 +1730,7 @@ private fun PromptHistoryDialog(field: ParameterField, state: AppUiState, viewMo
                     items(state.promptHistory.filter { query.isBlank() || it.contains(query, true) }) { value ->
                         Row(Modifier.fillMaxWidth().clickable { viewModel.updateField(field.key, value); onDismiss() }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(value, Modifier.weight(1f), maxLines = 3)
-                            IconButton(onClick = { viewModel.removePromptHistory(value) }) { Icon(Icons.Default.Delete, "删除") }
+                            IconButton(onClick = { viewModel.removePromptHistory(value) }) { Icon(Icons.Outlined.Delete, "删除") }
                         }
                         HorizontalDivider()
                     }
@@ -1669,12 +1755,12 @@ private fun LayoutDialog(fields: List<ParameterField>, viewModel: MainViewModel,
                             OutlinedTextField(field.label, { viewModel.renameField(field.key, it) }, Modifier.fillMaxWidth(), label = { Text(field.name) }, singleLine = true)
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("显示", Modifier.weight(1f)); Switch(field.visible, { viewModel.setFieldVisibility(field.key, it) })
-                                IconButton(onClick = { viewModel.moveField(field.key, -1) }) { Icon(Icons.Default.ArrowUpward, "上移") }
-                                IconButton(onClick = { viewModel.moveField(field.key, 1) }) { Icon(Icons.Default.ArrowDownward, "下移") }
+                                IconButton(onClick = { viewModel.moveField(field.key, -1) }) { Icon(Icons.Outlined.ArrowUpward, "上移") }
+                                IconButton(onClick = { viewModel.moveField(field.key, 1) }) { Icon(Icons.Outlined.ArrowDownward, "下移") }
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                AssistChip(onClick = { viewModel.setFieldSection(field.key, ParameterSection.PRIMARY) }, label = { Text("主要") }, leadingIcon = if (field.section == ParameterSection.PRIMARY) {{ Icon(Icons.Default.CheckCircle, null) }} else null)
-                                AssistChip(onClick = { viewModel.setFieldSection(field.key, ParameterSection.MORE) }, label = { Text("更多") }, leadingIcon = if (field.section == ParameterSection.MORE) {{ Icon(Icons.Default.CheckCircle, null) }} else null)
+                                AssistChip(onClick = { viewModel.setFieldSection(field.key, ParameterSection.PRIMARY) }, label = { Text("主要") }, leadingIcon = if (field.section == ParameterSection.PRIMARY) {{ Icon(Icons.Outlined.CheckCircle, null) }} else null)
+                                AssistChip(onClick = { viewModel.setFieldSection(field.key, ParameterSection.MORE) }, label = { Text("更多") }, leadingIcon = if (field.section == ParameterSection.MORE) {{ Icon(Icons.Outlined.CheckCircle, null) }} else null)
                             }
                         }
                     }
@@ -1739,19 +1825,19 @@ private fun ResultScreen(
                 Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = { selectedKeys = emptySet() }) { Icon(Icons.Default.Close, "退出多选") }
+                IconButton(onClick = { selectedKeys = emptySet() }) { Icon(Icons.Outlined.Close, "退出多选") }
                 Text("已选 ${selectedItems.size} 项", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                 IconButton(onClick = { selectedKeys = media.map(ResultMedia::stableKey).toSet() }) {
-                    Icon(Icons.Default.SelectAll, "全选")
+                    Icon(Icons.Outlined.SelectAll, "全选")
                 }
                 IconButton(onClick = {
                     viewModel.saveResults(selectedItems)
                     selectedKeys = emptySet()
                 }) {
-                    Icon(if (source == ResultSource.CLOUD) Icons.Default.Download else Icons.Default.Save, if (source == ResultSource.CLOUD) "一键下载" else "一键保存")
+                    Icon(if (source == ResultSource.CLOUD) Icons.Outlined.Download else Icons.Outlined.Save, if (source == ResultSource.CLOUD) "一键下载" else "一键保存")
                 }
                 if (source == ResultSource.LOCAL) {
-                    IconButton(onClick = { confirmDeleteSelection = true }) { Icon(Icons.Default.Delete, "删除所选") }
+                    IconButton(onClick = { confirmDeleteSelection = true }) { Icon(Icons.Outlined.Delete, "删除所选") }
                 }
             }
         } else {
@@ -1769,7 +1855,7 @@ private fun ResultScreen(
                     }
                 }
                 IconButton(onClick = { if (source == ResultSource.LOCAL) viewModel.refreshLocalResults() else viewModel.refreshResults() }) {
-                    Icon(Icons.Default.Refresh, "刷新")
+                    Icon(Icons.Outlined.Refresh, "刷新")
                 }
             }
         }
@@ -1785,7 +1871,7 @@ private fun ResultScreen(
                 )
             }
             media.isEmpty() -> EmptyState(
-                Icons.Default.Image,
+                Icons.Outlined.Image,
                 if (source == ResultSource.LOCAL) "暂无本地作品\n请在参数页长按输出部件加入全工作流保存白名单" else "云端暂无图片或视频",
             )
             layout == ResultLayout.ALL -> ResultMediaGrid(
@@ -1830,9 +1916,9 @@ private fun ResultScreen(
             confirmButton = { TextButton(onClick = { selectedMedia = null }) { Text("关闭") } },
             dismissButton = {
                 Row {
-                    IconButton(onClick = { viewModel.saveResult(item) }) { Icon(Icons.Default.Download, "保存到系统相册") }
-                    IconButton(onClick = { viewModel.shareResult(item) }) { Icon(Icons.Default.Share, "分享") }
-                    IconButton(onClick = { viewModel.openResult(item) }) { Icon(Icons.Default.FileOpen, "打开原文件") }
+                    IconButton(onClick = { viewModel.saveResult(item) }) { Icon(Icons.Outlined.Download, "保存到系统相册") }
+                    IconButton(onClick = { viewModel.shareResult(item) }) { Icon(Icons.Outlined.Share, "分享") }
+                    IconButton(onClick = { viewModel.openResult(item) }) { Icon(Icons.Outlined.FileOpen, "打开原文件") }
                 }
             },
         )
@@ -1897,7 +1983,7 @@ private fun ResultMediaGrid(
                             Modifier.matchParentSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)),
                         )
                         Icon(
-                            Icons.Default.CheckCircle,
+                            Icons.Outlined.CheckCircle,
                             "已选择",
                             Modifier.align(Alignment.TopEnd).padding(6.dp).size(26.dp),
                             tint = MaterialTheme.colorScheme.primary,
@@ -1934,7 +2020,7 @@ private fun AlbumTile(
                     Modifier.matchParentSize().background(MaterialTheme.colorScheme.primary.copy(alpha = if (selected) 0.24f else 0.12f)),
                 )
                 Icon(
-                    Icons.Default.CheckCircle,
+                    Icons.Outlined.CheckCircle,
                     if (selected) "已选择整个相册" else "已选择部分作品",
                     Modifier.align(Alignment.TopEnd).padding(7.dp).size(28.dp),
                     tint = MaterialTheme.colorScheme.primary,
@@ -1967,7 +2053,7 @@ private fun MediaCover(media: ResultMedia, modifier: Modifier = Modifier) {
         )
     } else {
         Box(modifier.background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
-            Icon(Icons.Default.VideoFile, "视频", Modifier.size(42.dp), tint = MaterialTheme.colorScheme.primary)
+            Icon(Icons.Outlined.VideoFile, "视频", Modifier.size(42.dp), tint = MaterialTheme.colorScheme.primary)
         }
     }
 }
@@ -2057,7 +2143,7 @@ private fun ImageGalleryViewer(
                         shape = CircleShape,
                     ) {
                         IconButton(onClick = { pagerScope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) } }) {
-                            Icon(Icons.Default.ChevronLeft, "上一张", tint = Color.White, modifier = Modifier.size(34.dp))
+                            Icon(Icons.Outlined.ChevronLeft, "上一张", tint = Color.White, modifier = Modifier.size(34.dp))
                         }
                     }
                 }
@@ -2068,7 +2154,7 @@ private fun ImageGalleryViewer(
                         shape = CircleShape,
                     ) {
                         IconButton(onClick = { pagerScope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } }) {
-                            Icon(Icons.Default.ChevronRight, "下一张", tint = Color.White, modifier = Modifier.size(34.dp))
+                            Icon(Icons.Outlined.ChevronRight, "下一张", tint = Color.White, modifier = Modifier.size(34.dp))
                         }
                     }
                 }
@@ -2080,7 +2166,7 @@ private fun ImageGalleryViewer(
                             .padding(horizontal = 8.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "关闭", tint = Color.White) }
+                        IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, "关闭", tint = Color.White) }
                         Column(Modifier.weight(1f)) {
                             Text(
                                 current.createdAt.takeIf { it > 0L }?.let(::formatTime) ?: current.filename,
@@ -2107,14 +2193,14 @@ private fun ImageGalleryViewer(
                             .padding(horizontal = 4.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        GalleryAction(Icons.Default.Share, "分享") { onShare(current) }
+                        GalleryAction(Icons.Outlined.Share, "分享") { onShare(current) }
                         GalleryAction(
-                            if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            if (isFavorite) Icons.Outlined.Favorite else Icons.Outlined.FavoriteBorder,
                             if (isFavorite) "已收藏" else "收藏",
                             tint = if (isFavorite) Color(0xFFFF5A6F) else Color.White,
                         ) { onFavorite(current) }
                         GalleryAction(
-                            if (current.source == ResultSource.CLOUD) Icons.Default.Download else Icons.Default.Save,
+                            if (current.source == ResultSource.CLOUD) Icons.Outlined.Download else Icons.Outlined.Save,
                             if (saving) "${if (current.source == ResultSource.CLOUD) "下载" else "保存"}中" else if (current.source == ResultSource.CLOUD) "下载" else "保存",
                             enabled = !saving,
                         ) {
@@ -2126,7 +2212,7 @@ private fun ImageGalleryViewer(
                             }
                         }
                         GalleryAction(
-                            Icons.Default.Delete,
+                            Icons.Outlined.Delete,
                             "删除",
                             enabled = current.source == ResultSource.LOCAL,
                         ) { confirmDelete = true }
@@ -2135,18 +2221,18 @@ private fun ImageGalleryViewer(
                                 Modifier.fillMaxWidth().clickable { moreExpanded = true }.padding(vertical = 4.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
-                                Icon(Icons.Default.MoreHoriz, "更多", tint = Color.White)
+                                Icon(Icons.Outlined.MoreHoriz, "更多", tint = Color.White)
                                 Text("更多", color = Color.White, style = MaterialTheme.typography.labelSmall)
                             }
                             DropdownMenu(expanded = moreExpanded, onDismissRequest = { moreExpanded = false }) {
                                 DropdownMenuItem(
                                     text = { Text("打开原文件") },
-                                    leadingIcon = { Icon(Icons.Default.FileOpen, null) },
+                                    leadingIcon = { Icon(Icons.Outlined.FileOpen, null) },
                                     onClick = { moreExpanded = false; onOpen(current) },
                                 )
                                 DropdownMenuItem(
                                     text = { Text("文件信息") },
-                                    leadingIcon = { Icon(Icons.Default.Image, null) },
+                                    leadingIcon = { Icon(Icons.Outlined.Image, null) },
                                     onClick = { moreExpanded = false; showInfo = true },
                                 )
                             }
@@ -2386,10 +2472,10 @@ private fun TaskScreen(state: AppUiState, viewModel: MainViewModel) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("服务器任务", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             Text("仅本 App"); Switch(appOnly, { appOnly = it })
-            IconButton(onClick = viewModel::refreshTasks) { Icon(Icons.Default.Refresh, "刷新") }
+            IconButton(onClick = viewModel::refreshTasks) { Icon(Icons.Outlined.Refresh, "刷新") }
         }
         Row(Modifier.padding(horizontal = 12.dp)) {
-            OutlinedButton(onClick = viewModel::clearPendingJobs) { Icon(Icons.Default.Delete, null); Spacer(Modifier.width(4.dp)); Text("清空待执行") }
+            OutlinedButton(onClick = viewModel::clearPendingJobs) { Icon(Icons.Outlined.Delete, null); Spacer(Modifier.width(4.dp)); Text("清空待执行") }
         }
         if (jobs.isEmpty()) EmptyState(Icons.AutoMirrored.Filled.List, "暂无任务记录")
         else LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2434,14 +2520,14 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
             onClick = { showWorkflowPicker = true },
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Icon(Icons.Default.Folder, null)
+            Icon(Icons.Outlined.Folder, null)
             Spacer(Modifier.width(8.dp))
             Text(
                 state.quickWorkflowName ?: "选择工作流",
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
             )
-            Icon(Icons.Default.ExpandMore, null)
+            Icon(Icons.Outlined.ExpandMore, null)
         }
         DropdownMenu(expanded = showWorkflowPicker, onDismissRequest = { showWorkflowPicker = false }) {
             val candidates = state.workflows.filterNot { it.isDirectory }
@@ -2463,7 +2549,7 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
             }
         }
         if (quickFields.isEmpty()) {
-            EmptyState(Icons.Default.PlayArrow, "先选择工作流，再填写提示词")
+            EmptyState(Icons.Outlined.PlayArrow, "先选择工作流，再填写提示词")
             return@Column
         }
 
@@ -2477,7 +2563,7 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
                     modifier = Modifier.weight(1f),
                 )
                 TextButton(onClick = { viewModel.openAiAssist(field.key, AiAssistScope.QUICK) }) {
-                    Icon(Icons.Default.Edit, null, Modifier.size(18.dp))
+                    Icon(Icons.Outlined.Edit, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("AI 写")
                 }
@@ -2499,7 +2585,7 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
             IconButton(
                 onClick = { if (state.batchCount > 1) viewModel.setBatchCount(state.batchCount - 1) },
                 enabled = !state.generating,
-            ) { Icon(Icons.Default.Remove, "减少出图数量") }
+            ) { Icon(Icons.Outlined.Remove, "减少出图数量") }
             Text(
                 "${state.batchCount}",
                 modifier = Modifier.width(36.dp),
@@ -2509,13 +2595,13 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
             IconButton(
                 onClick = { if (state.batchCount < 16) viewModel.setBatchCount(state.batchCount + 1) },
                 enabled = !state.generating,
-            ) { Icon(Icons.Default.Add, "增加出图数量") }
+            ) { Icon(Icons.Outlined.Add, "增加出图数量") }
         }
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("自定义参数", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
             TextButton(onClick = { showParamPicker = true }, enabled = addableFields.isNotEmpty()) {
-                Icon(Icons.Default.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("添加参数")
+                Icon(Icons.Outlined.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("添加参数")
             }
         }
         if (enabledFields.isEmpty()) {
@@ -2548,7 +2634,7 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
                                     )
                                 }
                                 IconButton(onClick = { viewModel.quickToggleParam(field.key) }) {
-                                    Icon(Icons.Default.Add, "添加")
+                                    Icon(Icons.Outlined.Add, "添加")
                                 }
                             }
                         }
@@ -2567,7 +2653,7 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !state.generating && !state.loading,
                 ) {
-                    Icon(Icons.Default.Tune, null)
+                    Icon(Icons.Outlined.Tune, null)
                     Spacer(Modifier.width(8.dp))
                     Text("批量对比：固定种子换 LoRA 逐张出图")
                 }
@@ -2585,7 +2671,7 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
             enabled = !state.generating && !state.loading && state.bridgeReady && !batchActive,
             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
         ) {
-            Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text(if (state.generating) "生成中…" else "快捷生成")
+            Icon(Icons.Outlined.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text(if (state.generating) "生成中…" else "快捷生成")
         }
         if (state.generating) {
             // v0.1.76：排队/加载阶段无进度消息，显示不确定进度条；采样阶段显示百分比。
@@ -2634,7 +2720,7 @@ private fun BatchRunCard(batch: BatchRun, viewModel: MainViewModel, onShowResult
                     maxLines = 1,
                 )
                 if (batch.phase == BatchPhase.DONE || batch.phase == BatchPhase.CANCELLED) {
-                    IconButton(onClick = viewModel::dismissBatch) { Icon(Icons.Default.Close, "收起批量卡片") }
+                    IconButton(onClick = viewModel::dismissBatch) { Icon(Icons.Outlined.Close, "收起批量卡片") }
                 }
             }
             val running = batch.phase == BatchPhase.RUNNING || batch.phase == BatchPhase.PAUSED
@@ -2673,7 +2759,7 @@ private fun BatchRunCard(batch: BatchRun, viewModel: MainViewModel, onShowResult
             batch.items.takeLast(6).forEach { item ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        if (item.success) Icons.Default.CheckCircle else Icons.Default.Close,
+                        if (item.success) Icons.Outlined.CheckCircle else Icons.Outlined.Close,
                         null,
                         Modifier.size(16.dp),
                         tint = if (item.success) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
@@ -2735,7 +2821,7 @@ private fun BatchConfigDialog(
                                 modifier = Modifier.weight(1f),
                                 maxLines = 1,
                             )
-                            Icon(Icons.Default.ArrowDropDown, null)
+                            Icon(Icons.Outlined.ArrowDropDown, null)
                         }
                         DropdownMenu(expanded = slotExpanded, onDismissRequest = { slotExpanded = false }) {
                             loraFields.forEachIndexed { index, field ->
@@ -2906,7 +2992,7 @@ private fun QuickParamRow(field: ParameterField, viewModel: MainViewModel) {
                 Text("${field.nodeTitle.ifBlank { field.nodeType }} · ${field.label}", style = MaterialTheme.typography.labelMedium)
                 OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
                     Text(field.displayValue, modifier = Modifier.weight(1f), maxLines = 1)
-                    Icon(Icons.Default.ArrowDropDown, null)
+                    Icon(Icons.Outlined.ArrowDropDown, null)
                 }
                 DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                     field.options.forEach { option ->
@@ -2936,7 +3022,7 @@ private fun QuickParamRow(field: ParameterField, viewModel: MainViewModel) {
                     Text(field.label, modifier = Modifier.weight(1f))
                     if (isSeed) {
                         TextButton(onClick = { viewModel.quickUpdateField(field.key, Math.abs(Random.nextLong()).toString()) }) {
-                            Icon(Icons.Default.Refresh, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("随机")
+                            Icon(Icons.Outlined.Refresh, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("随机")
                         }
                     }
                 }
@@ -3144,7 +3230,7 @@ private fun AiAssistDialog(state: AppUiState, viewModel: MainViewModel) {
         onDismissRequest = { if (!state.aiAssistBusy) viewModel.dismissAiAssist() },
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Edit, null, tint = MaterialTheme.colorScheme.primary)
+                Icon(Icons.Outlined.Edit, null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(8.dp))
                 Text("AI 写提示词")
             }
@@ -3238,7 +3324,7 @@ private fun MissingNodesCard(missing: List<String>) {
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Warning, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
+                Icon(Icons.Outlined.Warning, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
                 Spacer(Modifier.width(6.dp))
                 Text(
                     "这个工作流缺少 ${missing.size} 个节点",
@@ -3339,7 +3425,7 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                     stats.devices.forEach { Text("${it.name}\n显存 ${formatSize(it.vramFree)} / ${formatSize(it.vramTotal)} 可用") }
                 }
                 OutlinedButton(onClick = viewModel::disconnect, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.CloudOff, null); Spacer(Modifier.width(6.dp)); Text("切换服务器")
+                    Icon(Icons.Outlined.CloudOff, null); Spacer(Modifier.width(6.dp)); Text("切换服务器")
                 }
                 HorizontalDivider()
                 LlmSettingsSection(
@@ -3370,14 +3456,14 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                         onClick = { saveFolderLauncher.launch(null) },
                         modifier = Modifier.weight(1f),
                     ) {
-                        Icon(Icons.Default.Folder, null); Spacer(Modifier.width(4.dp)); Text("选择目录")
+                        Icon(Icons.Outlined.Folder, null); Spacer(Modifier.width(4.dp)); Text("选择目录")
                     }
                     if (state.saveFolderUri != null) {
                         OutlinedButton(
                             onClick = { viewModel.setSaveFolder(null) },
                             modifier = Modifier.weight(1f),
                         ) {
-                            Icon(Icons.Default.Delete, null); Spacer(Modifier.width(4.dp)); Text("恢复默认")
+                            Icon(Icons.Outlined.Delete, null); Spacer(Modifier.width(4.dp)); Text("恢复默认")
                         }
                     }
                 }
@@ -3409,13 +3495,13 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                                     Text(rule.serverUrl, maxLines = 1, style = MaterialTheme.typography.labelSmall)
                                 }
                                 Switch(rule.enabled, { viewModel.setCacheRuleEnabled(rule, it) })
-                                IconButton(onClick = { viewModel.removeCacheRule(rule) }) { Icon(Icons.Default.Delete, "删除白名单") }
+                                IconButton(onClick = { viewModel.removeCacheRule(rule) }) { Icon(Icons.Outlined.Delete, "删除白名单") }
                             }
                         }
                     }
                 }
                 OutlinedButton(onClick = { confirmDeleteLocal = true }, enabled = state.localResults.isNotEmpty()) {
-                    Icon(Icons.Default.Delete, null); Spacer(Modifier.width(4.dp)); Text("删除全部本地作品（${state.localResults.size} 项）")
+                    Icon(Icons.Outlined.Delete, null); Spacer(Modifier.width(4.dp)); Text("删除全部本地作品（${state.localResults.size} 项）")
                 }
                 HorizontalDivider()
                 Text("本地草稿", style = MaterialTheme.typography.titleSmall)
@@ -3432,7 +3518,7 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                 if (state.localDraftsEnabled) {
                     Text("当前 ${state.localDraftCount} 个工作流有本地草稿", style = MaterialTheme.typography.bodySmall)
                     OutlinedButton(onClick = { confirmClearDrafts = true }, enabled = state.localDraftCount > 0) {
-                        Icon(Icons.Default.Delete, null); Spacer(Modifier.width(4.dp)); Text("清除全部本地草稿（${state.localDraftCount}）")
+                        Icon(Icons.Outlined.Delete, null); Spacer(Modifier.width(4.dp)); Text("清除全部本地草稿（${state.localDraftCount}）")
                     }
                 }
                 HorizontalDivider()
@@ -3471,12 +3557,12 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                          )
                      } else {
                          Button(onClick = viewModel::downloadUpdate) {
-                             Icon(Icons.Default.Download, null); Spacer(Modifier.width(4.dp)); Text("下载并安装")
+                             Icon(Icons.Outlined.Download, null); Spacer(Modifier.width(4.dp)); Text("下载并安装")
                          }
                      }
                  }
                 if (state.activeServer != null) {
-                    OutlinedButton(onClick = { viewModel.disconnect(); onDismiss() }) { Icon(Icons.Default.CloudOff, null); Spacer(Modifier.width(4.dp)); Text("断开连接") }
+                    OutlinedButton(onClick = { viewModel.disconnect(); onDismiss() }) { Icon(Icons.Outlined.CloudOff, null); Spacer(Modifier.width(4.dp)); Text("断开连接") }
                 }
             }
         },
@@ -3534,14 +3620,14 @@ private fun SaveWorkflowAsDialog(
                         onClick = { folderMenuExpanded = true },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Icon(Icons.Default.Folder, null)
+                        Icon(Icons.Outlined.Folder, null)
                         Spacer(Modifier.width(8.dp))
                         Text(
                             if (folder == "workflows") "工作流根目录" else folder.removePrefix("workflows/"),
                             modifier = Modifier.weight(1f),
                             maxLines = 1,
                         )
-                        Icon(Icons.Default.ExpandMore, null)
+                        Icon(Icons.Outlined.ExpandMore, null)
                     }
                     DropdownMenu(
                         expanded = folderMenuExpanded,
@@ -3554,7 +3640,7 @@ private fun SaveWorkflowAsDialog(
                                 },
                                 leadingIcon = {
                                     Icon(
-                                        if (option == folder) Icons.Default.CheckCircle else Icons.Default.Folder,
+                                        if (option == folder) Icons.Outlined.CheckCircle else Icons.Outlined.Folder,
                                         null,
                                     )
                                 },
@@ -3696,7 +3782,11 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
     ) {
             // —— 身份条 ——
             item {
-                AccountIdentityCard(panel = panel, onLogin = { loginLauncher.launch(Intent(context, AiStudioLoginActivity::class.java)) })
+                AccountIdentityCard(
+                    panel = panel,
+                    onLogin = { loginLauncher.launch(Intent(context, AiStudioLoginActivity::class.java)) },
+                    onSelectAccount = { accountId -> viewModel.selectAiStudioAccount(accountId) },
+                )
             }
 
             // —— 积分与算力 ——
@@ -3869,7 +3959,7 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
 }
 
 @Composable
-private fun AccountIdentityCard(panel: AiStudioState, onLogin: () -> Unit) {
+private fun AccountIdentityCard(panel: AiStudioState, onLogin: () -> Unit, onSelectAccount: (String) -> Unit) {
     val account = panel.activeAccount()
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -3901,14 +3991,20 @@ private fun AccountIdentityCard(panel: AiStudioState, onLogin: () -> Unit) {
                     }
                 }
                 if (panel.accounts.size > 1) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         panel.accounts.forEach { item ->
                             val selected = item.id == panel.activeAccountId
-                            if (selected) {
-                                Button(onClick = { }, modifier = Modifier.height(36.dp)) { Text(item.displayName()) }
-                            } else {
-                                OutlinedButton(onClick = { }, modifier = Modifier.height(36.dp)) { Text(item.displayName()) }
-                            }
+                            // 以前 onClick 是空的——多账号时点切换完全没反应（真 bug）。
+                            FilterChip(
+                                selected = selected,
+                                onClick = { onSelectAccount(item.id) },
+                                label = { Text(item.displayName()) },
+                                leadingIcon = if (selected) {
+                                    { Icon(Icons.Outlined.CheckCircle, null, Modifier.size(18.dp)) }
+                                } else {
+                                    null
+                                },
+                            )
                         }
                     }
                 }
@@ -3922,6 +4018,9 @@ private fun AccountIdentityCard(panel: AiStudioState, onLogin: () -> Unit) {
  *
  * 拿不到值时显示「—」而不是编一个数字——平台接口改版是常态，宁可留白
  * 也不能用假数据骗人。
+ *
+ * 图标放进圆形淡底里（而不是裸图标）：三块瓦片并排时，带底的图标在视觉上
+ * 更成组、数字也更容易扫到；裸图标会让三列显得散。
  */
 @Composable
 private fun ResourceTile(
@@ -3934,12 +4033,20 @@ private fun ResourceTile(
 ) {
     val cardModifier = if (onClick != null) modifier.clickable(onClick = onClick) else modifier
     OutlinedCard(modifier = cardModifier) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                CompositionLocalProvider(
-                    LocalContentColor provides MaterialTheme.colorScheme.primary,
-                    content = icon,
-                )
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                Box(
+                    Modifier
+                        .size(26.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CompositionLocalProvider(
+                        LocalContentColor provides MaterialTheme.colorScheme.onPrimaryContainer,
+                        content = icon,
+                    )
+                }
                 Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Text(value, style = MaterialTheme.typography.headlineSmall)
@@ -4153,7 +4260,7 @@ private fun RawResponseCard(raw: String, context: Context) {
                 IconButton(onClick = {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     clipboard.setPrimaryClip(ClipData.newPlainText("AI Studio 响应", raw))
-                }) { Icon(Icons.Default.ContentCopy, "复制原始响应") }
+                }) { Icon(Icons.Outlined.ContentCopy, "复制原始响应") }
             }
             Text(
                 raw.take(500),

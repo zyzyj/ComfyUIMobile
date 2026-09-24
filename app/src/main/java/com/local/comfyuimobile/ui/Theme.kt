@@ -33,22 +33,46 @@ private val LineLight = Color(0xFFE3E6EB)    // 描边
 private val Accent = Color(0xFF0E7C86)       // 强调色：青绿，避开 M3 默认紫
 private val AccentContainer = Color(0xFFD6F1F3)
 
+/**
+ * 把 M3 用到的令牌**全部**显式覆盖。
+ *
+ * 只填 primary/surface 是不够的：secondaryContainer、tertiary、surfaceContainer*
+ * 这些没覆盖的槽位会退回到 M3 默认的紫色系，于是 NavigationBar 选中态、
+ * FilledTonalButton、下拉菜单背景等处会莫名其妙冒出紫——这正是"看着像 Material
+ * 模板"的来源。这里全部对齐到同一套中性灰 + 青绿。
+ */
 private val LightScheme = lightColorScheme(
     primary = Accent,
     onPrimary = Color.White,
     primaryContainer = AccentContainer,
     onPrimaryContainer = Color(0xFF06373C),
+    // 导航栏选中、FilledTonalButton 用的是 secondaryContainer，必须显式给值。
     secondary = Color(0xFF4B5563),
     onSecondary = Color.White,
+    secondaryContainer = Color(0xFFE2E8F0),
+    onSecondaryContainer = Color(0xFF1F2937),
+    tertiary = Color(0xFF5A6579),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFE6EAF1),
+    onTertiaryContainer = Color(0xFF242B38),
     background = Paper,
     onBackground = Ink,
     surface = CardLight,
     onSurface = Ink,
     surfaceVariant = Color(0xFFEEF0F4),
     onSurfaceVariant = InkMuted,
+    // M3 的 surfaceContainer* 系列：菜单、底部栏、输入框底色都会取它们。
+    surfaceContainerLowest = Color(0xFFFFFFFF),
+    surfaceContainerLow = Color(0xFFF9FAFB),
+    surfaceContainer = Color(0xFFF2F4F7),
+    surfaceContainerHigh = Color(0xFFECEFF3),
+    surfaceContainerHighest = Color(0xFFE6E9EF),
     outline = LineLight,
     outlineVariant = Color(0xFFEDEFF3),
     error = Color(0xFFB3261E),
+    onError = Color.White,
+    errorContainer = Color(0xFFF9DEDC),
+    onErrorContainer = Color(0xFF410E0B),
 )
 
 // —— 暗色 ——
@@ -63,15 +87,29 @@ private val DarkScheme = darkColorScheme(
     onPrimaryContainer = Color(0xFFC9F0F3),
     secondary = Color(0xFFB6BDC9),
     onSecondary = Color(0xFF272B31),
+    secondaryContainer = Color(0xFF2B313A),
+    onSecondaryContainer = Color(0xFFDDE3EC),
+    tertiary = Color(0xFFA9B4C6),
+    onTertiary = Color(0xFF232A36),
+    tertiaryContainer = Color(0xFF2A313C),
+    onTertiaryContainer = Color(0xFFDCE3EE),
     background = PaperDark,
     onBackground = InkDark,
     surface = CardDark,
     onSurface = InkDark,
     surfaceVariant = Color(0xFF242830),
     onSurfaceVariant = Color(0xFFA9B0BC),
+    surfaceContainerLowest = Color(0xFF0C0E11),
+    surfaceContainerLow = Color(0xFF14171B),
+    surfaceContainer = Color(0xFF1B1F25),
+    surfaceContainerHigh = Color(0xFF22262D),
+    surfaceContainerHighest = Color(0xFF292E36),
     outline = Color(0xFF343A44),
     outlineVariant = Color(0xFF272C34),
     error = Color(0xFFF2B8B5),
+    onError = Color(0xFF601410),
+    errorContainer = Color(0xFF8C1D18),
+    onErrorContainer = Color(0xFFF9DEDC),
 )
 
 /**
