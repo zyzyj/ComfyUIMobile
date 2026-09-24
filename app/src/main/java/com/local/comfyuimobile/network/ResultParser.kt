@@ -27,8 +27,10 @@ object ResultParser {
                 if (start > 0) (executionEnd(job) - start).takeIf { it > 0 } else null
             }
             val seed = extractSeed(promptObj)
-            val positivePrompt = extractPositivePrompt(promptObj)
             val nodeDescriptors = workflowNodeDescriptors(extraData)
+            // 正向提示词必须带节点标题一起判（采样器连线判不出时按标题兜底），
+            // 否则会把负向提示词当成正向（负向节点 id 常更小、先被遍历到）。
+            val positivePrompt = extractPositivePrompt(promptObj, nodeDescriptors.mapValues { it.value.title })
             val outputs = job.optJSONObject("outputs") ?: return@forEach
             outputs.keys().forEach { nodeId ->
                 val descriptor = nodeDescriptors[nodeId]
@@ -193,18 +195,60 @@ object ResultParser {
         }
     }
 
-    /** 从提交的 prompt 里取第一个正向提示词（CLIPTextEncode 等文本节点）。 */
-    private fun extractPositivePrompt(prompt: JSONObject?): String? {
-        prompt?.keys()?.forEach { key ->
-            val node = prompt.optJSONObject(key) ?: return@forEach
-            val classType = node.optString("class_type")
-            if (classType.contains("TextEncode", ignoreCase = true) || classType.contains("CLIPText", ignoreCase = true)) {
-                val text = node.optJSONObject("inputs")?.optString("text")
-                if (!text.isNullOrBlank()) return text
+    /**
+     * 从提交的 prompt 里取正向提示词。
+     *
+     * ⚠️ 不能「取第一个 TextEncode 节点」：API 格式 JSON 的节点按 id 遍历顺序不定，
+     * 而负向提示词节点的 id 经常比正向小（用户工作流里正向 77、负向 75，负向先被
+     * 遍历到），结果云端信息页把**负向**提示词当成正向显示——用户实测报告的正是这个。
+     *
+     * 权威判据是**采样器的连线**：KSampler 类节点的 `inputs.positive` 写着
+     * `["77", 0]`，直接告诉我们哪个节点是正向。判不出时才退化到节点标题
+     * （extra_pnginfo 里的画布节点标题通常写明 Positive/Negative），最后才取第一个。
+     */
+    internal fun extractPositivePrompt(prompt: JSONObject?, titles: Map<String, String> = emptyMap()): String? {
+        prompt ?: return null
+        val nodes = prompt.let { obj ->
+            val keys = obj.keys()
+            buildList {
+                while (keys.hasNext()) {
+                    val node = obj.optJSONObject(keys.next()) ?: continue
+                    add(node)
+                }
             }
         }
-        return null
+        fun textOf(id: String): String? =
+            prompt.optJSONObject(id)?.optJSONObject("inputs")?.optString("text")?.takeIf { it.isNotBlank() }
+
+        // 1) 采样器的 positive 输入指向谁，谁就是正向提示词。
+        for (node in nodes) {
+            val classType = node.optString("class_type")
+            if (!isSamplerNode(classType)) continue
+            val link = node.optJSONObject("inputs")?.optJSONArray("positive") ?: continue
+            val targetId = link.optString(0)
+            if (targetId.isNotBlank()) textOf(targetId)?.let { return it }
+        }
+        // 2) 画布节点标题里写明 Positive 的。
+        titles.forEach { (id, title) ->
+            if (title.contains("positive", ignoreCase = true) &&
+                !title.contains("negative", ignoreCase = true)
+            ) {
+                textOf(id)?.let { return it }
+            }
+        }
+        // 3) 兑底：第一个文本节点（旧行为）。
+        return nodes.firstNotNullOfOrNull { node ->
+            val classType = node.optString("class_type")
+            val isText = classType.contains("TextEncode", ignoreCase = true) ||
+                classType.contains("CLIPText", ignoreCase = true)
+            if (!isText) return@firstNotNullOfOrNull null
+            node.optJSONObject("inputs")?.optString("text")?.takeIf { it.isNotBlank() }
+        }
     }
+
+    private fun isSamplerNode(classType: String): Boolean =
+        classType.endsWith("Sampler", ignoreCase = true) ||
+            classType.endsWith("SamplerAdvanced", ignoreCase = true)
 
     private fun encode(value: String): String = URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
 

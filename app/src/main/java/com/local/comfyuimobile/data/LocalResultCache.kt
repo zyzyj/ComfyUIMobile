@@ -146,10 +146,21 @@ class LocalResultCache(context: Context) {
         .put("workflowPath", media.workflowPath)
         .put("workflowName", media.workflowName)
         .put("localPath", file.absolutePath)
+        // 以下字段原先没存，导致本地作品的信息页比云端少一截（种子/正向提示词/耗时）。
+        // 用户要求本地与云端看到一样的信息。均为可缺省字段，旧索引没有它们也能读。
+        .put("elapsedMs", media.elapsedMs ?: -1L)
+        .put("totalElapsedMs", media.totalElapsedMs ?: -1L)
+        .put("seed", media.seed.orEmpty())
+        .put("positivePrompt", media.positivePrompt.orEmpty())
+        .put("intrinsicWidth", media.intrinsicWidth ?: -1)
+        .put("intrinsicHeight", media.intrinsicHeight ?: -1)
 
     private fun decodeRecord(item: JSONObject): ResultMedia? {
         val file = File(item.optString("localPath"))
         if (!file.isFile) return null
+        // -1 表示「旧索引没存这个字段」，读回 null（与 encodeRecord 的写法对应）。
+        fun optionalLong(name: String): Long? = item.optLong(name, -1L).takeIf { it > 0 }
+        fun optionalInt(name: String): Int? = item.optInt(name, -1).takeIf { it > 0 }
         return ResultMedia(
             jobId = item.optString("jobId"),
             nodeId = item.optString("nodeId"),
@@ -164,6 +175,12 @@ class LocalResultCache(context: Context) {
             taskNumber = item.optLong("taskNumber"),
             workflowPath = item.optString("workflowPath"),
             workflowName = item.optString("workflowName"),
+            elapsedMs = optionalLong("elapsedMs"),
+            totalElapsedMs = optionalLong("totalElapsedMs"),
+            seed = item.optString("seed").ifBlank { null },
+            positivePrompt = item.optString("positivePrompt").ifBlank { null },
+            intrinsicWidth = optionalInt("intrinsicWidth"),
+            intrinsicHeight = optionalInt("intrinsicHeight"),
             source = ResultSource.LOCAL,
             localPath = file.absolutePath,
         )

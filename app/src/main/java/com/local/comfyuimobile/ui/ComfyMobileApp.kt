@@ -2270,8 +2270,8 @@ private fun ImageGalleryViewer(
                             .background(Color.Black)
                             .navigationBarsPadding()
                             .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 4.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                            .padding(horizontal = 4.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.Top,
                     ) {
                         GalleryAction(Icons.Outlined.Share, "分享") { onShare(current) }
                         GalleryAction(
@@ -2291,12 +2291,12 @@ private fun ImageGalleryViewer(
                                 saveFeedback = message
                             }
                         }
-                        GalleryAction(
-                            Icons.Outlined.Delete,
-                            "删除",
-                            enabled = current.source == ResultSource.LOCAL,
-                        ) { confirmDelete = true }
-                        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                        // 删除移进「更多」菜单：云端图片不能删，它在这里只会是个灰按钮占位，
+                        // 用户看了困惑（为什么点不动）；本地作品的删除入口收进菜单后，
+                        // 底栏四个动作都是对当前图片“人人可用”的。
+                        // 更多按钮：与其它 GalleryAction 同构（图标 + 文字），不再用
+                        // weight(1f) 撑满居中——那会让它和其它图标基线不齐。
+                        Box(Modifier.weight(1f), contentAlignment = Alignment.TopCenter) {
                             Column(
                                 Modifier.fillMaxWidth().clickable { moreExpanded = true }.padding(vertical = 4.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -2315,6 +2315,14 @@ private fun ImageGalleryViewer(
                                     leadingIcon = { Icon(Icons.Outlined.Image, null) },
                                     onClick = { moreExpanded = false; showInfo = true },
                                 )
+                                // 只对本地作品提供删除（云端删不掉，这是下载缓存）。
+                                if (current.source == ResultSource.LOCAL) {
+                                    DropdownMenuItem(
+                                        text = { Text("删除本地缓存", color = MaterialTheme.colorScheme.error) },
+                                        leadingIcon = { Icon(Icons.Outlined.Delete, null, tint = MaterialTheme.colorScheme.error) },
+                                        onClick = { moreExpanded = false; confirmDelete = true },
+                                    )
+                                }
                             }
                         }
                     }
@@ -2389,9 +2397,26 @@ private fun ImageGalleryViewer(
                         if (resolution != null) "分辨率：$resolution" else "分辨率：解码中…",
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    Text("输出部件：${current.nodeId}", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        "输出部件：${current.nodeTitle.ifBlank { current.nodeType.ifBlank { current.nodeId } }}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    // 正向提示词是最长的一段，做成长按可复制；本地作品与云端现在都有这个字段。
                     current.positivePrompt?.takeIf { it.isNotBlank() }?.let {
-                        Text("正向提示词：$it", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "正向提示词：$it（长按复制）",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier
+                                .combinedClickable(
+                                    onClick = {},
+                                    onLongClick = {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                        clipboard?.setPrimaryClip(ClipData.newPlainText("prompt", it))
+                                        copyFeedback = "已复制正向提示词"
+                                    },
+                                )
+                                .padding(vertical = 2.dp),
+                        )
                     }
                     Text("来源：${if (current.source == ResultSource.LOCAL) "本地缓存" else "ComfyUI 服务器"}", style = MaterialTheme.typography.bodySmall)
                     copyFeedback?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
