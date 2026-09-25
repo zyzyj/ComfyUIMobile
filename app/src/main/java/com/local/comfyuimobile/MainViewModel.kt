@@ -39,6 +39,7 @@ import com.local.comfyuimobile.model.AppUiState
 import com.local.comfyuimobile.model.AiStudioAccount
 import com.local.comfyuimobile.model.AiStudioProject
 import com.local.comfyuimobile.model.AiStudioSchedule
+import com.local.comfyuimobile.model.AiStudioState
 import com.local.comfyuimobile.model.AppDestination
 import com.local.comfyuimobile.model.AppNavigationRequest
 import com.local.comfyuimobile.model.AiAssistMode
@@ -576,20 +577,71 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectAiStudioAccount(accountId: String) {
-        persistAiStudio(_state.value.aiStudio.accounts, accountId)
-        _state.update { it.copy(aiStudio = it.aiStudio.copy(activeAccountId = accountId, projects = emptyList())) }
+        val panel = _state.value.aiStudio
+        // 重复选同一个账号：不做任何事，避免无意义地清空正在显示的数据。
+        if (accountId == panel.activeAccountId || panel.accounts.none { it.id == accountId }) return
+        // 记录“最后使用时间”，供账号面板排序/展示。
+        val accounts = panel.accounts.map {
+            if (it.id == accountId) it.copy(lastUsedAt = System.currentTimeMillis()) else it
+        }
+        persistAiStudio(accounts, accountId)
+        _state.update { it.copy(aiStudio = clearedAccountPanel(panel, accounts, accountId)) }
     }
 
     fun removeAiStudioAccount(accountId: String) {
-        val remaining = _state.value.aiStudio.accounts.filterNot { it.id == accountId }
-        val nextActive = _state.value.aiStudio.activeAccountId
+        val panel = _state.value.aiStudio
+        val remaining = panel.accounts.filterNot { it.id == accountId }
+        val removedActive = panel.activeAccountId == accountId
+        val nextActive = panel.activeAccountId
             ?.takeIf { id -> remaining.any { it.id == id } }
             ?: remaining.firstOrNull()?.id
         persistAiStudio(remaining, nextActive)
         _state.update {
-            it.copy(aiStudio = it.aiStudio.copy(accounts = remaining, activeAccountId = nextActive, projects = emptyList()))
+            val updated = if (removedActive) {
+                // 删的是正在用的账号：面板上属于它的数据全部作废，清干净。
+                clearedAccountPanel(panel, remaining, nextActive)
+            } else {
+                // 删的是后台账号：不影响当前面板，只更新账号列表。
+                panel.copy(accounts = remaining)
+            }
+            it.copy(aiStudio = updated)
         }
     }
+
+    /**
+     * 切换账号时把与旧账号绑定的面板数据全部重置。
+     *
+     * 为什么需要：积分/算力/项目/终端输出这些都是账号级别的状态，切过去后若不清，
+     * 界面会有一段时间显示上一个账号的数字，用户会以为“切了但数据没变”。
+     * 只保留账号列表、当前选中项与本地界面偏好（命令草稿/快捷命令）。
+     */
+    private fun clearedAccountPanel(
+        panel: AiStudioState,
+        accounts: List<AiStudioAccount>,
+        activeId: String?,
+    ): AiStudioState = panel.copy(
+        accounts = accounts,
+        activeAccountId = activeId,
+        projects = emptyList(),
+        schedules = emptyList(),
+        schedulesLoaded = false,
+        startingProjectId = null,
+        stoppingProjectId = null,
+        environmentReadyProjectId = null,
+        points = null,
+        computeCardMinutes = null,
+        computeCard = null,
+        aCoin = null,
+        weekQuota = emptyMap(),
+        terminalLines = emptyList(),
+        consoleConnected = false,
+        consoleBusy = false,
+        comfyUiUrl = null,
+        signedInToday = false,
+        message = null,
+        error = null,
+        lastRawResponse = null,
+    )
 
     /** 签到。多个账号时需要逐个切过去分别签——这里只签当前选中的那个。 */
     fun aiStudioSignIn() {
