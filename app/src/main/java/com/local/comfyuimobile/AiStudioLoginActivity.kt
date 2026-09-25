@@ -48,11 +48,23 @@ class AiStudioLoginActivity : ComponentActivity() {
     private var pollJob: Job? = null
     @Volatile private var loggedIn = false
 
+    /**
+     * true 表示“添加新账号”：进入前先清掉 WebView 里已登录账号的百度 Cookie。
+     *
+     * 为什么要清：CookieManager 是进程级共享的，已登录账号 A 时再打开本页，
+     * 页面加载完就能读到 A 的 BDUSS，checkLoginState 会立刻当成登录成功自动提交，
+     * 结果又存成 A——根本加不了第二个账号。CookieManager 无法按域精确删除，
+     * 只能整体清空；这些 Cookie 只服务于登录页本身，App 的接口认证走 OkHttp
+     * （凭据存在 AppPreferences），不会被这次清空影响。
+     */
+    private var forceLogout = false
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, true)
         AiStudioLoginSession.clear()
+        forceLogout = intent?.getBooleanExtra(EXTRA_FORCE_LOGOUT, false) == true
 
         webView = WebView(this).apply {
             settings.javaScriptEnabled = true
@@ -81,8 +93,22 @@ class AiStudioLoginActivity : ComponentActivity() {
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
-        webView.loadUrl(LOGIN_URL)
+        if (forceLogout) {
+            // 必须先清完再加载：若先加载，页面可能已读到旧账号 Cookie。
+            cookieManager.removeAllCookies {
+                cookieManager.flush()
+                webView.loadUrl(LOGIN_URL)
+                startLoginPolling()
+            }
+        } else {
+            webView.loadUrl(LOGIN_URL)
+            startLoginPolling()
+        }
+    }
 
+    /** 轮询登录态。独立出来是因为“清 Cookie”分支要等清完才能开始（见 onCreate）。 */
+    private fun startLoginPolling() {
+        if (pollJob?.isActive == true) return
         pollJob = lifecycleScope.launch {
             while (true) {
                 delay(1_200)
@@ -103,7 +129,7 @@ class AiStudioLoginActivity : ComponentActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         val title = TextView(this).apply {
-            text = "登录百度账号"
+            text = if (forceLogout) "登录新账号（不影响已登录账号）" else "登录百度账号"
             setTextColor(Color.rgb(24, 24, 28))
             textSize = 18f
         }
@@ -267,7 +293,19 @@ class AiStudioLoginActivity : ComponentActivity() {
         webView.onResume()
     }
 
-    private companion object {
+    companion object {
+        private const val EXTRA_FORCE_LOGOUT = "force_logout"
+
+        /**
+         * 打开登录页。
+         *
+         * @param forceLogout 已登录其它账号时要添加新账号：先清 WebView 登录态再走
+         *   登录页，否则页面会立刻读到旧账号的 BDUSS 并自动提交，加不了第二个账号。
+         */
+        fun intent(context: android.content.Context, forceLogout: Boolean): Intent =
+            Intent(context, AiStudioLoginActivity::class.java)
+                .putExtra(EXTRA_FORCE_LOGOUT, forceLogout)
+
         /**
          * 移动版登录页。
          *

@@ -132,6 +132,8 @@ import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Payments
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
+import androidx.compose.material.icons.outlined.RadioButtonChecked
+import androidx.compose.material.icons.outlined.PersonAdd
 import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -145,7 +147,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -239,6 +240,7 @@ import com.local.comfyuimobile.data.WorkflowBrowser
 import com.local.comfyuimobile.data.WorkflowPath
 import com.local.comfyuimobile.model.AppDestination
 import com.local.comfyuimobile.model.AppUiState
+import com.local.comfyuimobile.model.AiStudioAccount
 import com.local.comfyuimobile.model.AiStudioProject
 import com.local.comfyuimobile.model.AiStudioState
 import com.local.comfyuimobile.model.AiAssistMode
@@ -4014,7 +4016,11 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
     val context = LocalContext.current
     var showPointsInfo by remember { mutableStateOf(false) }
     var showComputeInfo by remember { mutableStateOf(false) }
+    var pendingDeleteAccount by remember { mutableStateOf<AiStudioAccount?>(null) }
+    // 打开登录页时是否要“添加新账号”（已登录其它账号时需要先清 WebView 登录态）。
+    var addAccountMode by remember { mutableStateOf(false) }
     val loginLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        addAccountMode = false
         if (result.resultCode == Activity.RESULT_OK) viewModel.onAiStudioLoggedIn()
     }
     LaunchedEffect(panel.activeAccountId) {
@@ -4035,8 +4041,18 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
             item {
                 AccountIdentityCard(
                     panel = panel,
-                    onLogin = { loginLauncher.launch(Intent(context, AiStudioLoginActivity::class.java)) },
+                    onLogin = {
+                        addAccountMode = false
+                        loginLauncher.launch(Intent(context, AiStudioLoginActivity::class.java))
+                    },
+                    onAddAccount = {
+                        addAccountMode = true
+                        loginLauncher.launch(AiStudioLoginActivity.intent(context, forceLogout = true))
+                    },
                     onSelectAccount = { accountId -> viewModel.selectAiStudioAccount(accountId) },
+                    onRemoveAccount = { accountId ->
+                        pendingDeleteAccount = panel.accounts.firstOrNull { it.id == accountId }
+                    },
                 )
             }
 
@@ -4168,6 +4184,18 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
             }
         }
 
+    pendingDeleteAccount?.let { target ->
+        ConfirmDialog(
+            title = "删除账号",
+            message = "将从本机移除「${target.displayName()}」的登录信息。不会影响平台上的账号本身，之后可重新登录。",
+            confirmLabel = "删除",
+            onDismiss = { pendingDeleteAccount = null },
+        ) {
+            viewModel.removeAiStudioAccount(target.id)
+            pendingDeleteAccount = null
+        }
+    }
+
     if (showComputeInfo) {
         AlertDialog(
             onDismissRequest = { showComputeInfo = false },
@@ -4210,8 +4238,15 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
 }
 
 @Composable
-private fun AccountIdentityCard(panel: AiStudioState, onLogin: () -> Unit, onSelectAccount: (String) -> Unit) {
+private fun AccountIdentityCard(
+    panel: AiStudioState,
+    onLogin: () -> Unit,
+    onAddAccount: () -> Unit,
+    onSelectAccount: (String) -> Unit,
+    onRemoveAccount: (String) -> Unit,
+) {
     val account = panel.activeAccount()
+    var expanded by remember { mutableStateOf(false) }
     // 玻璃卡：这是账号页最顶部的身份条，放在极光渐变上最能体现"液态玻璃"。
     GlassCard(modifier = Modifier.fillMaxWidth(), strong = true) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -4230,7 +4265,11 @@ private fun AccountIdentityCard(panel: AiStudioState, onLogin: () -> Unit, onSel
                 }
                 Button(onClick = onLogin, modifier = Modifier.fillMaxWidth()) { Text("登录百度 AI Studio") }
             } else {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                // 身份行：点整行展开/收起账号面板。
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+                ) {
                     Icon(Icons.Outlined.AccountCircle, null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
@@ -4241,26 +4280,74 @@ private fun AccountIdentityCard(panel: AiStudioState, onLogin: () -> Unit, onSel
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    if (panel.accounts.size > 1) {
+                        Text("${panel.accounts.size} 个账号", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Icon(
+                        if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                        if (expanded) "收起账号列表" else "展开账号列表",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                if (panel.accounts.size > 1) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (expanded) {
+                    HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         panel.accounts.forEach { item ->
-                            val selected = item.id == panel.activeAccountId
-                            // 以前 onClick 是空的——多账号时点切换完全没反应（真 bug）。
-                            FilterChip(
-                                selected = selected,
+                            AccountRow(
+                                account = item,
+                                selected = item.id == panel.activeAccountId,
                                 onClick = { onSelectAccount(item.id) },
-                                label = { Text(item.displayName()) },
-                                leadingIcon = if (selected) {
-                                    { Icon(Icons.Outlined.CheckCircle, null, Modifier.size(18.dp)) }
-                                } else {
-                                    null
-                                },
+                                onRemove = { onRemoveAccount(item.id) },
                             )
                         }
                     }
+                    OutlinedButton(onClick = onAddAccount, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Outlined.PersonAdd, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("添加账号")
+                    }
                 }
             }
+        }
+    }
+}
+
+/** 账号面板里的一行：昵称 + UID + 最后使用 + 今日签到标记，行尾可删除。 */
+@Composable
+private fun AccountRow(
+    account: AiStudioAccount,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 6.dp),
+    ) {
+        Icon(
+            if (selected) Icons.Outlined.RadioButtonChecked else Icons.Outlined.RadioButtonUnchecked,
+            null,
+            Modifier.size(20.dp),
+            tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(account.displayName(), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                buildList {
+                    if (account.uid.isNotBlank()) add("UID ${account.uid}")
+                    if (account.lastUsedAt > 0L) add("最后使用 ${formatTime(account.lastUsedAt)}")
+                    if (account.lastSignInAt > 0L) add("最近签到 ${formatTime(account.lastSignInAt)}")
+                }.joinToString(" · "),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconButton(onClick = onRemove) {
+            Icon(Icons.Outlined.Delete, "删除账号", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
         }
     }
 }
