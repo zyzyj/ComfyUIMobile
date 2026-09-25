@@ -9,11 +9,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
 import android.provider.OpenableColumns
-import android.graphics.drawable.ColorDrawable
-import android.os.Build
-import android.view.ViewGroup
-import android.view.WindowManager
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -186,7 +183,6 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -223,9 +219,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogWindowProvider
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -357,6 +350,24 @@ fun ComfyMobileApp(viewModel: MainViewModel, bridge: ComfyBridge) {
         }
         // v0.1.88：AI 提示词助手挂在最外层，参数页和快捷页都能弹出来。
         if (state.aiAssistTarget != null) AiAssistDialog(state, viewModel)
+        // v0.2.33：全屏图片查看器同样挂在最外层，以主窗口浮层渲染。
+        state.galleryViewer?.let { request ->
+            ImageGalleryViewer(
+                items = request.items,
+                initialIndex = request.initialIndex,
+                fromResults = request.fromResults,
+                onDismiss = viewModel::dismissGalleryViewer,
+                onSave = viewModel::saveResultWithFeedback,
+                onShare = viewModel::shareResult,
+                onOpen = viewModel::openResult,
+                favoriteKeys = state.favoriteResultKeys,
+                onFavorite = viewModel::toggleResultFavorite,
+                onDelete = { item ->
+                    viewModel.removeFromGalleryViewer(item)
+                    viewModel.deleteLocalResults(listOf(item))
+                },
+            )
+        }
         key(bridge.webView) {
             AndroidView(
                 factory = { bridge.webView },
@@ -1868,8 +1879,6 @@ private fun ResultScreen(
     var selectedMedia by remember { mutableStateOf<ResultMedia?>(null) }
     var selectedKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
     var confirmDeleteSelection by remember { mutableStateOf(false) }
-    var galleryItems by remember { mutableStateOf<List<ResultMedia>>(emptyList()) }
-    var galleryInitialIndex by remember { mutableIntStateOf(0) }
     val media = (if (source == ResultSource.LOCAL) state.localResults else state.results)
         .sortedWith(compareByDescending<ResultMedia> { it.createdAt }.thenByDescending { it.taskNumber })
     val albums = media.groupBy { it.jobId }
@@ -1886,8 +1895,8 @@ private fun ResultScreen(
     fun openMedia(item: ResultMedia, context: List<ResultMedia>) {
         if (item.kind == MediaKind.IMAGE) {
             val images = context.filter { it.kind == MediaKind.IMAGE }
-            galleryInitialIndex = images.indexOfFirst { (it.localPath ?: it.url) == (item.localPath ?: item.url) }.coerceAtLeast(0)
-            galleryItems = images
+            val index = images.indexOfFirst { (it.localPath ?: it.url) == (item.localPath ?: item.url) }.coerceAtLeast(0)
+            viewModel.openGalleryViewer(images, index, fromResults = true)
         } else {
             selectedMedia = item
         }
@@ -2003,22 +2012,6 @@ private fun ResultScreen(
                     IconButton(onClick = { viewModel.shareResult(item) }) { Icon(Icons.Outlined.Share, "分享") }
                     IconButton(onClick = { viewModel.openResult(item) }) { Icon(Icons.Outlined.FileOpen, "打开原文件") }
                 }
-            },
-        )
-    }
-    if (galleryItems.isNotEmpty()) {
-        ImageGalleryViewer(
-            items = galleryItems,
-            initialIndex = galleryInitialIndex,
-            onDismiss = { galleryItems = emptyList() },
-            onSave = viewModel::saveResultWithFeedback,
-            onShare = viewModel::shareResult,
-            onOpen = viewModel::openResult,
-            favoriteKeys = state.favoriteResultKeys,
-            onFavorite = viewModel::toggleResultFavorite,
-            onDelete = { item ->
-                galleryItems = galleryItems.filterNot { it.stableKey() == item.stableKey() }
-                viewModel.deleteLocalResults(listOf(item))
             },
         )
     }
@@ -2153,6 +2146,8 @@ private fun albumTitle(album: ResultAlbum): String {
 private fun ImageGalleryViewer(
     items: List<ResultMedia>,
     initialIndex: Int,
+    /** true 表示来自「作品」页：可收藏、可删除本地缓存。批量对比结果传 false。 */
+    fromResults: Boolean,
     onDismiss: () -> Unit,
     onSave: (ResultMedia, (String) -> Unit) -> Unit,
     onShare: (ResultMedia) -> Unit,
@@ -2186,48 +2181,20 @@ private fun ImageGalleryViewer(
             saveFeedback = null
         }
     }
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            // 官方 edge-to-edge 指南要求的全屏 Dialog 两件套之一：让内容延伸到
-            // 系统栏后面（另一件是 usePlatformDefaultWidth=false，已具备）。
-            decorFitsSystemWindows = false,
-        ),
+    // v0.2.33：以前这里是个独立的 Dialog 窗口。在 MIUI / Android 15 上它的顶边
+    // 会被钉在状态栏下方、高度却按整屏算，导致顶部露出主界面、底部操作栏被切掉
+    // （前面 v0.2.29~232 反复调 DialogProperties / 窗口标志都无效，因为 Compose
+    // 早已自己加好了那些标志，问题出在 Dialog 这个独立窗口本身）。
+    // 现在改由根 Box 以浮层渲染，和所有其它页面共用主窗口——同一窗口的 inset
+    // 行为在真机上已被验证是正确的。
+    BackHandler(onBack = onDismiss)
+    Surface(
+        Modifier
+            .fillMaxSize()
+            // 浮层必须自己吃掉触摸，否则落在图片之外的点击会穿透到底下的页面。
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
+        color = Color.Black,
     ) {
-        // 全屏约束：Dialog 默认高度是 wrap_content，内容超出窗口会把底部操作栏
-        // 挤出屏幕；窗口背景设为纯黑，沉浸查看时不会透出底层的服务器地址栏。
-        //
-        // ⚠️ 根因（v0.2.31）：Dialog 窗口默认**不含** FLAG_LAYOUT_IN_SCREEN。
-        // AOSP 的 DecorView 对此有专门处理：没有这个标志时它会“确保 dialog 不
-        // 越过状态栏/导航栏”（consumes the system insets）。结果是窗口顶部被挤到
-        // 状态栏下方、高度却仍按整屏算 → 整体下移一个状态栏高度：顶部露出底层
-        // 页面的内容（用户截图中状态栏区域的灰色，其实不是状态栏本身而是底下的
-        // 主界面透出），底部图标被顶出屏幕。
-        // 之前两版分别用 LaunchedEffect / SideEffect 调 setLayout，都没加这个
-        // 标志，所以两次都无效。这里必须把标志补上，窗口才真铺满整屏。
-        val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
-        SideEffect {
-            dialogWindow?.apply {
-                addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN)
-                // WMS 侧的同一约束的另一张皮：窗口默认 fitInsetsTypes = 系统栏 +
-                // 刘海区，WMS 会把窗口框压进系统栏内。setDecorFitsSystemWindows(false)
-                // 理论上会清零它，但不同 ROM 行为不一（MIUI 上已被实测坑过），这里
-                // 显式清零，双保险。仅 API 30+ 有此字段。
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    attributes = attributes.also { it.fitInsetsTypes = 0 }
-                }
-                setLayout(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                )
-                // 内容不再让出系统栏（真沉浸），insets 交给 Compose 的
-                // statusBarsPadding / navigationBarsPadding 自己处理。
-                WindowCompat.setDecorFitsSystemWindows(this, false)
-                setBackgroundDrawable(ColorDrawable(android.graphics.Color.BLACK))
-            }
-        }
-        Surface(Modifier.fillMaxSize(), color = Color.Black) {
             GallerySystemBars(chromeVisible)
             Box(Modifier.fillMaxSize()) {
                 HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
@@ -2343,7 +2310,8 @@ private fun ImageGalleryViewer(
                                     onClick = { moreExpanded = false; showInfo = true },
                                 )
                                 // 只对本地作品提供删除（云端删不掉，这是下载缓存）。
-                                if (current.source == ResultSource.LOCAL) {
+                                // 批量对比结果没有删除入口（fromResults=false）。
+                                if (fromResults && current.source == ResultSource.LOCAL) {
                                     DropdownMenuItem(
                                         text = { Text("删除本地缓存", color = MaterialTheme.colorScheme.error) },
                                         leadingIcon = { Icon(Icons.Outlined.Delete, null, tint = MaterialTheme.colorScheme.error) },
@@ -2365,7 +2333,6 @@ private fun ImageGalleryViewer(
                 }
             }
         }
-    }
     if (confirmDelete) {
         ConfirmDialog("删除本地作品", "将从 App 本地缓存中删除 ${current.filename}，不会删除电脑上的原文件。", { confirmDelete = false }) {
             confirmDelete = false
@@ -2464,9 +2431,8 @@ private fun formatElapsed(ms: Long): String {
 @Composable
 private fun GallerySystemBars(chromeVisible: Boolean) {
     val view = LocalView.current
-    val window = remember(view) {
-        (view.parent as? DialogWindowProvider)?.window ?: view.context.findActivity()?.window
-    }
+    // v0.2.33：查看器已改成主窗口内的浮层，这里直接拿 Activity 的窗口。
+    val window = remember(view) { view.context.findActivity()?.window }
     LaunchedEffect(chromeVisible, window) {
         window?.let {
             WindowCompat.getInsetsController(it, view).apply {
@@ -3040,6 +3006,13 @@ private fun BatchResultDialog(batch: BatchRun, viewModel: MainViewModel, onDismi
         }
     }
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    // 打开全屏查看器前先关掉本对话框：它是独立窗口，会盖住主窗口里渲染的查看器。
+    LaunchedEffect(viewerIndex) {
+        val index = viewerIndex ?: return@LaunchedEffect
+        viewerIndex = null
+        onDismiss()
+        viewModel.openGalleryViewer(media, index, fromResults = false)
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("批量对比结果（${media.size} 张）") },
@@ -3076,19 +3049,6 @@ private fun BatchResultDialog(batch: BatchRun, viewModel: MainViewModel, onDismi
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
     )
-    viewerIndex?.let { index ->
-        ImageGalleryViewer(
-            items = media,
-            initialIndex = index,
-            onDismiss = { viewerIndex = null },
-            onSave = viewModel::saveResultWithFeedback,
-            onShare = viewModel::shareResult,
-            onOpen = viewModel::openResult,
-            favoriteKeys = emptySet(),
-            onFavorite = {},
-            onDelete = {},
-        )
-    }
 }
 
 /** LoRA 文件名展示：去目录与扩展名。 */
