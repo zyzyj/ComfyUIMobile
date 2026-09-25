@@ -200,16 +200,41 @@ class AiStudioLoginActivity : ComponentActivity() {
             return
         }
         doneButton.isEnabled = false
-        // 延迟一拍让平台自己的登录跳转先走完，页面全局变量才注入完成。
         lifecycleScope.launch {
-            delay(1_500)
-            val probe = runCatching { readPageIdentity() }.getOrDefault(PageIdentity())
+            status.text = "登录成功，正在读取账号信息…"
+            // v0.2.37：这里是“切换账号后无法启动 GPU”的根因。
+            //
+            // Cookie 里一出现 BDUSS 就会走到这里，但那时页面往往还在 passport 域、
+            // 或刚跳回 AI Studio 而 JS 尚未注入——window.aiStudio 还是空的，于是
+            // bdToken/uid/昵称全取不到（日志里“Cookie 长度=575，bdToken=未取到”，
+            // 而正常账号是 754/已取到）。bdToken 缺失会让 x-studio-token 头为空，
+            // 平台对启动环境/领算力这类写接口一律返回 403——用户看到的就是
+            // “切了账号就启不了 GPU”。
+            //
+            // 改成轮询等待页面真正落到 AI Studio 且注入完成再提交；页面迟迟
+            // 没回跳时主动导航过去一次（passport 的 u= 回跳偶尔不触发）。
+            var probe = PageIdentity()
+            var navigatedHome = false
+            for (attempt in 0 until 12) {
+                delay(if (attempt == 0) 1_200L else 1_000L)
+                val onStudio = webView.url.orEmpty().contains(STUDIO_HOST)
+                if (onStudio) {
+                    probe = runCatching { readPageIdentity() }.getOrDefault(PageIdentity())
+                    if (probe.bdToken.isNotBlank()) break
+                } else if (!navigatedHome && attempt >= 2) {
+                    navigatedHome = true
+                    webView.loadUrl(AI_STUDIO_HOME)
+                }
+            }
+            // 回跳后 baidu + aistudio 两个域的 Cookie 才齐（_xsrf、ai-studio-ticket
+            // 等都在 aistudio 域下）。重新取一次，别用最开始那份不完整的。
+            val finalCookie = currentCookie().ifBlank { cookie }
             AppLogger.info(
-                "AI Studio 登录完成：Cookie 长度=${cookie.length}，" +
+                "AI Studio 登录完成：Cookie 长度=${finalCookie.length}，" +
                     "bdToken=${if (probe.bdToken.isBlank()) "未取到" else "已取到"}，" +
                     "uid=${probe.uid.ifBlank { "未取到" }}，昵称=${probe.nickname.ifBlank { "未取到" }}",
             )
-            AiStudioLoginSession.complete(cookie, probe.bdToken, probe.uid, probe.nickname)
+            AiStudioLoginSession.complete(finalCookie, probe.bdToken, probe.uid, probe.nickname)
             setResult(Activity.RESULT_OK, Intent())
             finish()
         }
@@ -295,6 +320,10 @@ class AiStudioLoginActivity : ComponentActivity() {
 
     companion object {
         private const val EXTRA_FORCE_LOGOUT = "force_logout"
+        /** AI Studio 主机名，用来判断 WebView 是否已从 passport 回跳到平台。 */
+        private const val STUDIO_HOST = "aistudio.baidu.com"
+        /** 回跳迟迟不发生时主动导航的目的地（与登录页 u= 参数一致）。 */
+        private const val AI_STUDIO_HOME = "https://aistudio.baidu.com/"
 
         /**
          * 打开登录页。
