@@ -241,6 +241,9 @@ import com.local.comfyuimobile.data.WorkflowPath
 import com.local.comfyuimobile.model.AppDestination
 import com.local.comfyuimobile.model.AppUiState
 import com.local.comfyuimobile.model.AiStudioAccount
+import com.local.comfyuimobile.model.StorageBucket
+import com.local.comfyuimobile.model.StorageCleanTarget
+import com.local.comfyuimobile.model.StorageStats
 import com.local.comfyuimobile.model.AiStudioProject
 import com.local.comfyuimobile.model.AiStudioState
 import com.local.comfyuimobile.model.AiAssistMode
@@ -293,6 +296,8 @@ private enum class MainPage(val label: String, val icon: ImageVector, val inBott
     // 图标沿用本文件已验证可用的 Icons.Outlined.Tune（Outlined 版不确定存在）；
     // 它不进底栏，实际不会渲染，这里只为保持枚举完整。
     PARAMETERS("参数", Icons.Outlined.Tune, inBottomBar = false),
+    // v0.2.36：空间管理页。从设置进入，也不进底栏。
+    STORAGE("空间管理", Icons.Outlined.Memory, inBottomBar = false),
     ;
 
     companion object {
@@ -595,6 +600,7 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                     when (page) {
                         MainPage.ACCOUNT -> Text("账号", style = MaterialTheme.typography.titleMedium)
                         MainPage.CONSOLE -> Text("控制台", style = MaterialTheme.typography.titleMedium)
+                        MainPage.STORAGE -> Text("空间管理", style = MaterialTheme.typography.titleMedium)
                         else -> Column {
                             Text(state.activeServer?.name.orEmpty(), style = MaterialTheme.typography.titleMedium)
                             Text(
@@ -699,6 +705,7 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                     )
                     MainPage.TASKS -> TaskScreen(state, viewModel)
                     MainPage.QUICK -> QuickGenScreen(state, viewModel)
+                    MainPage.STORAGE -> StorageScreen(state, viewModel)
                 }
             }
             if (state.loading || state.generating) {
@@ -716,7 +723,15 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
             }
         }
     }
-    if (settings) SettingsDialog(state, viewModel) { settings = false }
+    if (settings) SettingsDialog(
+        state,
+        viewModel,
+        onDismiss = { settings = false },
+        onOpenStorage = {
+            settings = false
+            page = MainPage.STORAGE
+        },
+    )
 }
 
 @Composable
@@ -2564,6 +2579,172 @@ private fun VideoPlayer(url: String) {
     AndroidView(factory = { PlayerView(it).apply { this.player = player } }, modifier = Modifier.fillMaxWidth().height(260.dp))
 }
 
+/**
+ * 空间管理页（v0.2.36）。
+ *
+ * 用户要的是「内存占用的详细数据」：这里分两层展示——内存（App 进程 PSS、Java 堆、
+ * 设备可用/总量）与磁盘（各类文件占用），并提供逐个分区的清理入口。
+ * 进入页面就自动采集一次；清理小分区后也自动重采。
+ */
+@Composable
+private fun StorageScreen(state: AppUiState, viewModel: MainViewModel) {
+    LaunchedEffect(Unit) { viewModel.refreshStorageStats() }
+    var pendingClear by remember { mutableStateOf<StorageBucket?>(null) }
+    val stats = state.storageStats
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("空间管理", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            IconButton(onClick = { viewModel.refreshStorageStats() }) {
+                Icon(Icons.Outlined.Refresh, "重新统计")
+            }
+        }
+        if (stats == null || state.storageLoading) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            return@Column
+        }
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // —— 内存 ——
+            item { Text("内存", style = MaterialTheme.typography.titleMedium) }
+            item {
+                GlassCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        StatRow("App 占用（PSS）", formatSize(stats.appPssBytes))
+                        StatRow("Java 堆已用", formatSize(stats.heapUsedBytes))
+                        if (stats.heapLimitBytes > 0) {
+                            StatRow("Java 堆上限", formatSize(stats.heapLimitBytes))
+                            val ratio = (stats.heapUsedBytes.toFloat() / stats.heapLimitBytes).coerceIn(0f, 1f)
+                            LinearProgressIndicator(
+                                progress = { ratio },
+                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                            )
+                        }
+                        HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                        StatRow("设备内存总量", formatSize(stats.deviceTotalBytes))
+                        StatRow(
+                            "设备可用内存",
+                            formatSize(stats.deviceAvailableBytes),
+                            tint = if (stats.lowMemory) MaterialTheme.colorScheme.error else null,
+                        )
+                        if (stats.lowMemory) {
+                            Text(
+                                "系统内存已告急，App 随时可能被系统回收",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        Text(
+                            "PSS 是系统按内存页比例折算的 App 实际占用，比 Java 堆更能反映真实内存消耗（含 WebView 等原生内存）。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
+            // —— 磁盘 ——
+            item { Text("磁盘", style = MaterialTheme.typography.titleMedium) }
+            item {
+                GlassCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        StatRow("App 数据总量", formatSize(stats.appDataBytes))
+                        Text(
+                            "仅统计 App 私有目录（含数据库、缓存、WebView 数据），不含相册里保存的图片。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            items(stats.buckets, key = { it.label }) { bucket ->
+                StorageBucketCard(bucket) {
+                    if (bucket.clearable && bucket.bytes > 0L) pendingClear = bucket
+                }
+            }
+            item {
+                Text(
+                    "清理只删除本机数据，不影响 AI Studio 上的项目与云端文件。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+
+    pendingClear?.let { bucket ->
+        val target = storageTargetFor(bucket.label)
+        if (target != null) {
+            ConfirmDialog(
+                title = "清理${bucket.label}",
+                message = "将删除${bucket.label}，释放约 ${formatSize(bucket.bytes)}。此操作不可恢复。",
+                confirmLabel = "清理",
+                onDismiss = { pendingClear = null },
+            ) {
+                viewModel.clearStorageTarget(target)
+                pendingClear = null
+            }
+        }
+    }
+}
+
+/** 把展示用的分区标题映射回清理目标（只有可清理的分区才有）。 */
+private fun storageTargetFor(label: String): StorageCleanTarget? = when (label) {
+    StorageCleanTarget.LOCAL_RESULTS.label -> StorageCleanTarget.LOCAL_RESULTS
+    StorageCleanTarget.WORKFLOW_SNAPSHOTS.label -> StorageCleanTarget.WORKFLOW_SNAPSHOTS
+    StorageCleanTarget.WORKFLOW_DRAFTS.label -> StorageCleanTarget.WORKFLOW_DRAFTS
+    StorageCleanTarget.LOGS.label -> StorageCleanTarget.LOGS
+    StorageCleanTarget.CACHE_DIR.label -> StorageCleanTarget.CACHE_DIR
+    else -> null
+}
+
+/** 一行「名称 —— 数值」。 */
+@Composable
+private fun StatRow(label: String, value: String, tint: Color? = null) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        Text(
+            value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = tint ?: MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+/** 磁盘分区卡片：名称 + 大小 + （可清理时）清理按钮。 */
+@Composable
+private fun StorageBucketCard(bucket: StorageBucket, onClear: () -> Unit) {
+    GlassCard(Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(bucket.label, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    buildList {
+                        add(formatSize(bucket.bytes))
+                        bucket.count?.let { add("$it 项") }
+                    }.joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (bucket.clearable) {
+                OutlinedButton(
+                    onClick = onClear,
+                    enabled = bucket.bytes > 0L,
+                ) { Text("清理") }
+            } else {
+                Text(
+                    "系统管理",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun TaskScreen(state: AppUiState, viewModel: MainViewModel) {
     var appOnly by remember { mutableStateOf(false) }
@@ -3517,7 +3698,7 @@ private fun AppSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
 }
 
 @Composable
-private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismiss: () -> Unit) {
+private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismiss: () -> Unit, onOpenStorage: (() -> Unit)? = null) {
     val context = LocalContext.current
     var confirmDeleteLocal by remember { mutableStateOf(false) }
     var confirmClearDrafts by remember { mutableStateOf(false) }
@@ -3756,6 +3937,22 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                             Icon(Icons.Outlined.Delete, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("清除全部本地草稿（${state.localDraftCount}）")
+                        }
+                    }
+                }
+
+                // —— 空间管理（入口；未接入导航时（如连接页）不渲染）——
+                if (onOpenStorage != null) {
+                    SettingsSection("空间管理") {
+                        Text(
+                            "查看 App 的内存与磁盘占用明细，并逐项清理本地作品、缓存、日志",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        OutlinedButton(onClick = onOpenStorage, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Outlined.Memory, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("打开空间管理")
                         }
                     }
                 }
