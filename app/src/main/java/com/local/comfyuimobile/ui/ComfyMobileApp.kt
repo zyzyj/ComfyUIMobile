@@ -508,7 +508,7 @@ private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar
             Text("电脑端需要使用 --listen 0.0.0.0 启动，并允许 Windows 防火墙放行 8188 端口。", style = MaterialTheme.typography.bodySmall)
         }
     }
-    if (settings) SettingsDialog(state, viewModel) { settings = false }
+    if (settings) SettingsDialog(state, viewModel, onDismiss = { settings = false })
 }
 
 private val connectionStepNames = listOf(

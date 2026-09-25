@@ -3835,7 +3835,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun collectStorageStats(): StorageStats {
+    private suspend fun collectStorageStats(): StorageStats {
         val am = app.getSystemService(ActivityManager::class.java)
         val memoryInfo = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
         // PSS 比 Java 堆更能反映"这个 App 到底吃了多少内存"（含 native/WebView）。
