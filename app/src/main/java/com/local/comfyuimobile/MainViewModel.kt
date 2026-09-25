@@ -45,7 +45,8 @@ import com.local.comfyuimobile.model.AiAssistMode
 import com.local.comfyuimobile.model.AiAssistScope
 import com.local.comfyuimobile.model.AiAssistTarget
 import com.local.comfyuimobile.model.BatchCompareLogic
-import com.local.comfyuimobile.model.GalleryViewerRequestimport com.local.comfyuimobile.model.BatchItemResult
+import com.local.comfyuimobile.model.GalleryViewerRequest
+import com.local.comfyuimobile.model.BatchItemResult
 import com.local.comfyuimobile.model.BatchPhase
 import com.local.comfyuimobile.model.BatchRun
 import com.local.comfyuimobile.model.CacheOutputRule
