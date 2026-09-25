@@ -70,6 +70,20 @@ class WorkflowSnapshotStore internal constructor(private val directory: File) {
         }
     }
 
+    /** 目录总字节数，供空间管理页展示。 */
+    suspend fun totalBytes(): Long = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            directory.listFiles { file -> file.isFile }.orEmpty().sumOf { it.length() }
+        }
+    }
+
+    /** 快照文件数量。 */
+    suspend fun countAll(): Int = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            directory.listFiles { file -> file.isFile && file.extension == "json" }.orEmpty().size
+        }
+    }
+
     private fun readNow(serverUrl: String, workflowPath: String): String? {
         val file = fileFor(serverUrl, workflowPath)
         if (!file.isFile) return null

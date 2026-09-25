@@ -1,5 +1,6 @@
 package com.local.comfyuimobile
 
+import android.app.ActivityManager
 import android.app.Application
 import android.content.ContentValues
 import android.content.Intent
@@ -40,6 +41,9 @@ import com.local.comfyuimobile.model.AiStudioAccount
 import com.local.comfyuimobile.model.AiStudioProject
 import com.local.comfyuimobile.model.AiStudioSchedule
 import com.local.comfyuimobile.model.AiStudioState
+import com.local.comfyuimobile.model.StorageBucket
+import com.local.comfyuimobile.model.StorageCleanTarget
+import com.local.comfyuimobile.model.StorageStats
 import com.local.comfyuimobile.model.AppDestination
 import com.local.comfyuimobile.model.AppNavigationRequest
 import com.local.comfyuimobile.model.AiAssistMode
@@ -646,7 +650,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 签到。多个账号时需要逐个切过去分别签——这里只签当前选中的那个。 */
     fun aiStudioSignIn() {
         val account = _state.value.aiStudio.activeAccount() ?: return
-        if (aiStudioActionJob?.isActive == true) return
+        if (aiStudioActionJob?.isActive == true) {
+            // v0.2.36：以前这里直接 return——若当时正有后台任务（如自动签到/读项目）
+            // 占用这个共用 job，用户点“签到”界面上什么都不会发生，看着就像“点了没反应”。
+            // 现在给一条明确提示，让用户知道是“正在忙”而不是坏掉了。
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "正在处理上一个操作，请稍后重试")) }
+            return
+        }
         _state.update { it.copy(aiStudio = it.aiStudio.copy(signingIn = true, error = null, message = null)) }
         aiStudioActionJob = viewModelScope.launch {
             runCatching { aiStudio.signIn(account) }
@@ -662,11 +672,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             aiStudio = it.aiStudio.copy(
                                 accounts = accounts,
                                 signingIn = false,
+                                // v0.2.36：以前只记 lastSignInAt，signedInToday 不动——
+                                // 于是手动签到成功后按钮仍显示“签到”，用户以为没签上又点一次。
+                                signedInToday = true,
                                 message = "已签到：${account.displayName()}",
                                 lastRawResponse = aiStudio.lastRawResponse,
                             ),
                         )
                     }
+                    // 签到会加积分。这里**不**顺手调 aiStudioRefreshAccount：它会把平台
+                    // 的 isFinishSign 重新读回来覆盖刚置的 signedInToday——平台若有延迟
+                    // 仍返回 false，刚变成“今日已签到”的按钮又会被打回去。积分下次进页面自然刷新。
                 }
                 .onFailure { error -> failAiStudio("签到失败", error) }
         }
@@ -3802,6 +3818,98 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 0
             }
             _state.update { it.copy(localDraftCount = count) }
+        }
+    }
+
+    /**
+     * 采集一份空间占用快照（内存 + 磁盘）推给界面。
+     *
+     * 全部读操作都在 IO 线程，不阻塞主线程；总大小是遍历目录求和，本地作品多时
+     * 可能几百毫秒，所以界面侧用 storageLoading 显示加载态。
+     */
+    fun refreshStorageStats() {
+        _state.update { it.copy(storageLoading = true) }
+        viewModelScope.launch {
+            val stats = withContext(Dispatchers.IO) { collectStorageStats() }
+            _state.update { it.copy(storageStats = stats, storageLoading = false) }
+        }
+    }
+
+    private fun collectStorageStats(): StorageStats {
+        val am = app.getSystemService(ActivityManager::class.java)
+        val memoryInfo = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+        // PSS 比 Java 堆更能反映"这个 App 到底吃了多少内存"（含 native/WebView）。
+        val pssKb = am.getProcessMemoryInfo(intArrayOf(android.os.Process.myPid()))
+            .firstOrNull()?.totalPss?.toLong() ?: 0L
+        val runtime = Runtime.getRuntime()
+        val heapLimit = runtime.maxMemory()
+        val heapUsed = runtime.totalMemory() - runtime.freeMemory()
+
+        val resultsBytes = runCatching { localResultCache.sizeBytes() }.getOrDefault(0L)
+        val snapshotsBytes = runCatching { workflowSnapshots.totalBytes() }.getOrDefault(0L)
+        val snapshotsCount = runCatching { workflowSnapshots.countAll() }.getOrDefault(0)
+        val draftsBytes = runCatching { workflowDrafts.totalBytes() }.getOrDefault(0L)
+        val draftsCount = runCatching { workflowDrafts.count() }.getOrDefault(0)
+        val logsBytes = dirBytes(File(app.filesDir, "logs"))
+        val cacheBytes = dirBytes(app.cacheDir)
+        val webviewBytes = dirBytes(File(app.filesDir, "app_webview")) +
+            dirBytes(File(app.filesDir, "app_textures")) +
+            dirBytes(File(app.dataDir, "databases"))
+        val sharedPrefsBytes = dirBytes(File(app.dataDir, "shared_prefs"))
+
+        val buckets = listOf(
+            StorageBucket("本地作品", resultsBytes, _state.value.localResults.size, clearable = true),
+            StorageBucket("工作流缓存", snapshotsBytes, snapshotsCount, clearable = true),
+            StorageBucket("工作流草稿", draftsBytes, draftsCount, clearable = true),
+            StorageBucket("诊断日志", logsBytes, null, clearable = true),
+            StorageBucket("临时缓存", cacheBytes, null, clearable = true),
+            StorageBucket("网页运行时（WebView）", webviewBytes, null, clearable = false),
+            StorageBucket("偏好设置", sharedPrefsBytes, null, clearable = false),
+        )
+        val appDataBytes = dirBytes(app.filesDir) + dirBytes(app.dataDir)
+
+        return StorageStats(
+            deviceTotalBytes = memoryInfo.totalMem,
+            deviceAvailableBytes = memoryInfo.availMem,
+            appPssBytes = pssKb * 1024L,
+            heapLimitBytes = heapLimit,
+            heapUsedBytes = heapUsed,
+            lowMemory = memoryInfo.lowMemory,
+            appDataBytes = appDataBytes,
+            buckets = buckets,
+        )
+    }
+
+    /** 目录总字节数（递归）。目录不存在返回 0，不抛异常。 */
+    private fun dirBytes(dir: File): Long =
+        if (!dir.exists()) 0L else dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+
+    /** 清空某一类磁盘占用。 */
+    fun clearStorageTarget(target: StorageCleanTarget) {
+        viewModelScope.launch {
+            runOperation("清理${target.label}失败") {
+                when (target) {
+                    StorageCleanTarget.LOCAL_RESULTS -> {
+                        val clearedAt = System.currentTimeMillis()
+                        preferences.setCacheClearedAt(clearedAt)
+                        localResultCache.clear()
+                        _state.update { it.copy(localResults = emptyList(), cacheClearedAt = clearedAt) }
+                    }
+                    StorageCleanTarget.WORKFLOW_SNAPSHOTS -> workflowSnapshots.clearAll()
+                    StorageCleanTarget.WORKFLOW_DRAFTS -> {
+                        cancelPendingDraftSave()
+                        val removed = workflowDrafts.clearAll()
+                        _state.update { it.copy(localDraftCount = 0) }
+                        AppLogger.info("清理工作流草稿：$removed 个")
+                    }
+                    StorageCleanTarget.LOGS -> AppLogger.clear()
+                    StorageCleanTarget.CACHE_DIR -> withContext(Dispatchers.IO) {
+                        app.cacheDir.listFiles()?.forEach { it.deleteRecursively() }
+                    }
+                }
+                _state.update { it.copy(notice = "已清理${target.label}") }
+            }
+            refreshStorageStats()
         }
     }
 

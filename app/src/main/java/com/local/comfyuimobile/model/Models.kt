@@ -308,4 +308,49 @@ data class AppUiState(
      * inset 行为在真机上已被验证是正确的。
      */
     val galleryViewer: GalleryViewerRequest? = null,
+    /** v0.2.36：空间管理页的统计数据（null 表示尚未采集）。 */
+    val storageStats: StorageStats? = null,
+    val storageLoading: Boolean = false,
 )
+
+/** 一格磁盘占用：标题 + 字节数 + 条目数（条目数不适用时为 null）。 */
+data class StorageBucket(
+    val label: String,
+    val bytes: Long,
+    val count: Int? = null,
+    /** 该格是否可由用户清理（决定要不要显示“清理”按钮）。 */
+    val clearable: Boolean = false,
+)
+
+/**
+ * 空间管理页的一次性快照（v0.2.36）。
+ *
+ * 分两层：内存（App 进程实际占用）与磁盘（App 私有目录里各部分的用量）。
+ * 磁盘按存储类别拆成 [buckets]，方便用户看清“到底是哪部分在占地方”。
+ */
+data class StorageStats(
+    /** 设备物理内存总量 / 系统当前可用（字节）。 */
+    val deviceTotalBytes: Long,
+    val deviceAvailableBytes: Long,
+    /** 本 App 进程占用的 PSS（按内存页比例折算的真实占用）（字节）。 */
+    val appPssBytes: Long,
+    /** Java 堆上限（字节）；-1 表示平台未给出。 */
+    val heapLimitBytes: Long,
+    /** 当前已用 Java 堆（字节）。 */
+    val heapUsedBytes: Long,
+    /** 是否处于低内存状态（系统已告急）。 */
+    val lowMemory: Boolean,
+    /** App 私有目录（filesDir）总占用。 */
+    val appDataBytes: Long,
+    /** 磁盘分类明细。 */
+    val buckets: List<StorageBucket>,
+)
+
+/** 磁盘占用中的一个可清理分区：目录 + 对应清理方法标识。 */
+enum class StorageCleanTarget(val label: String) {
+    LOCAL_RESULTS("本地作品"),
+    WORKFLOW_SNAPSHOTS("工作流缓存"),
+    WORKFLOW_DRAFTS("工作流草稿"),
+    LOGS("诊断日志"),
+    CACHE_DIR("临时缓存"),
+}

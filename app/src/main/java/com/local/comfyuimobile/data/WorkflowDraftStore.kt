@@ -99,6 +99,13 @@ class WorkflowDraftStore internal constructor(private val directory: File) {
         }
     }
 
+    /** 目录总字节数，供空间管理页展示。 */
+    suspend fun totalBytes(): Long = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            directory.listFiles { file -> file.isFile }.orEmpty().sumOf { it.length() }
+        }
+    }
+
     internal fun loadNow(serverUrl: String, workflowPath: String): WorkflowDraft? {
         val file = fileFor(serverUrl, workflowPath)
         if (!file.isFile) return null
