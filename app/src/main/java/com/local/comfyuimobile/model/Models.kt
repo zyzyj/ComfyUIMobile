@@ -201,6 +201,17 @@ data class UpdateInfo(
     val releaseUrl: String,
 )
 
+data class GalleryViewerRequest(
+    val items: List<ResultMedia>,
+    val initialIndex: Int,
+    /**
+     * true 表示来自「作品」页：可收藏、可删除本地缓存。
+     *
+     * 批量对比结果（BatchResultDialog）没有这两个操作，所以传 false。
+     */
+    val fromResults: Boolean,
+)
+
 data class AppUiState(
     val status: ConnectionStatus = ConnectionStatus.DISCONNECTED,
     val connectionMessage: String = "尚未连接",
@@ -288,4 +299,13 @@ data class AppUiState(
     // ===== v0.1.90 AI Studio 平台 =====
     /** 百度 AI Studio 面板状态（账号、项目、算力）。 */
     val aiStudio: AiStudioState = AiStudioState(),
+    /**
+     * v0.2.33：全屏图片查看器。
+     *
+     * 以前它是个独立的 Dialog 窗口，在 MIUI / Android 15 上窗口顶边会被钉在
+     * 状态栏下方、高度却按整屏算，导致顶部露出主界面、底部操作栏被切掉。
+     * 改成把状态提到这里、由根 Box 以浮层渲染，跟其它页面共用主窗口——主窗口的
+     * inset 行为在真机上已被验证是正确的。
+     */
+    val galleryViewer: GalleryViewerRequest? = null,
 )

@@ -222,18 +222,57 @@ serverUrls.remove(promptId)
         // 的外层 START_REDELIVER_INTENT 误重启——只要这次任务进来就顶替占位。
         val monitor = scope.launch(start = CoroutineStart.LAZY) {
             var consecutivePollFailures = 0
+            // v0.2.33：连续多少次在 /history 里查不到本任务。用来识别"任务已从服务器
+            // 消失"（见下面 !status.present 分支）。
+            var missedPolls = 0
             // v0.1.71：给"重试也没用"的失败一次复检机会，所以上限从 2 提到 4。
             // 普通抖动（5xx / 网络）每次 +1，4 次（20 秒）后放弃；
             // 永久性失败（404/403 这类）每次 +2，两次即达上限，10 秒后放弃。
             // intent 在 onStartCommand 里是可空类型，重启场景下可能为 null，这里给默认值兜底。
             val maxConsecutiveFailures = intent?.getIntExtra(EXTRA_MAX_FAILURES, 4) ?: 4
             while (isActive) {
+                // v0.2.33：整个轮询体包一层兜底。以前 onSuccess 块内一旦抛异常（JSON 解析、
+                // 通知构建等），协程会直接死掉且不留日志，通知永远停在"进行中"。
+                try {
                 runCatching { readStatus(baseUrl, promptId) }.onSuccess { status ->
                     consecutivePollFailures = 0
                     // 进度只来自 WebSocket，而反代会周期性把它掐断——断线期间这条通知就
                     // 冻在旧百分比上。轮询每次回来检查一下：超过阈值没新进度，就把进度条
                     // 改成不确定态（动态滚动），并标明已等待时长，避免看起来像卡死。
                     refreshStaleProgressNotification(promptId, baseUrl, workflowName, workflowPath)
+                    if (!status.completed && !status.present) {
+                        // v0.2.33：不在历史里也不在队列——任务已从服务器消失（ComfyUI 的
+                        // /history 是内存态，服务重启就清空；也有可能是任务被手动清掉）。
+                        // 以前这种情况会被当成"还在跑"无限轮询，用户看到的就是"图已经出了，
+                        // App 却一直显示进行中"。连续确认两次（相隔一轮轮询）才收尾，
+                        // 避开任务刚提交、还没进历史的瞬间。
+                        if (missedPolls >= 1 && runCatching { !isQueued(baseUrl, promptId) }.getOrDefault(false)) {
+                            AppLogger.warn("任务已从服务器消失（不在历史也不在队列），停止监控：$promptId")
+                            monitors.remove(promptId)
+                            workflowNames.remove(promptId)
+                            workflowPaths.remove(promptId)
+                            serverUrls.remove(promptId)
+                            progressUpdatedAt.remove(promptId)
+                            staleNotified.remove(promptId)
+                            authCookies.remove(promptId)
+                            getSystemService(NotificationManager::class.java)
+                                .notify(
+                                    notificationId(promptId),
+                                    completionNotification(
+                                        "任务已丢失",
+                                        "$workflowName（服务器重启或任务被清除，已停止监控）",
+                                        promptId,
+                                        baseUrl,
+                                        workflowPath,
+                                    ),
+                                )
+                            stopIfIdle()
+                            return@launch
+                        }
+                        missedPolls++
+                    } else {
+                        missedPolls = 0
+                    }
                     if (status.completed) {
                         if (status.error) {
                             getSystemService(NotificationManager::class.java)
@@ -377,6 +416,11 @@ serverUrls.remove(promptId)
                         return@launch
                     }
                 }
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (error: Throwable) {
+                    AppLogger.error("后台监控循环异常：$promptId", error)
+                }
                 delay(5_000)
             }
         }
@@ -427,6 +471,29 @@ serverUrls.remove(promptId)
         )
     }
 
+    /**
+     * 任务是否仍在服务器队列里（排队或执行中）。
+     *
+     * 用来区分"还没开始跑"与"已经彻底消失"：ComfyUI 的 /history 是内存态，
+     * 服务一重启，曾经完成或曾经排队的旧任务都会从历史里消失。只看 /history
+     * 会把这种情况误判成"还在跑"，于是一直转圈。
+     */
+    private fun isQueued(baseUrl: String, promptId: String): Boolean {
+        val builder = Request.Builder().url("$baseUrl/queue").get()
+        val cookie = cookieFor(promptId)
+        if (cookie.isNotBlank()) builder.header("Cookie", cookie)
+        client.newCall(builder.build()).execute().use { response ->
+            if (!response.isSuccessful) return true
+            val root = JSONObject(response.body?.string().orEmpty())
+            return sequenceOf("queue_running", "queue_pending").any { key ->
+                val array = root.optJSONArray(key) ?: return@any false
+                (0 until array.length()).any { index ->
+                    array.optJSONArray(index)?.optString(1) == promptId
+                }
+            }
+        }
+    }
+
     private fun readStatus(baseUrl: String, promptId: String): PollStatus {
         val encoded = URLEncoder.encode(promptId, Charsets.UTF_8.name())
         val builder = Request.Builder().url("$baseUrl/history/$encoded").get()
@@ -446,7 +513,13 @@ serverUrls.remove(promptId)
                 throw PollFailure("轮询任务状态失败：HTTP $code", permanent)
             }
             val root = JSONObject(response.body?.string().orEmpty())
-            val status = root.optJSONObject(promptId)?.optJSONObject("status") ?: return PollStatus(false, false)
+            // v0.2.33：promptId 不在 /history 里时返回 {}。以前一律当成"未完成"，
+            // 于是一旦任务从服务器消失（ComfyUI 的 /history 是内存态，服务重启就清空），
+            // 轮询就永远不会结束——用户看到的就是"图已经出了，App 却一直显示进行中"。
+            // 把"不在历史里"单独标出来，交给上层结合队列判断是否已丢失。
+            val item = root.optJSONObject(promptId)
+                ?: return PollStatus(completed = false, error = false, present = false)
+            val status = item.optJSONObject("status") ?: return PollStatus(false, false, present = true)
             return PollStatus(
                 completed = status.optBoolean("completed"),
                 error = status.optString("status_str").equals("error", true),
@@ -658,7 +731,7 @@ serverUrls.remove(promptId)
         return pendingIntent
     }
 
-    private data class PollStatus(val completed: Boolean, val error: Boolean)
+    private data class PollStatus(val completed: Boolean, val error: Boolean, val present: Boolean = true)
     private data class SaveReport(
         val total: Int,
         val failed: Int,

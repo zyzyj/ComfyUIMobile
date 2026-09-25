@@ -45,7 +45,7 @@ import com.local.comfyuimobile.model.AiAssistMode
 import com.local.comfyuimobile.model.AiAssistScope
 import com.local.comfyuimobile.model.AiAssistTarget
 import com.local.comfyuimobile.model.BatchCompareLogic
-import com.local.comfyuimobile.model.BatchItemResult
+import com.local.comfyuimobile.model.GalleryViewerRequestimport com.local.comfyuimobile.model.BatchItemResult
 import com.local.comfyuimobile.model.BatchPhase
 import com.local.comfyuimobile.model.BatchRun
 import com.local.comfyuimobile.model.CacheOutputRule
@@ -2499,6 +2499,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(aiAssistTarget = null, aiAssistBusy = false, aiAssistError = null) }
     }
 
+    /** v0.2.33：打开全屏图片查看器（由根 Box 以浮层渲染，不用独立 Dialog 窗口）。 */
+    fun openGalleryViewer(items: List<ResultMedia>, initialIndex: Int, fromResults: Boolean) {
+        if (items.isEmpty()) return
+        _state.update {
+            it.copy(
+                galleryViewer = GalleryViewerRequest(
+                    items = items,
+                    initialIndex = initialIndex.coerceIn(items.indices),
+                    fromResults = fromResults,
+                ),
+            )
+        }
+    }
+
+    fun dismissGalleryViewer() {
+        _state.update { it.copy(galleryViewer = null) }
+    }
+
+    /**
+     * 在查看器里删掉一张本地缓存后，把它从浮层列表里移除；
+     * 删到最后一张时直接关掉查看器，避免停在一个空列表上。
+     */
+    fun removeFromGalleryViewer(media: ResultMedia) {
+        _state.update { current ->
+            val request = current.galleryViewer ?: return@update current
+            val remaining = request.items.filterNot { it.stableKey() == media.stableKey() }
+            current.copy(
+                galleryViewer = if (remaining.isEmpty()) {
+                    null
+                } else {
+                    request.copy(items = remaining, initialIndex = request.initialIndex.coerceIn(remaining.indices))
+                },
+            )
+        }
+    }
+
     /**
      * 让大模型写提示词，成功即写回目标字段。
      *
@@ -4388,7 +4424,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     jobs.any { it.id == id && it.state in setOf(JobState.RUNNING, JobState.PENDING) }
                 }
                 val selection = ActiveJobRecovery.select(ui.activeJobId, jobs, awaiting, takenOverJobIds)
-                val active = selection.job ?: return@update ui.copy(jobs = jobs)
+                val active = selection.job
+                if (active == null) {
+                    // v0.2.33：当前跟踪的任务既不在服务器队列、也不在历史里，说明它已经
+                    // 消失（ComfyUI 的 /history 是内存态，服务重启就清空；也可能是任务
+                    // 被手动清除）。以前这里只是原样返回，activeJobId 一直留着，界面就
+                    // 永远停在"进行中"，后台通知也永不收尾。awaiting 里的任务是刚提交、
+                    // 还没进队列的，不能误清。
+                    val currentId = ui.activeJobId
+                    val vanished = currentId != null &&
+                        currentId !in awaiting &&
+                        jobs.none { it.id == currentId }
+                    return@update if (vanished) {
+                        ui.copy(
+                            jobs = jobs,
+                            activeJobId = null,
+                            currentExecutingNodeId = null,
+                            generationProgress = null,
+                            generationMessage = "",
+                            notice = "任务已结束",
+                        )
+                    } else {
+                        ui.copy(jobs = jobs)
+                    }
+                }
                 val sameActiveJob = ui.activeJobId == active.id
                 val recoveredRuntimeNode = reconnectRuntimeNode.takeIf { active.state == JobState.RUNNING }
                 val resolvedNode = ExecutionNodeResolver.resolve(
