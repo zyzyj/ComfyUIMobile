@@ -292,7 +292,14 @@ class AiStudioClient {
                 // 注：不判 301/302——OkHttp 默认 followRedirects=true，重定向会被自动
                 // 跟随，落到登录页 HTML 时由下面的 startsWith("<") 分支兜住。
                 !resp.isSuccessful -> throw AiStudioException(
-                    "${action}失败：HTTP ${resp.code}",
+                    // v0.2.37：403 且本账号没拿到平台令牌（bdToken）时，平台只会回一个
+                    // 笼统的“没有权限”，用户不知道该怎么修。这种账号是登录时页面还没注入
+                    // window.aiStudio 就提交了（登录页已修），已存的旧账号重新登录即可。
+                    if (resp.code == 403 && account.bdToken.isBlank()) {
+                        "${action}失败：该账号缺少平台令牌（登录时未取到 bdToken），平台拒绝了这个操作。请到「账号」页重新登录一次（多账号请用「添加账号」重登后切换）。"
+                    } else {
+                        "${action}失败：HTTP ${resp.code}"
+                    },
                 )
                 // 偶尔会返回登录页 HTML（百度网关的登录墙）
                 raw.trimStart().startsWith("<") -> throw AiStudioException(
