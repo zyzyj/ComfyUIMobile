@@ -1315,6 +1315,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (wantRunning) {
                     // running 只是受理，再确认平台已经给出环境地址。用轻量探测：
                     // 轮询里不调 notebook/enter，免得每几秒给平台下发一次启动动作。
+                    // v0.2.34：running 已确认，清掉 startingProjectId——后面交给 project.running
+                    // 驱动（显示“正在启动环境…”），否则会一直停在“正在启动…”。
                     val ready = runCatching {
                         kernelClient.peekEndpoint(account, projectId)
                     }.getOrNull() != null
@@ -1322,6 +1324,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _state.update {
                             it.copy(
                                 aiStudio = it.aiStudio.copy(
+                                    startingProjectId = null,
                                     message = "机器已分配，正在启动环境…（已等 ${waitedSeconds} 秒）",
                                     // 环境未确认可用前，不把它标成 ready，项目卡
                                     // 就会显示"正在启动环境…"而不是误导性的"运行中"。
@@ -1335,6 +1338,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _state.update {
                         it.copy(
                             aiStudio = it.aiStudio.copy(
+                                startingProjectId = null,
                                 message = "环境已就绪",
                                 environmentReadyProjectId = projectId,
                             ),
@@ -1347,6 +1351,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _state.update {
                     it.copy(
                         aiStudio = it.aiStudio.copy(
+                            stoppingProjectId = null,
                             message = "已停止",
                             environmentReadyProjectId = it.aiStudio.environmentReadyProjectId
                                 ?.takeIf { id -> id != projectId },
@@ -1355,7 +1360,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 return@launch
             }
-            _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "状态未变化，可点「刷新」查看")) }
+            _state.update {
+                it.copy(
+                    aiStudio = it.aiStudio.copy(
+                        // 轮询超时也要清掉，否则卡片会一直转圈。
+                        startingProjectId = null,
+                        stoppingProjectId = null,
+                        message = "状态未变化，可点「刷新」查看",
+                    ),
+                )
+            }
         }
     }
 
@@ -1398,7 +1412,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _state.update {
                         it.copy(
                             aiStudio = it.aiStudio.copy(
-                                startingProjectId = null,
+                                // v0.2.34：不在这里清 startingProjectId。平台列表要过几秒才回
+                                // running=true（实测 4.2 秒），而 aiStudioLoadProjects 会立刻把
+                                // 项目列表刷成旧状态——中间这段卡片会落回“已停止”，用户以为没
+                                // 启动成功（反馈的“选完 GPU 后显示已停止”就是这个）。这里让它
+                                // 一直显示“正在启动…”，等 pollProjectState 确认 running 后再清。
                                 message = "已提交启动请求，等平台分配机器（通常十几秒，平台繁忙时可能数分钟）",
                                 lastRawResponse = aiStudio.lastRawResponse,
                             ),
@@ -3327,39 +3345,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteWorkflow() {
         val document = _state.value.previewWorkflow ?: return
-        viewModelScope.launch {
-            runOperation("删除工作流失败") {
-                flushCurrentDraft()
-                client.deleteWorkflow(document.entry.path)
-                workflowDrafts.delete(document.serverUrl, document.entry.path)
-                runCatching { workflowSnapshots.remove(document.serverUrl, document.entry.path) }
-                preferences.removeRecentWorkflow(document.entry.path)
-                _state.update {
-                    it.copy(
-                        previewWorkflow = null,
-                        selectedWorkflow = it.selectedWorkflow?.takeUnless { sel -> sel.entry.path == document.entry.path },
-                        fields = if (it.selectedWorkflow?.entry?.path == document.entry.path) emptyList() else it.fields,
-                        notice = "已删除 ${document.entry.name}",
-                    )
-                }
-                refreshWorkflowsInternal()
-            }
-        }
+        deleteWorkflowByPath(document.entry.path, document.entry.name)
     }
 
     /**
      * 按路径删除工作流：不依赖是否已成功打开/识别。
      * 用于清理"导入后打不开"（如 API 格式转换失败）的残留工作流。
+     *
+     * v0.2.34：以前先调 client.deleteWorkflow 再清本地，而 AI Studio 这类反代
+     * 不支持 /userdata（日志里 404 / 400 反复出现），云端删除必然抛异常，整段
+     * runOperation 直接失败——结果就是“本地工作流删不掉”（用户反馈的 bug）。
+     * 现在先无条件清本机（内存缓存 + 磁盘快照 + 草稿 + 最近记录），再尝试云端；
+     * 只有在“服务器本来支持云端存储、但这次删除真失败”时才报错。
      */
     fun deleteWorkflowByPath(path: String, name: String) {
         val serverUrl = _state.value.activeServer?.baseUrl ?: return
         viewModelScope.launch {
             runOperation("删除工作流失败") {
                 flushCurrentDraft()
-                client.deleteWorkflow(path)
-                runCatching { workflowDrafts.delete(serverUrl, path) }
+                WorkflowContentCache.remove(serverUrl, path)
                 runCatching { workflowSnapshots.remove(serverUrl, path) }
+                    .onFailure { AppLogger.error("删除本地工作流快照失败：$path", it) }
+                runCatching { workflowDrafts.delete(serverUrl, path) }
+                    .onFailure { AppLogger.error("删除本地工作流草稿失败：$path", it) }
                 preferences.removeRecentWorkflow(path)
+                val cloudDeleting = bridge?.serverWorkflowStoreAvailable == true
+                val cloudError = runCatching { client.deleteWorkflow(path) }.exceptionOrNull()
+                    ?.also { if (it is CancellationException) throw it }
+                if (cloudError != null && cloudDeleting && !isUserdataUnavailable(cloudError)) {
+                    // 服务器本支持云端存储，这次删除却真失败了——不能假装成功。
+                    throw cloudError
+                }
+                if (cloudError != null) {
+                    AppLogger.warn("云端删除不可用，已只清理本机工作流：$path", cloudError)
+                }
                 _state.update {
                     it.copy(
                         previewWorkflow = it.previewWorkflow?.takeUnless { wf -> wf.entry.path == path },
@@ -3440,12 +3459,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     entry.path,
                     json.toString(),
                 )
-                runCatching { refreshWorkflowsInternal() }
-                val manifest = bridgeOperationMutex.withLock {
-                    (bridge ?: error("前端桥接不可用")).loadWorkflow(
-                        rawJson = json.toString(),
-                        workflowPath = entry.path,
+                // v0.2.34：导入先落盘并清掉 loading 遮罩，用户立刻能看到工作流已进列表。
+                // 以前这里会卡在下面的 loadWorkflow——它要等前端桥接，页面在重载时
+                // 最多要耗 3×20 秒，期间全屏遮罩挂着，用户感觉就是“添加工作流会卡顿”。
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        notice = "已从${if (isImage) "图片" else "文件"}导入 $candidateName",
                     )
+                }
+                runCatching { refreshWorkflowsInternal() }
+                // 预览（读取参数清单）降级为“尽力而为”：失败不报错，用户点开该工作流时
+                // 会再走一次正常加载。
+                val manifest = runCatching {
+                    bridgeOperationMutex.withLock {
+                        (bridge ?: error("前端桥接不可用")).loadWorkflow(
+                            rawJson = json.toString(),
+                            workflowPath = entry.path,
+                        )
+                    }
+                }.getOrElse { error ->
+                    if (error is CancellationException) throw error
+                    AppLogger.warn("导入后预读取工作流参数失败（不影响已保存），点开时可重试：${entry.path}", error)
+                    _state.update { it.copy(notice = "已导入 $candidateName，点开工作流即可加载参数") }
+                    return@runOperation
                 }
                 bridgeLoadedPath = entry.path
                 val document = WorkflowDocument(
@@ -4005,6 +4042,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             clientId = clientId,
             onOpen = {
                 reconnectJob?.cancel()
+                // v0.2.34：连上了就把退避重置回最小。以前退避只涨不落：每被反代抬断一次
+                // 就翻倍，涨到 30 秒封顶后永远停在 30 秒。于是每次断线都要干等半分钟才
+                // 重开，期间收不到任何 progress / execution_success 事件——用户看到的就是
+                // “通知栏进度长时间不动、服务器已出图 App 还显示在跑”。连上就归零，
+                // 下次掉线又能立即重连。
+                wsReconnectBackoffMs = WS_RECONNECT_MIN_MS
+                lastWsBackoffLoggedMs = 0L
                 _state.update { it.copy(status = ConnectionStatus.CONNECTED, connectionMessage = "已连接 ${it.activeServer?.name.orEmpty()}") }
             },
             onMessage = ::handleSocketMessage,
