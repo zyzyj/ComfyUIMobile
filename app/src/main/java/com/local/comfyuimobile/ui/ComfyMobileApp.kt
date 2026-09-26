@@ -5028,6 +5028,11 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
     var commandsExpanded by remember { mutableStateOf(false) }
     var addingCommand by remember { mutableStateOf(false) }
     var newCommandDraft by remember { mutableStateOf("") }
+    // 编辑态：只有进入编辑态才显示删除按钮。以前每个药丸右侧常驻一个小「×」，
+    // 一点就删、还直接写盘，手指划过就误删（用户反馈“常用命令内容不见了”）。
+    var editingCommands by remember { mutableStateOf(false) }
+    // 最近删除的一条：删除是立即写盘的，没有它就找不回来。留一份以便“撤销”。
+    var lastRemovedCommand by remember { mutableStateOf<String?>(null) }
     // 特殊键行（ESC/TAB/方向键/Ctrl 组合…）的展开态。
     //
     // 为什么默认收起：移动端终端必须能发 ESC/TAB/方向键（软键盘打不出来），
@@ -5327,12 +5332,22 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "常用命令",
+                        if (editingCommands) "常用命令 · 点击即删除" else "常用命令",
                         style = MaterialTheme.typography.labelSmall,
                         color = TerminalText.copy(alpha = 0.6f),
                         modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = { addingCommand = !addingCommand }) {
+                    // 编辑/添加互斥：两个操作都要占用药丸的点击，不能同时生效。
+                    TextButton(onClick = {
+                        editingCommands = !editingCommands
+                        if (editingCommands) addingCommand = false
+                    }) {
+                        Text(if (editingCommands) "完成" else "编辑")
+                    }
+                    TextButton(onClick = {
+                        addingCommand = !addingCommand
+                        if (addingCommand) editingCommands = false
+                    }) {
                         Text(if (addingCommand) "收起" else "添加")
                     }
                 }
@@ -5366,20 +5381,33 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     panel.consoleQuickCommands.forEach { item ->
-                        InputChip(
-                            selected = false,
-                            onClick = { viewModel.aiStudioSetConsoleInput(item) },
-                            label = { Text(item, style = MaterialTheme.typography.labelMedium) },
-                            trailingIcon = {
-                                Icon(
-                                    Icons.Outlined.Close,
-                                    "删除",
-                                    Modifier.size(14.dp).clickable {
-                                        viewModel.aiStudioRemoveConsoleQuickCommand(item)
-                                    },
-                                )
-                            },
-                        )
+                        if (editingCommands) {
+                            // 编辑态：点击即删除（进入编辑态本身已是一次刻意操作，
+                            // 不会像以前那样被随手一滑误触）。删后给一次撤销机会。
+                            InputChip(
+                                selected = false,
+                                onClick = {
+                                    lastRemovedCommand = item
+                                    viewModel.aiStudioRemoveConsoleQuickCommand(item)
+                                },
+                                label = { Text(item, style = MaterialTheme.typography.labelMedium) },
+                                trailingIcon = {
+                                    Icon(
+                                        Icons.Outlined.Close,
+                                        "删除",
+                                        Modifier.size(16.dp),
+                                        tint = Color(0xFFF07178),
+                                    )
+                                },
+                            )
+                        } else {
+                            // 平时：药丸只有命令文字，点击=填入终端，没有任何删除入口。
+                            InputChip(
+                                selected = false,
+                                onClick = { viewModel.aiStudioSetConsoleInput(item) },
+                                label = { Text(item, style = MaterialTheme.typography.labelMedium) },
+                            )
+                        }
                     }
                     if (panel.consoleQuickCommands.isEmpty()) {
                         Text(
@@ -5387,6 +5415,24 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                             style = MaterialTheme.typography.labelSmall,
                             color = TerminalText.copy(alpha = 0.5f),
                         )
+                    }
+                }
+                // 刚删过一条时给一条撤销：删除是立即写盘的，没有这个就真丢了。
+                lastRemovedCommand?.let { removed ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "已删除：$removed",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TerminalText.copy(alpha = 0.7f),
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = {
+                            viewModel.aiStudioAddConsoleQuickCommand(removed)
+                            lastRemovedCommand = null
+                        }) { Text("撤销") }
                     }
                 }
             }
