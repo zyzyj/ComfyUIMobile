@@ -221,6 +221,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var aiStudioResourceJob: Job? = null
     private var aiStudioProjectJob: Job? = null
     private var aiStudioActionJob: Job? = null
+    /** 启动后的状态轮询任务。用户点「停止」时要把它取消——否则它会把“平台把
+     * running 退回 false”误判成“分配失败”（那其实是用户自己停的）。 */
+    private var aiStudioStartPollJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -1367,77 +1370,115 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 用户接着点连接就撞上"平台没有返回环境地址"。
      */
     private fun pollProjectState(projectId: String, wantRunning: Boolean) {
-        viewModelScope.launch {
-            // 累计实际等待时长：前 5 轮 4 秒、之后 8 秒，文案必须跟真实退避一致
-            // （以前固定按每轮 4 秒算，等了 60 秒却显示 24 秒）。
-            var waitedSeconds = 0
-            repeat(40) { attempt ->
-                val step = if (attempt < 5) 4 else 8
-                delay(step * 1_000L)
-                waitedSeconds += step
-                val account = _state.value.aiStudio.activeAccount() ?: return@launch
-                val page = runCatching { aiStudio.listProjects(account) }.getOrNull() ?: return@repeat
-                val project = page.projects.firstOrNull { it.projectId == projectId } ?: return@repeat
-                _state.update { it.copy(aiStudio = it.aiStudio.copy(projects = page.projects)) }
-                if (project.running != wantRunning) return@repeat
-                if (wantRunning) {
-                    // running 只是受理，再确认平台已经给出环境地址。用轻量探测：
-                    // 轮询里不调 notebook/enter，免得每几秒给平台下发一次启动动作。
-                    // v0.2.34：running 已确认，清掉 startingProjectId——后面交给 project.running
-                    // 驱动（显示“正在启动环境…”），否则会一直停在“正在启动…”。
-                    val ready = runCatching {
-                        kernelClient.peekEndpoint(account, projectId)
-                    }.getOrNull() != null
-                    if (!ready) {
-                        _state.update {
-                            it.copy(
-                                aiStudio = it.aiStudio.copy(
-                                    startingProjectId = null,
-                                    message = "机器已分配，正在启动环境…（已等 ${waitedSeconds} 秒）",
-                                    // 环境未确认可用前，不把它标成 ready，项目卡
-                                    // 就会显示"正在启动环境…"而不是误导性的"运行中"。
-                                    environmentReadyProjectId = null,
-                                ),
-                            )
-                        }
-                        return@repeat
-                    }
-                    AppLogger.info("AI Studio 项目状态已更新：$projectId running=${project.running} 环境已就绪")
+        if (wantRunning) {
+            aiStudioStartPollJob?.cancel()
+            aiStudioStartPollJob = viewModelScope.launch {
+                runPollProjectState(projectId, wantRunning = true)
+            }
+        } else {
+            viewModelScope.launch { runPollProjectState(projectId, wantRunning = false) }
+        }
+    }
+
+    private suspend fun runPollProjectState(projectId: String, wantRunning: Boolean) {
+        // 累计实际等待时长：前 5 轮 4 秒、之后 8 秒，文案必须跟真实退避一致
+        // （以前固定按每轮 4 秒算，等了 60 秒却显示 24 秒）。
+        var waitedSeconds = 0
+        // 是否见过平台把项目标成 running=true。用于识别“受理后又退回未运行”。
+        var sawRunning = false
+        repeat(40) { attempt ->
+            val step = if (attempt < 5) 4 else 8
+            delay(step * 1_000L)
+            waitedSeconds += step
+            val account = _state.value.aiStudio.activeAccount() ?: return
+            val page = runCatching { aiStudio.listProjects(account) }.getOrNull() ?: return@repeat
+            val project = page.projects.firstOrNull { it.projectId == projectId } ?: return@repeat
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(projects = page.projects)) }
+            if (project.running != wantRunning) {
+                // 启动方向：平台曾受理（running=true），现在又自己退回 false——这是
+                // 平台“没能分配到机器、放弃本次启动”的信号。用户主动点停止时这个轮询
+                // 任务已被取消（见 pollProjectState），不会走到这里，所以不需要再
+                // 用 stoppingProjectId 去区分。
+                // cf08 实测：14:08:10 启动，baseinfo 全程返回 ...null（环境未分配），
+                // 14:10:07 平台自己把 running 退回 false；同一日志里 16G 档位启动会扣
+                // 算力卡，而这次 32G 的 resourceFree 一直没动——就是没真正分配出机器。
+                // 此时继续轮询到超时只会让用户干等。
+                if (wantRunning && sawRunning) {
+                    AppLogger.warn("AI Studio 项目状态已更新：$projectId 平台把 running 退回 false（未能分配机器）")
                     _state.update {
                         it.copy(
                             aiStudio = it.aiStudio.copy(
                                 startingProjectId = null,
-                                message = "环境已就绪",
-                                environmentReadyProjectId = projectId,
+                                stoppingProjectId = null,
+                                environmentReadyProjectId = null,
+                                message = "平台没能分配到机器，本次启动已结束。请稍后重试，或换一个算力档位。",
                             ),
                         )
                     }
-                    return@launch
+                    return
                 }
-                // 停止方向：running=false 就是真的停了。
-                AppLogger.info("AI Studio 项目状态已更新：$projectId running=${project.running}")
+                return@repeat
+            }
+            if (wantRunning) sawRunning = true
+            if (wantRunning) {
+                // running 只是受理，再确认平台已经给出环境地址。用轻量探测：
+                // 轮询里不调 notebook/enter，免得每几秒给平台下发一次启动动作。
+                // v0.2.34：running 已确认，清掉 startingProjectId——后面交给 project.running
+                // 驱动（显示“正在启动环境…”），否则会一直停在“正在启动…”。
+                val ready = runCatching {
+                    kernelClient.peekEndpoint(account, projectId)
+                }.getOrNull() != null
+                if (!ready) {
+                    _state.update {
+                        it.copy(
+                            aiStudio = it.aiStudio.copy(
+                                startingProjectId = null,
+                                // 文案别说“机器已分配”：running=true 只是平台受理，
+                                // 真机里 baseinfo 长时间回 null 时机器其实还没分下来。
+                                message = "平台正在分配机器…（已等 ${waitedSeconds} 秒）",
+                                // 环境未确认可用前，不把它标成 ready，项目卡
+                                // 就会显示"正在启动环境…"而不是误导性的"运行中"。
+                                environmentReadyProjectId = null,
+                            ),
+                        )
+                    }
+                    return@repeat
+                }
+                AppLogger.info("AI Studio 项目状态已更新：$projectId running=${project.running} 环境已就绪")
                 _state.update {
                     it.copy(
                         aiStudio = it.aiStudio.copy(
-                            stoppingProjectId = null,
-                            message = "已停止",
-                            environmentReadyProjectId = it.aiStudio.environmentReadyProjectId
-                                ?.takeIf { id -> id != projectId },
+                            startingProjectId = null,
+                            message = "环境已就绪",
+                            environmentReadyProjectId = projectId,
                         ),
                     )
                 }
-                return@launch
+                return
             }
+            // 停止方向：running=false 就是真的停了。
+            AppLogger.info("AI Studio 项目状态已更新：$projectId running=${project.running}")
             _state.update {
                 it.copy(
                     aiStudio = it.aiStudio.copy(
-                        // 轮询超时也要清掉，否则卡片会一直转圈。
-                        startingProjectId = null,
                         stoppingProjectId = null,
-                        message = "状态未变化，可点「刷新」查看",
+                        message = "已停止",
+                        environmentReadyProjectId = it.aiStudio.environmentReadyProjectId
+                            ?.takeIf { id -> id != projectId },
                     ),
                 )
             }
+            return
+        }
+        _state.update {
+            it.copy(
+                aiStudio = it.aiStudio.copy(
+                    // 轮询超时也要清掉，否则卡片会一直转圈。
+                    startingProjectId = null,
+                    stoppingProjectId = null,
+                    message = "状态未变化，可点「刷新」查看",
+                ),
+            )
         }
     }
 
@@ -1500,6 +1541,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun aiStudioStopProject(projectId: String) {
         val account = _state.value.aiStudio.activeAccount() ?: return
         if (aiStudioActionJob?.isActive == true) return
+        // 用户主动停止：先取消启动方向的轮询，否则它会把“running 变回 false”
+        // 误判成“平台分配失败”（其实正是本次停止造成的）。
+        aiStudioStartPollJob?.cancel()
         _state.update { it.copy(aiStudio = it.aiStudio.copy(stoppingProjectId = projectId, error = null, message = null)) }
         aiStudioActionJob = viewModelScope.launch {
             runCatching { aiStudio.stopProject(account, projectId) }
