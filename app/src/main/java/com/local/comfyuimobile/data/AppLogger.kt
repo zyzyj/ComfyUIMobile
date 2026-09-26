@@ -9,9 +9,12 @@ import androidx.annotation.RequiresApi
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 object AppLogger {
     private const val TAG = "ComfyUIMobile"
@@ -20,12 +23,34 @@ object AppLogger {
     private const val LAST_EXIT_TIMESTAMP = "last_exit_timestamp"
     private const val MAX_BYTES = 2L * 1024L * 1024L
     private const val MAX_EXIT_TRACE_BYTES = 128 * 1024
+    /** 待落盘行数上限，超出丢最旧（仅在磁盘持续跟不上写入时才可能触发）。 */
+    private const val MAX_PENDING_LINES = 2_000
     private val traceKeyword = Regex(
         "fatal|sig[a-z0-9]+|crash|webview|chromium|abort|backtrace|fingerprint|abi|process|pid|tid|signal|tombstone|\\.so\\b",
         RegexOption.IGNORE_CASE,
     )
     private val lock = Any()
-    private val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.CHINA)
+    /**
+     * 线程安全的格式化器。旧的 SimpleDateFormat 非线程安全，而本类存在锁内、锁外
+     * 两处并发调用（见 [recordHistoricalExits]），有可能同时 format 同一个实例。
+     * java.time 的 DateTimeFormatter 不可变，天然安全；时区沿用系统默认。
+     */
+    private val formatter = DateTimeFormatter
+        .ofPattern("yyyy-MM-dd HH:mm:ss.SSS", Locale.CHINA)
+        .withZone(ZoneId.systemDefault())
+
+    /**
+     * 落盘线程。日志来自各业务线程（含主线程与 WebView 回调），直接在调用线程写文件
+     * 等于把磁盘 IO 塞进 UI/渲染路径。改为投递到单线程队列，调用方只做入队。
+     */
+    private val writer = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "comfy-mobile-logger").apply { isDaemon = true }
+    }
+    /** 尚未落盘的行；有界，防并发洪峰把内存撑爆（满了丢最旧）。 */
+    private val pending = ArrayDeque<String>()
+    /** 是否已有一个落盘任务在排队，用于合并高频写入、避免任务堆积。 */
+    private val flushScheduled = AtomicBoolean(false)
+
     @Volatile private var context: Context? = null
     @Volatile private var enabled = false
     @Volatile private var installed = false
@@ -35,7 +60,7 @@ object AppLogger {
         enabled = isEnabled(value)
         installCrashHandler()
         info("应用启动，日志记录=${if (enabled) "开启" else "关闭"}")
-        if (enabled) recordHistoricalExits(value)
+        if (enabled) scheduleHistoricalExits(value)
     }
 
     fun isEnabled(value: Context): Boolean =
@@ -50,7 +75,7 @@ object AppLogger {
         enabled = valueEnabled
         if (valueEnabled) {
             info("用户开启诊断日志")
-            recordHistoricalExits(value)
+            scheduleHistoricalExits(value)
         }
     }
 
@@ -68,6 +93,7 @@ object AppLogger {
     }
 
     fun read(): String = synchronized(lock) {
+        flushPendingLocked()
         val app = context ?: return@synchronized "日志器尚未初始化"
         val folder = File(app.filesDir, "logs")
         // v0.1.87：显式 UTF-8。写侧一直用 Charsets.UTF_8，这里却走平台默认字符集，
@@ -83,6 +109,7 @@ object AppLogger {
     }
 
     fun clear() = synchronized(lock) {
+        pending.clear()
         val app = context ?: return@synchronized
         val folder = File(app.filesDir, "logs")
         File(folder, "comfy-mobile.log").delete()
@@ -96,19 +123,58 @@ object AppLogger {
             "警告" -> Log.w(TAG, message)
             else -> Log.i(TAG, message)
         }
+        if (context == null) return
+        // 时间戳在入队时取，反映日志真正发生的时刻，而不是落盘时刻。
+        val line = "${formatter.format(Instant.now())} [$level] $message\n"
         synchronized(lock) {
-            runCatching {
-                val app = context ?: return@runCatching
-                val folder = File(app.filesDir, "logs").apply { mkdirs() }
-                val file = File(folder, "comfy-mobile.log")
-                if (file.length() >= MAX_BYTES) {
-                    val previous = File(folder, "comfy-mobile.previous.log")
-                    previous.delete()
-                    file.renameTo(previous)
-                }
-                file.appendText("${formatter.format(Date())} [$level] $message\n", Charsets.UTF_8)
-            }
+            pending.addLast(line)
+            while (pending.size > MAX_PENDING_LINES) pending.removeFirst()
         }
+        scheduleFlush()
+    }
+
+    /**
+     * 合并高频写入：同一时刻只让一个落盘任务排队。
+     *
+     * 若不合并，每条日志都会 submit 一个任务，而 WebView 桥接阶段这类高频日志会在
+     * 队列里堆起大量空转任务。先置位再落盘有个关键顺序：任务内必须**先把标记清掉、
+     * 再写盘**——反过来会漏掉"写盘开始后新来的行"（它看到标记仍为 true 就不排队，
+     * 而写盘已经取过 pending 了）。
+     */
+    private fun scheduleFlush() {
+        if (!flushScheduled.compareAndSet(false, true)) return
+        runCatching {
+            writer.execute {
+                flushScheduled.set(false)
+                flushPending()
+            }
+        }.onFailure { flushScheduled.set(false) }
+    }
+
+    /** 把待落盘的行写出。调用方须已持有 [lock]。 */
+    private fun flushPendingLocked() {
+        if (pending.isEmpty()) return
+        runCatching {
+            val lines = pending.joinToString("")
+            pending.clear()
+            val app = context ?: return@runCatching
+            val folder = File(app.filesDir, "logs").apply { mkdirs() }
+            val file = File(folder, "comfy-mobile.log")
+            if (file.length() >= MAX_BYTES) {
+                val previous = File(folder, "comfy-mobile.previous.log")
+                previous.delete()
+                file.renameTo(previous)
+            }
+            file.appendText(lines, Charsets.UTF_8)
+        }
+    }
+
+    /** 立即同步落盘（崩溃处理与读取日志前用，不等异步队列）。 */
+    private fun flushPending(): Unit = synchronized(lock) { flushPendingLocked() }
+
+    /** 恢复历史退出要读 trace 流（每个可达 128KB），不能在主线程做。 */
+    private fun scheduleHistoricalExits(value: Context) {
+        runCatching { writer.execute { recordHistoricalExits(value) } }
     }
 
     private fun installCrashHandler() {
@@ -118,6 +184,8 @@ object AppLogger {
             val previous = Thread.getDefaultUncaughtExceptionHandler()
             Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
                 error("未捕获闪退，线程=${thread.name}", throwable)
+                // 崩溃后进程随时会被结束，异步队列来不及落盘，这里同步写一次。
+                flushPending()
                 previous?.uncaughtException(thread, throwable)
             }
             installed = true
@@ -135,7 +203,7 @@ object AppLogger {
                 .sortedBy { it.timestamp }
             exits.forEach { exit ->
                 info(
-                    "系统历史退出：时间=${formatter.format(Date(exit.timestamp))}，原因=${exitReason(exit.reason)}，" +
+                    "系统历史退出：时间=${formatter.format(Instant.ofEpochMilli(exit.timestamp))}，原因=${exitReason(exit.reason)}，" +
                         "进程=${exit.processName.orEmpty()}，PID=${exit.pid}，状态=${exit.status}，" +
                         "重要性=${exit.importance}，PSS=${exit.pss}KB，RSS=${exit.rss}KB，" +
                         "描述=${exit.description.orEmpty()}",
