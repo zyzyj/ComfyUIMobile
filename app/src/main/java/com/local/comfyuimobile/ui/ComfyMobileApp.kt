@@ -4595,7 +4595,12 @@ private fun ResourceTile(
 private fun ProjectCard(project: AiStudioProject, panel: AiStudioState, viewModel: MainViewModel) {
     val starting = panel.startingProjectId == project.projectId
     val stopping = panel.stoppingProjectId == project.projectId
+    // 环境已受理但地址还没拿到——卡片显示“正在启动环境…”。此时停止会把刚分配
+    // 好的机器直接回收，用户会以为“启动失败”（cf07 日志：提交后 33 秒点停止，
+    // 环境 43 秒才真正就绪，一次都没用上）。所以这时先弹确认。
+    val allocating = project.running && panel.environmentReadyProjectId != project.projectId
     var expanded by remember(project.projectId) { mutableStateOf(false) }
+    var confirmStop by remember(project.projectId) { mutableStateOf(false) }
     // v0.1.98：整张卡片不再可点。以前 onClick 挂在 OutlinedCard 上，会与
     // 内部按钮抢事件（点「选择 GPU 启动」反而触发卡片展开/收起），这就是
     // “选了也没反应”的根因之一。现在只有按钮可点。
@@ -4672,10 +4677,23 @@ private fun ProjectCard(project: AiStudioProject, panel: AiStudioState, viewMode
                     enabled = !starting && !stopping,
                 ) { Text(if (expanded) "默认档启动" else "选择 GPU 启动") }
                 OutlinedButton(
-                    onClick = { viewModel.aiStudioStopProject(project.projectId) },
+                    onClick = {
+                        if (allocating) confirmStop = true
+                        else viewModel.aiStudioStopProject(project.projectId)
+                    },
                     modifier = Modifier.weight(1f),
                     enabled = !starting && !stopping && project.running,
                 ) { Text("停止") }
+            }
+            if (confirmStop) {
+                ConfirmDialog(
+                    title = "停止项目",
+                    message = "环境还在分配中。现在停止会中断本次启动，已分配的机器会被平台回收。确定要停止吗？",
+                    onDismiss = { confirmStop = false },
+                ) {
+                    confirmStop = false
+                    viewModel.aiStudioStopProject(project.projectId)
+                }
             }
         }
     }

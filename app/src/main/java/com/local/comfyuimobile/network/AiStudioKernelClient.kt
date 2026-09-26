@@ -144,14 +144,17 @@ class AiStudioKernelClient {
             // 不先 enter 的话 baseinfo 会回 `baseUrl: "...null"`（环境未分配）。
             runCatching { enterNotebook(account, projectId) }
                 .onFailure { AppLogger.warn("notebook/enter 失败（继续尝试取环境信息）", it) }
-            val info = runCatching { fetchBaseInfo(account, projectId) }.getOrNull()
-            if (info != null && validBaseUrl(info.optString("baseUrl")) != null) return@withContext info
-            // baseinfo 在实例刚起来时会短暂返回空（真机日志里 6 次），直接兜底容易
-            // 拿到还没分配完的信息。先重试一次再走兜底。
-            delay(1_500)
-            val retry = runCatching { fetchBaseInfo(account, projectId) }.getOrNull()
-            if (retry != null && validBaseUrl(retry.optString("baseUrl")) != null) return@withContext retry
-            AppLogger.warn("envs/baseinfo 未返回有效 baseUrl，改用 running_status_check 兜底")
+            // baseinfo 在环境刚起来/正在回收时会短暂返回 `...null`（真机日志里反复出现）。
+            // 以前只重试 1 次就走兜底，而兜底的 running_status_check 根本不回 baseUrl，
+            // 于是环境明明存在也报“平台没有返回环境地址”。改成多次退避重试。
+            repeat(4) { attempt ->
+                if (attempt > 0) delay(1_500L)
+                val info = runCatching { fetchBaseInfo(account, projectId) }.getOrNull()
+                if (info != null && validBaseUrl(info.optString("baseUrl")) != null) {
+                    return@withContext info
+                }
+            }
+            AppLogger.warn("envs/baseinfo 连续未返回有效 baseUrl，改用 running_status_check 兜底")
             fetchRunningStatusCheck(account, projectId, scheduleName)
         }
         val baseUrl = validBaseUrl(result.optString("baseUrl"))

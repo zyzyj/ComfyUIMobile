@@ -208,6 +208,10 @@ class AiStudioClient {
         projectId: String,
         scheduleName: String,
     ): String {
+        // 预检只用来判断“要不要先过人机校验”，结果本身不参与启动参数。网络抖动时
+        // 它的 20 秒连接超时会把启动生生拖慢 20 秒（真机日志里就有一次 timeout 后
+        // 才提交启动）。这里用 OkHttp 的 callTimeout 限时 3 秒，超时就按“免校验”
+        // 继续——真需要校验时平台会在启动接口上用错误码 8307 明确拒绝。
         runCatching {
             request(
                 account,
@@ -215,6 +219,7 @@ class AiStudioClient {
                 "POST_EMPTY",
                 null,
                 "检查启动校验",
+                callTimeoutMillis = 3_000L,
             )
         }.onFailure { error ->
             if (error is CancellationException) throw error
@@ -255,6 +260,7 @@ class AiStudioClient {
         method: String,
         formBody: String?,
         action: String,
+        callTimeoutMillis: Long? = null,
     ): JSONObject = withContext(Dispatchers.IO) {
         val url = AiStudioProtocol.BASE_URL + path
         val builder = Request.Builder()
@@ -280,7 +286,15 @@ class AiStudioClient {
         }
 
         val response: Response = try {
-            client.newCall(builder.build()).execute()
+            // 个别调用（如启动前的人机校验预检）需要比默认更短的超时；
+            // 只有传了值才单独建一个 client，避免影响其余接口。
+            val call = if (callTimeoutMillis != null) {
+                client.newBuilder().callTimeout(callTimeoutMillis, TimeUnit.MILLISECONDS).build()
+                    .newCall(builder.build())
+            } else {
+                client.newCall(builder.build())
+            }
+            call.execute()
         } catch (error: Exception) {
             if (error is CancellationException) throw error
             throw AiStudioException("${action}失败：网络不可达（${error.message.orEmpty()}）")
