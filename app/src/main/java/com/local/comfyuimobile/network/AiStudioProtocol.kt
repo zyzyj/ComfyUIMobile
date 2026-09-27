@@ -210,6 +210,24 @@ object AiStudioProtocol {
     }
 
     /**
+     * 解析运行中项目正在使用的算力档位显示名。
+     *
+     * 来源：`/studio/project/detail` 的 `runningClusterInfo`。真机实测（项目运行时）：
+     * `{scheduleName:"resourceCardVGpuSchedule", costPerHour:"200", cores:"2",
+     *   memory:"8GB", displayName:"V100 16GB"}`；项目未运行时该对象只有
+     * `{cores, memory}`，没有 displayName/scheduleName。
+     *
+     * 优先取 displayName（平台本地化的显示名），没有就用 scheduleName 查本地枚举兜底。
+     */
+    fun parseRunningGpuLabel(result: JSONObject): String {
+        val info = result.optJSONObject("runningClusterInfo") ?: return ""
+        val display = firstString(info, listOf("displayName", "showName", "label"))
+        if (display.isNotBlank()) return display
+        val name = firstString(info, listOf("scheduleName", "schedule"))
+        return SCHEDULE_LABELS[name].orEmpty()
+    }
+
+    /**
      * 解析启动时可选的算力档位。
      *
      * 平台把可选环境放在 `result.scheduleList`，每项形如：
