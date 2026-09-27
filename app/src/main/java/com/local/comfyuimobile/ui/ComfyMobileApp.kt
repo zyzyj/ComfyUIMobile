@@ -207,6 +207,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.AnnotatedString
@@ -1736,11 +1738,21 @@ private fun ComboPickerDialog(
         if (query.isBlank()) options else options.filter { it.contains(query, ignoreCase = true) }
     }
     val listState = rememberLazyListState()
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title, maxLines = 1) },
-        text = {
-            Column {
+    // 用 Dialog + 自控宽高的 Surface，不用 AlertDialog。
+    //
+    // v0.2.43 初版用 AlertDialog 的 text 槽装 LazyColumn，真机上列表项被渲染错
+    // （用户截图里 27 项 LoRA 大部分只显示成 "anima/"，像名字丢了）。已用真实前端
+    // 核实数据源完好（该服务器 27 项均为完整路径，无裸目录项），问题在 AlertDialog
+    // 文本槽的布局约束。这里自己控制宽高，彻底避开。
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(0.92f).heightIn(max = 560.dp),
+            shape = MaterialTheme.shapes.large,
+            tonalElevation = 6.dp,
+        ) {
+            Column(Modifier.padding(20.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
@@ -1763,25 +1775,47 @@ private fun ComboPickerDialog(
                         modifier = Modifier.padding(vertical = 12.dp),
                     )
                 } else {
-                    LazyColumn(Modifier.fillMaxHeight(0.6f), state = listState) {
+                    // weight(1f)：列表吃掉剩余高度，且不像 fillMaxHeight 比例那样在
+                    // 对话框里可能退化成 0 高度。
+                    LazyColumn(Modifier.fillMaxWidth().weight(1f), state = listState) {
                         items(matches, key = { it }) { option ->
-                            Text(
-                                option,
-                                modifier = Modifier
+                            Column(
+                                Modifier
                                     .fillMaxWidth()
                                     .clickable { onPick(option) }
                                     .padding(vertical = 10.dp, horizontal = 4.dp),
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 1,
-                            )
+                            ) {
+                                // 主行：去掉目录/后缀的短名（用户要认的就是这个名字）。
+                                // 副行：完整路径，便于区分同名文件。两行都限宽 + 省略号。
+                                Text(
+                                    shortLoraName(option),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                if (option != shortLoraName(option)) {
+                                    Text(
+                                        option,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                         }
                     }
                 }
+                Spacer(Modifier.height(4.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss) { Text("关闭") }
+                }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
-    )
+        }
+    }
 }
 
 @Composable
