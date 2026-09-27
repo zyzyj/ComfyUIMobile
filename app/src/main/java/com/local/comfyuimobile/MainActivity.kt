@@ -7,8 +7,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -66,6 +68,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         handleJobNotification(intent)
+        handleSharedImage(intent)
         // v0.1.85：更新检查不再抢在启动最前面。它要并发打 GitHub 和国内镜像做
         // DNS/TLS 握手，实测吃掉 3.7 秒（日志 23:34:47.672 → 23:34:51.244），正好和
         // 连接抢网络；它还会在连接初期写一次 DataStore，触发一轮全局状态刷新。
@@ -82,6 +85,31 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleJobNotification(intent)
+        handleSharedImage(intent)
+    }
+
+    /**
+     * 处理从外部 App（相册 / 文件管理器）分享或「打开」进来的图片。
+     *
+     * 支持两种形式：ACTION_SEND 带 EXTRA_STREAM 的图片，与 ACTION_VIEW 直接指向图片的 URI。
+     * 只收 image/*，普通文本分享不处理（避免把一段文字当图片读）。
+     */
+    @Suppress("DEPRECATION")
+    private fun handleSharedImage(intent: Intent?) {
+        val action = intent?.action ?: return
+        if (action != Intent.ACTION_SEND && action != Intent.ACTION_VIEW) return
+        val uri: Uri? = when (action) {
+            Intent.ACTION_SEND -> intent.getParcelableExtra(Intent.EXTRA_STREAM)
+            else -> intent.data
+        } ?: return
+        if (uri.scheme == null) return
+        val mimeType = intent.type ?: contentResolver.getType(uri)
+        if (mimeType?.startsWith("image/") != true) return
+        // 分享进来的图片不一定能拿到文件名（content:// 常见），退回一个默认名。
+        val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+            ?: "shared-image.png"
+        viewModel.importSharedImage(uri, name, mimeType)
     }
 
     // v0.1.82：App 挂后台时 Android 会冻结 WebView 的 JS 定时器，云端平台

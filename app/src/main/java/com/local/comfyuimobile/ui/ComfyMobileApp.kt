@@ -590,6 +590,7 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
         page = when (request.destination) {
             AppDestination.PARAMETERS -> MainPage.PARAMETERS
             AppDestination.RESULTS -> MainPage.RESULTS
+            AppDestination.WORKFLOWS -> MainPage.WORKFLOWS
         }
         viewModel.consumeNavigationRequest(request.id)
     }

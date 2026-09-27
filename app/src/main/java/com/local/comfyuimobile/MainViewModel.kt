@@ -3565,13 +3565,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val extension = filename.substringAfterLast('.', "").lowercase()
                 val isImage = mimeType.orEmpty().startsWith("image/") || extension in setOf("png", "webp", "avif")
                 val raw = if (isImage) {
-                    if (extension == "png" || mimeType.equals("image/png", ignoreCase = true)) {
+                    // v0.2.45：PNG / WebP 一律用 App 原生解析（不依赖服务器、也不依赖前端版本），
+                    // 未连接时也能导入；只有 AVIF 仍交给隐藏 WebView 的前端解析（少见且
+                    // 原生实现成本高）。原生解析失败时对 WebP 再回退一次到前端，
+                    // 兼顾兼容性。
+                    val nativeKind = when {
+                        extension == "png" || mimeType.equals("image/png", ignoreCase = true) -> "png"
+                        extension == "webp" || mimeType.equals("image/webp", ignoreCase = true) -> "webp"
+                        else -> null
+                    }
+                    val native = nativeKind?.let { kind ->
                         withContext(Dispatchers.IO) {
-                            app.contentResolver.openInputStream(uri)?.use { WorkflowImageReader.readPngWorkflow(it) }
-                                ?: error("无法读取所选图片")
+                            runCatching {
+                                app.contentResolver.openInputStream(uri)?.use { WorkflowImageReader.readWorkflow(it, kind) }
+                                    ?: error("无法读取所选图片")
+                            }.getOrNull()
                         }
-                    } else {
-                        (bridge ?: error("前端桥接不可用")).extractWorkflowFromImage(uri, mimeType, filename)
+                    }
+                    when {
+                        native != null -> native
+                        nativeKind != null && bridge == null -> error("无法读取所选图片里的工作流")
+                        else -> (bridge ?: error("前端桥接不可用")).extractWorkflowFromImage(uri, mimeType, filename)
                     }
                 } else {
                     withContext(Dispatchers.IO) {
@@ -3684,8 +3698,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun currentWorkflowExport(): Pair<String, String>? = _state.value.previewWorkflow?.let { it.entry.name to it.rawJson }
+    /**
+     * 从系统「分享 / 打开方式」交进来的图片导入工作流。
+     *
+     * 与手动「打开工作流文件」的区别：入口来自外部 App（相册、文件管理器），
+     * 所以导入后主动把界面切到「工作流」页，让用户看到结果。
+     * 解析本身完全复用 [importWorkflow]。
+     */
+    fun importSharedImage(uri: Uri, filename: String, mimeType: String?) {
+        _state.update {
+            it.copy(
+                navigationRequest = AppNavigationRequest(
+                    id = SystemClock.elapsedRealtimeNanos(),
+                    destination = AppDestination.WORKFLOWS,
+                ),
+            )
+        }
+        importWorkflow(uri, filename, mimeType)
+    }
 
+    fun currentWorkflowExport(): Pair<String, String>? = _state.value.previewWorkflow?.let { it.entry.name to it.rawJson }
     fun refreshTasks() = viewModelScope.launch { refreshTasksInternal() }
     fun refreshResults() = viewModelScope.launch { refreshResultsInternal() }
     fun refreshLocalResults() = viewModelScope.launch {
