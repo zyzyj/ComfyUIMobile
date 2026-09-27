@@ -115,6 +115,14 @@ class AiStudioKernelClient {
 
     private var terminalSocket: WebSocket? = null
 
+    /**
+     * 跨帧转义残留：上一帧结尾处未写完的转义序列，拼到下一帧前面再处理。
+     *
+     * WS 帧边界与转义序列边界无关（`ESC[01;34m` 可能被切两半）。不拼的话，
+     * 半截序列会被当普通文本留下，界面就会冒出 `[01;34m` 这种乱码。
+     */
+    private val terminalPendingEscape = StringBuilder()
+
     /** 平台返回的环境连接信息。 */
     data class KernelEndpoint(
         /** baseinfo 给的 baseUrl（用户路径，http）。 */
@@ -315,6 +323,7 @@ class AiStudioKernelClient {
         onClosed: (String) -> Unit,
     ) {
         closeTerminal()
+        terminalPendingEscape.setLength(0)
         val url = withToken(endpoint, wsBase(endpoint) + "terminals/websocket/" + encode(name))
         val builder = Request.Builder().url(url)
         commonHeaders(account, endpoint).forEach { (k, v) -> builder.header(k, v) }
@@ -327,7 +336,12 @@ class AiStudioKernelClient {
                     val raw = AiStudioProtocol.parseTerminalOutput(text) ?: return
                     // 只剔 OSC/CSI 等控制序列，**保留** ANSI 颜色码——由界面渲染成颜色，
                     // 不然 ls 的着色、彩色提示符全没了，一屏白字看起来又乱又平。
-                    val clean = AiStudioProtocol.sanitizeTerminalOutput(raw)
+                    // 先把上一帧残留的半截转义拼上，避免序列被帧边界切开后残留乱码。
+                    val combined = terminalPendingEscape.toString() + raw
+                    terminalPendingEscape.setLength(0)
+                    val (complete, pending) = AiStudioProtocol.splitTrailingIncompleteEscape(combined)
+                    if (pending.isNotEmpty()) terminalPendingEscape.append(pending)
+                    val clean = AiStudioProtocol.sanitizeTerminalOutput(complete)
                     if (clean.isNotEmpty()) onOutput(clean)
                 }
 

@@ -138,6 +138,7 @@ import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -229,6 +230,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.local.comfyuimobile.MainViewModel
+import com.local.comfyuimobile.network.AiStudioProtocol
 import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.AdvancedEditorActivity
 import com.local.comfyuimobile.AiStudioLoginActivity
@@ -4881,19 +4883,20 @@ private val TERMINAL_KEYS = listOf(
 private fun TerminalKeyButton(
     label: String,
     enabled: Boolean,
+    theme: TerminalTheme,
     onClick: () -> Unit,
 ) {
     Box(
         modifier = Modifier
             .clip(MaterialTheme.shapes.small)
-            .background(TerminalBg.copy(alpha = if (enabled) 1f else 0.5f))
+            .background(theme.inputBg.copy(alpha = if (enabled) 1f else 0.5f))
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 6.dp),
     ) {
         Text(
             label,
             style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-            color = if (enabled) TerminalText else TerminalText.copy(alpha = 0.35f),
+            color = if (enabled) theme.text else theme.text.copy(alpha = 0.35f),
         )
     }
 }
@@ -5038,6 +5041,9 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
     val panel = state.aiStudio
     val terminalState = rememberLazyListState()
     val context = LocalContext.current
+    // 终端配色主题：用户可选，存偏好。默认第一套。
+    val theme = remember(panel.consoleThemeId) { resolveTerminalTheme(panel.consoleThemeId) }
+    var themePickerExpanded by remember { mutableStateOf(false) }
     // 常用命令面板的展开/添加态：纯 UI 瞬时状态，不必进 ViewModel。
     var commandsExpanded by remember { mutableStateOf(false) }
     var addingCommand by remember { mutableStateOf(false) }
@@ -5091,7 +5097,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(TerminalBg)
+                .background(theme.bg)
                 .padding(start = 14.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -5106,7 +5112,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                 ),
             )
             Column(Modifier.weight(1f)) {
-                Text("终端", style = MaterialTheme.typography.titleSmall, color = TerminalText)
+                Text("终端", style = MaterialTheme.typography.titleSmall, color = theme.text)
                 Text(
                     when {
                         panel.consoleBusy -> "正在连接…"
@@ -5114,7 +5120,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                         else -> "未连接"
                     },
                     style = MaterialTheme.typography.labelSmall,
-                    color = TerminalText.copy(alpha = 0.6f),
+                    color = theme.text.copy(alpha = 0.6f),
                 )
             }
             if (panel.consoleBusy) {
@@ -5123,7 +5129,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
             // 已连接时的次要操作：中断（Ctrl+C）/ 清屏 / 复制。
             if (panel.consoleConnected) {
                 IconButton(onClick = { viewModel.aiStudioInterruptConsole() }) {
-                    Icon(Icons.Outlined.Warning, "中断当前命令", Modifier.size(20.dp), tint = TerminalText)
+                    Icon(Icons.Outlined.Warning, "中断当前命令", Modifier.size(20.dp), tint = theme.text)
                 }
             }
             IconButton(
@@ -5132,21 +5138,22 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
             ) {
                 Icon(
                     Icons.Outlined.Delete, "清屏", Modifier.size(20.dp),
-                    tint = if (panel.terminalLines.isNotEmpty()) TerminalText
-                    else TerminalText.copy(alpha = 0.35f),
+                    tint = if (panel.terminalLines.isNotEmpty()) theme.text
+                    else theme.text.copy(alpha = 0.35f),
                 )
             }
             IconButton(
                 onClick = {
-                    pendingTerminalExport = panel.terminalLines.joinToString("\n")
+                    // 导出为纯文本：把 ANSI 转义码剥掉，落盘的是人能读的内容。
+                    pendingTerminalExport = panel.terminalLines.joinToString("\n") { AiStudioProtocol.stripAnsi(it) }
                     terminalExportLauncher.launch("ComfyUIMobile-terminal-${System.currentTimeMillis()}.txt")
                 },
                 enabled = panel.terminalLines.isNotEmpty(),
             ) {
                 Icon(
                     Icons.Outlined.Save, "导出终端内容", Modifier.size(20.dp),
-                    tint = if (panel.terminalLines.isNotEmpty()) TerminalText
-                    else TerminalText.copy(alpha = 0.35f),
+                    tint = if (panel.terminalLines.isNotEmpty()) theme.text
+                    else theme.text.copy(alpha = 0.35f),
                 )
             }
             // 主操作：连接 / 断开（一直显示，不可缺）。
@@ -5164,14 +5171,14 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
             }
         }
 
-        HorizontalDivider(color = TerminalText.copy(alpha = 0.12f))
+        HorizontalDivider(color = theme.text.copy(alpha = 0.12f))
 
         // —— 输出区（深底浅字，等宽；支持 ANSI 着色）——
         BoxWithConstraints(
             Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .background(TerminalBg),
+                .background(theme.bg),
         ) {
             // 把实测列数报给远端 PTY（按等宽字估算），否则它按默认 80 列
             // 排版，窄屏上长行硬折。
@@ -5195,13 +5202,13 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                         Icons.Outlined.PlayArrow,
                         null,
                         Modifier.size(30.dp),
-                        tint = TerminalText.copy(alpha = 0.45f),
+                        tint = theme.text.copy(alpha = 0.45f),
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
                         if (panel.consoleConnected) "终端已就绪，在下方输入命令" else "点右上角「连接」启动终端",
                         style = MaterialTheme.typography.bodySmall,
-                        color = TerminalText.copy(alpha = 0.65f),
+                        color = theme.text.copy(alpha = 0.65f),
                     )
                 }
             } else {
@@ -5214,7 +5221,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                         // LazyColumn 自身的滚动。
                         SelectionContainer {
                             Text(
-                                terminalAnnotatedLine(line.ifEmpty { " " }, TerminalText),
+                                terminalAnnotatedLine(line.ifEmpty { " " }, theme),
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = fontSizeSp.sp,
@@ -5228,13 +5235,13 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
         }
 
         // —— 内嵌输入行 ——
-        // 底色故意比输出区**略亮**（TerminalInputBg vs TerminalBg）：
+        // 底色故意比输出区**略亮**（theme.inputBg vs theme.bg）：
         // 以前输入行与输出区同色，发送按钮又是深色，三者糊成一片，用户
         // 看不出哪里能打字、按钮在哪。
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(TerminalInputBg)
+                .background(theme.inputBg)
                 .padding(start = 12.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -5245,7 +5252,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold,
                 ),
-                color = TerminalPrompt,
+                color = theme.prompt,
             )
             BasicTextField(
                 value = panel.consoleDraft,
@@ -5255,9 +5262,9 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                 enabled = panel.consoleConnected,
                 textStyle = MaterialTheme.typography.bodySmall.copy(
                     fontFamily = FontFamily.Monospace,
-                    color = TerminalText,
+                    color = theme.text,
                 ),
-                cursorBrush = SolidColor(TerminalPrompt),
+                cursorBrush = SolidColor(theme.prompt),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = {
                     viewModel.aiStudioSendCommand(panel.consoleDraft.trim())
@@ -5267,7 +5274,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                         Text(
                             if (panel.consoleConnected) "输入命令" else "先连接终端",
                             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                            color = TerminalText.copy(alpha = 0.4f),
+                            color = theme.text.copy(alpha = 0.4f),
                         )
                     }
                     inner()
@@ -5282,7 +5289,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     Icons.Outlined.Tune,
                     "特殊键",
                     Modifier.size(19.dp),
-                    tint = if (keysExpanded) TerminalPrompt else TerminalText.copy(alpha = 0.85f),
+                    tint = if (keysExpanded) theme.prompt else theme.text.copy(alpha = 0.85f),
                 )
             }
             // 「常用命令」入口：点开是个可增删的命令面板。
@@ -5294,7 +5301,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     if (commandsExpanded) Icons.Outlined.ExpandMore else Icons.Outlined.ExpandLess,
                     "常用命令",
                     Modifier.size(20.dp),
-                    tint = TerminalText.copy(alpha = 0.85f),
+                    tint = theme.text.copy(alpha = 0.85f),
                 )
             }
             // 发送键：青绿实心 + 白箭头，在深底上一眼可见。
@@ -5312,7 +5319,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .background(TerminalInputBg)
+                    .background(theme.inputBg)
                     .padding(horizontal = 8.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
@@ -5322,7 +5329,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     TERMINAL_KEYS.forEach { key ->
-                        TerminalKeyButton(key.label, enabled = panel.consoleConnected) {
+                        TerminalKeyButton(key.label, enabled = panel.consoleConnected, theme = theme) {
                             viewModel.aiStudioSendKey(key.sequence)
                         }
                     }
@@ -5332,17 +5339,47 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     Text(
                         "字号",
                         style = MaterialTheme.typography.labelSmall,
-                        color = TerminalText.copy(alpha = 0.6f),
+                        color = theme.text.copy(alpha = 0.6f),
                     )
                     Spacer(Modifier.weight(1f))
-                    TerminalKeyButton("A−", enabled = fontSizeSp > 9f) { fontSizeSp -= 1f }
+                    TerminalKeyButton("A−", enabled = fontSizeSp > 9f, theme = theme) { fontSizeSp -= 1f }
                     Text(
                         "${fontSizeSp.toInt()}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = TerminalText,
+                        color = theme.text,
                         modifier = Modifier.padding(horizontal = 8.dp),
                     )
-                    TerminalKeyButton("A+", enabled = fontSizeSp < 22f) { fontSizeSp += 1f }
+                    TerminalKeyButton("A+", enabled = fontSizeSp < 22f, theme = theme) { fontSizeSp += 1f }
+                }
+                // 配色主题：展开后横向排列，选中项高亮。与参考 App 的「配色主题」一致。
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "配色主题",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = theme.text.copy(alpha = 0.6f),
+                    )
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { themePickerExpanded = !themePickerExpanded }) {
+                        Text(theme.label)
+                    }
+                }
+                if (themePickerExpanded) {
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        TERMINAL_THEMES.forEach { item ->
+                            val selected = item.id == theme.id
+                            OutlinedButton(
+                                onClick = { viewModel.aiStudioSetConsoleTheme(item.id) },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = if (selected) theme.prompt.copy(alpha = 0.25f) else Color.Transparent,
+                                    contentColor = if (selected) theme.prompt else theme.text,
+                                ),
+                            ) { Text(item.label) }
+                        }
+                    }
                 }
             }
         }
@@ -5352,7 +5389,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .background(TerminalInputBg)
+                    .background(theme.inputBg)
                     .padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
@@ -5363,7 +5400,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     Text(
                         if (editingCommands) "常用命令 · 点击即删除" else "常用命令",
                         style = MaterialTheme.typography.labelSmall,
-                        color = TerminalText.copy(alpha = 0.6f),
+                        color = theme.text.copy(alpha = 0.6f),
                         modifier = Modifier.weight(1f),
                     )
                     // 编辑/添加互斥：两个操作都要占用药丸的点击，不能同时生效。
@@ -5442,7 +5479,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                         Text(
                             "还没有常用命令，点「添加」建一条",
                             style = MaterialTheme.typography.labelSmall,
-                            color = TerminalText.copy(alpha = 0.5f),
+                            color = theme.text.copy(alpha = 0.5f),
                         )
                     }
                 }
@@ -5455,7 +5492,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                         Text(
                             "已删除：$removed",
                             style = MaterialTheme.typography.labelSmall,
-                            color = TerminalText.copy(alpha = 0.7f),
+                            color = theme.text.copy(alpha = 0.7f),
                             modifier = Modifier.weight(1f),
                         )
                         TextButton(onClick = {
@@ -5479,77 +5516,188 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
 }
 
 /**
- * 终端配色。
+ * 终端配色主题。
  *
- * 自带一套色值而不复用 M3 的 inverseSurface：因为终端需要固定的"深色背景"
- * （不管 App 是亮色还是暗色主题），且输入行要与输出区有可见的层次差。
+ * 终端需要固定的"深色背景"（不管 App 是亮色还是暗色），且输入行要与输出区有可见层次差。
+ * 每套主题自带 16 色 ANSI 调色板——`ls`、`git`、彩色提示符都靠它上色。
  */
-private val TerminalBg = Color(0xFF17191F)
-private val TerminalInputBg = Color(0xFF242833)
-private val TerminalText = Color(0xFFD6DEEB)
-private val TerminalPrompt = Color(0xFF4DD0D8)
-
-/** 终端 ANSI 16 色（近 VS Code 暗色主题，不刺眼）。 */
-private val TERMINAL_ANSI_COLORS = listOf(
-    Color(0xFF3F3F46), // 0 黑（调亮一点，否则在深底上看不见）
-    Color(0xFFF07178), // 1 红
-    Color(0xFFA5D6A7), // 2 绿
-    Color(0xFFFFCB6B), // 3 黄
-    Color(0xFF82AAFF), // 4 蓝
-    Color(0xFFC792EA), // 5 洋红
-    Color(0xFF89DDFF), // 6 青
-    Color(0xFFD6DEEB), // 7 白
-    Color(0xFF6B7280), // 8 亮黑
-    Color(0xFFFF9DA3), // 9 亮红
-    Color(0xFFC3E88D), // 10 亮绿
-    Color(0xFFFFE082), // 11 亮黄
-    Color(0xFFA4C8FF), // 12 亮蓝
-    Color(0xFFE0AAFF), // 13 亮洋红
-    Color(0xFFB2EBF2), // 14 亮青
-    Color(0xFFFFFFFF), // 15 亮白
+private data class TerminalTheme(
+    val id: String,
+    val label: String,
+    val bg: Color,
+    val inputBg: Color,
+    val text: Color,
+    val prompt: Color,
+    val ansi: List<Color>,
 )
+
+private fun theme(
+    id: String,
+    label: String,
+    bg: Long,
+    inputBg: Long,
+    text: Long,
+    prompt: Long,
+    ansi: List<Long>,
+) = TerminalTheme(id, label, Color(bg), Color(inputBg), Color(text), Color(prompt), ansi.map { Color(it) })
+
+/**
+ * 终端配色主题（与参考 App 的常见主题对应）。顺序即选择器里的展示顺序，
+ * 第一个是默认。每套的 16 色为：黑 红 绿 黄 蓝 洋红 青 白 亮黑 亮红 亮绿 亮黄 亮蓝 亮洋红 亮青 亮白。
+ */
+private val TERMINAL_THEMES = listOf(
+    theme(
+        "github-dark", "GitHub Dark",
+        bg = 0xFF0D1117, inputBg = 0xFF161B22, text = 0xFFC9D1D9, prompt = 0xFF58A6FF,
+        ansi = listOf(
+            0xFF484F58, 0xFFFF7B72, 0xFF3FB950, 0xFFD29922, 0xFF58A6FF, 0xFFBC8CFF, 0xFF39C5CF, 0xFFB1BAC4,
+            0xFF6E7681, 0xFFFFA198, 0xFF56D364, 0xFFE3B341, 0xFF79C0FF, 0xFFD2A8FF, 0xFF56D4DD, 0xFFF0F6FC,
+        ),
+    ),
+    theme(
+        "dracula", "Dracula",
+        bg = 0xFF282A36, inputBg = 0xFF343746, text = 0xFFF8F8F2, prompt = 0xFF50FA7B,
+        ansi = listOf(
+            0xFF21222C, 0xFFFF5555, 0xFF50FA7B, 0xFFF1FA8C, 0xFFBD93F9, 0xFFFF79C6, 0xFF8BE9FD, 0xFFF8F8F2,
+            0xFF6272A4, 0xFFFF6E6E, 0xFF69FF94, 0xFFFFFFA5, 0xFFD6ACFF, 0xFFFF92DF, 0xFFA4FFFF, 0xFFFFFFFF,
+        ),
+    ),
+    theme(
+        "one-dark", "One Dark",
+        bg = 0xFF282C34, inputBg = 0xFF31353F, text = 0xFFABB2BF, prompt = 0xFF61AFEF,
+        ansi = listOf(
+            0xFF282C34, 0xFFE06C75, 0xFF98C379, 0xFFE5C07B, 0xFF61AFEF, 0xFFC678DD, 0xFF56B6C2, 0xFFABB2BF,
+            0xFF5C6370, 0xFFE06C75, 0xFF98C379, 0xFFE5C07B, 0xFF61AFEF, 0xFFC678DD, 0xFF56B6C2, 0xFFFFFFFF,
+        ),
+    ),
+    theme(
+        "monokai", "Monokai",
+        bg = 0xFF272822, inputBg = 0xFF32332B, text = 0xFFF8F8F2, prompt = 0xFFA6E22E,
+        ansi = listOf(
+            0xFF272822, 0xFFF92672, 0xFFA6E22E, 0xFFF4BF75, 0xFF66D9EF, 0xFFAE81FF, 0xFFA1EFE4, 0xFFF8F8F2,
+            0xFF75715E, 0xFFF92672, 0xFFA6E22E, 0xFFF4BF75, 0xFF66D9EF, 0xFFAE81FF, 0xFFA1EFE4, 0xFFF9F8F5,
+        ),
+    ),
+    theme(
+        "termius-dark", "Termius Dark",
+        bg = 0xFF17191F, inputBg = 0xFF242833, text = 0xFFD6DEEB, prompt = 0xFF4DD0D8,
+        ansi = listOf(
+            0xFF3F3F46, 0xFFF07178, 0xFFA5D6A7, 0xFFFFCB6B, 0xFF82AAFF, 0xFFC792EA, 0xFF89DDFF, 0xFFD6DEEB,
+            0xFF6B7280, 0xFFFF9DA3, 0xFFC3E88D, 0xFFFFE082, 0xFFA4C8FF, 0xFFE0AAFF, 0xFFB2EBF2, 0xFFFFFFFF,
+        ),
+    ),
+)
+
+/** 默认主题（偏好为空时用）。 */
+private val DEFAULT_TERMINAL_THEME = TERMINAL_THEMES.first()
+
+private fun resolveTerminalTheme(id: String): TerminalTheme =
+    TERMINAL_THEMES.firstOrNull { it.id == id } ?: DEFAULT_TERMINAL_THEME
+
+/**
+ * ANSI 转义序列匹配器。分组 1 是 SGR 参数（`ESC[<params>m`），其余分支为待丢弃的控制序列。
+ *
+ * - CSI（除 SGR 外）：`ESC[?2004h`、`ESC[K` 等
+ * - OSC：`ESC]0;title` 由 BEL 或 ST 结束
+ * - 双字符转义：`ESC(`、`ESC=` 等
+ */
+private val TERMINAL_ESCAPE = Regex(
+    "\u001B\\[([0-9;]*)m" +
+        "|\u001B\\[[0-9;?]*[ -/]*[@-~]" +
+        "|\u001B\\][^\u0007\u001B]*(?:\u0007|\u001B\\\\)" +
+        "|\u001B[@-Z\\\\-_]",
+)
+
+/** 应用一条 SGR 参数串（如 `01;34` 或 `38;5;208`），返回更新后的前景色与加粗。 */
+private fun applySgr(params: String, palette: List<Color>, fg: Color?, bold: Boolean): Pair<Color?, Boolean> {
+    var newFg = fg
+    var newBold = bold
+    val parts = params.split(';')
+    var index = 0
+    while (index < parts.size) {
+        val code = parts[index].toIntOrNull() ?: 0
+        when (code) {
+            0 -> { newFg = null; newBold = false }
+            1 -> newBold = true
+            22 -> newBold = false
+            39 -> newFg = null
+            in 30..37 -> newFg = palette.getOrNull(code - 30)
+            in 90..97 -> newFg = palette.getOrNull(code - 90 + 8)
+            // 38;5;n 256 色 / 38;2;r;g;b 真彩色——现代 LS_COLORS 会用到。
+            38 -> {
+                when (parts.getOrNull(index + 1)?.toIntOrNull()) {
+                    5 -> {
+                        val n = parts.getOrNull(index + 2)?.toIntOrNull()
+                        if (n != null) newFg = colorFrom256(n, palette)
+                        index += 2
+                    }
+                    2 -> {
+                        val r = parts.getOrNull(index + 2)?.toIntOrNull()
+                        val g = parts.getOrNull(index + 3)?.toIntOrNull()
+                        val b = parts.getOrNull(index + 4)?.toIntOrNull()
+                        if (r != null && g != null && b != null) newFg = Color(r, g, b)
+                        index += 4
+                    }
+                }
+            }
+        }
+        index += 1
+    }
+    return newFg to newBold
+}
+
+/** 256 色索引 → 颜色（0-15 用主题调色板，16-231 为 6x6x6 色阶，232-255 为灰阶）。 */
+private fun colorFrom256(index: Int, palette: List<Color>): Color = when {
+    index < 16 -> palette.getOrElse(index) { palette.last() }
+    index < 232 -> {
+        val n = index - 16
+        fun level(v: Int) = if (v == 0) 0 else 55 + v * 40
+        Color(level(n / 36), level((n % 36) / 6), level(n % 6))
+    }
+    else -> {
+        val v = 8 + (index - 232) * 10
+        Color(v, v, v)
+    }
+}
 
 /**
  * 把一行带 ANSI SGR 序列的终端文本转成 [AnnotatedString]。
  *
- * 只处理颜色与加粗（终端输出里 99% 是这些）；其他 SGR（下划线、闪烁等）忽略即可，
- * 不能因为遇到不认识的码就把整行当纯文本——那样 ls 的着色就白保留了。
+ * 用正则一次扫完：SGR（颜色/加粗）转成 SpanStyle，其余控制序列直接丢弃。
+ * 相比之前手写 indexOf 的写法，这里**不会把未匹配的 `ESC[` 残片当正文输出**——
+ * 之前遇到 `ESC[` 后面没有 `m`（跨帧被切开的序列、`ESC[K` 清行等）时，会把 `[`
+ * 及其后内容原样渲染出来，终端里就会冒出一串 `[0m`、`[01;34m` 之类的乱码。
+ * 任何裸 ESC 也在末尾统一清掉，绝不进入正文。
  */
-private fun terminalAnnotatedLine(line: String, base: Color): AnnotatedString = buildAnnotatedString {
+private fun terminalAnnotatedLine(line: String, theme: TerminalTheme): AnnotatedString = buildAnnotatedString {
     var fg: Color? = null
     var bold = false
-    var index = 0
-    while (index < line.length) {
-        val esc = line.indexOf('\u001B', index)
-        if (esc < 0) {
-            withStyle(SpanStyle(color = fg ?: base, fontWeight = if (bold) FontWeight.Bold else null)) {
-                append(line.substring(index))
-            }
-            break
+    var last = 0
+    for (match in TERMINAL_ESCAPE.findAll(line)) {
+        if (match.range.first > last) {
+            appendStyled(line.substring(last, match.range.first), fg, bold, theme)
         }
-        if (esc > index) {
-            withStyle(SpanStyle(color = fg ?: base, fontWeight = if (bold) FontWeight.Bold else null)) {
-                append(line.substring(index, esc))
-            }
+        val sgr = match.groups[1]
+        if (sgr != null) {
+            val (f, b) = applySgr(sgr.value, theme.ansi, fg, bold)
+            fg = f
+            bold = b
         }
-        // 找 SGR 结尾 'm'（形如 ESC[...m）
-        val end = line.indexOf('m', esc + 2)
-        if (end < 0) {
-            index = esc + 1
-            continue
-        }
-        val params = line.substring(esc + 2, end)
-        params.split(';').forEach { token ->
-            val code = token.toIntOrNull() ?: return@forEach
-            when (code) {
-                0 -> { fg = null; bold = false }
-                1 -> bold = true
-                in 30..37 -> fg = TERMINAL_ANSI_COLORS[code - 30]
-                39 -> fg = null
-                in 90..97 -> fg = TERMINAL_ANSI_COLORS[code - 90 + 8]
-                else -> Unit
-            }
-        }
-        index = end + 1
+        last = match.range.last + 1
+    }
+    if (last < line.length) appendStyled(line.substring(last), fg, bold, theme)
+}
+
+/** 追加一段普通文本，并清掉任何漏网的不可见控制字符（如孤立的 ESC），避免渲染成乱码方块。 */
+private fun AnnotatedString.Builder.appendStyled(
+    text: String,
+    fg: Color?,
+    bold: Boolean,
+    theme: TerminalTheme,
+) {
+    val clean = text.filter { it == '\t' || it.code >= 32 }
+    if (clean.isEmpty()) return
+    withStyle(SpanStyle(color = fg ?: theme.text, fontWeight = if (bold) FontWeight.Bold else null)) {
+        append(clean)
     }
 }
