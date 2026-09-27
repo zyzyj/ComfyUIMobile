@@ -557,7 +557,16 @@ class ComfyClient {
         }
         val request = Request.Builder().url("$wsBase/ws?clientId=${encode(clientId)}").build()
         socket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) = onOpen()
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                // v0.2.46：主动关掉的连接不能当成"连上了"。closeWebSocket() 是异步的——
+                // 它把 socket 置空并发出关闭帧，但 OkHttp 仍可能先把早就排队的 onOpen
+                // 回调回来。以前 onOpen 无条件通知上层，于是"握手过程中点断开"会先
+                // 被 disconnect() 置成 DISCONNECTED，紧接着又被这个迟到回调写成
+                // CONNECTED：顶栏显示已连接，实际既没有服务器也没有可用 socket。
+                // 终端侧早就有 `terminalSocket !== webSocket` 的判断，这里补上同样的。
+                if (webSocket !== socket || closedByUs.contains(webSocket)) return
+                onOpen()
+            }
             override fun onMessage(webSocket: WebSocket, text: String) {
                 runCatching { onMessage(JSONObject(text)) }
             }

@@ -1,0 +1,67 @@
+============================================================
+8 个 Anima LoRA 下载命令（在 AI Studio 的 Jupyter 终端里跑）
+============================================================
+
+目标目录：/home/aistudio/models/loras
+  —— 这就是你 ComfyUI 实际使用的 LoRA 目录：
+     ~/work/ComfyUI/models/loras 是一个软链接，指向 /home/aistudio/models/loras
+     下到这里，ComfyUI 刷新 LoRA 列表即可看到，无需复制或重启。
+
+文件名：已去掉 (1)(2) 后缀（落盘成干净名，无重名冲突）。
+
+------------------------------------------------------------
+把下面整段粘到 Jupyter 终端，回车即可（会自动逐个下载 + 校验字节数）
+------------------------------------------------------------
+
+cd /home/aistudio/models/loras || exit 1
+set -uo pipefail
+BASE="https://cnb.cool/zhayanjing/Comfy-Models/-/lfs"
+
+# 用法：dl <OID> <文件名>
+dl () {
+  echo "↓ $2"
+  curl -fL --retry 3 --retry-delay 3 -o "$2" "$BASE/$1?name=$2" || echo "  ✗ 下载失败：$2"
+}
+
+dl 21e04a939834f6f70feb49216ea24eea857f66f51d76236dfd0cacf8305d2996 "Anima_NIJI_SWEET_SPOT_v5.safetensors"
+dl 48a7db9b2a8856e5381809312bb02f7d47913a65293dab4c9a74754087bc2853 "Oblivion100-000065.safetensors"
+dl 6bf0157f6657f8ab7cfdcdf6eb470e47b92dc22ff7d88e29838abc8cb7558633 "R3alB3auty_ANIMAv1_v2.safetensors"
+dl 98afa7627640814006b5b1cc1c2ee024deba411e2810bbb9620f076d6282db41 "anima-base-1-light-concepts-v31.safetensors"
+dl db5b2dcc4e1afa215058b7a85fb9377124c2e9aabd48c25e595af7199207c299 "anima-highres-aesthetic-boost.safetensors"
+dl a5594421702cb50696b8ac9422273110eaaaa050aa7d98cc4fbbf5918aa5064f "anima-rl-v0.1.safetensors"
+dl aaaca6107e97bf98d03482464583a0d89fbf14acec8e01685682f11a02915d22 "anima_context_detailer_base10.safetensors"
+dl 4c34be643ddc83ff8cec62f6d0fbbab77c04d92c68724d6e92f344ab6fc00056 "madruga3d_style_Anima_v1_animab_resume-00.safetensors"
+
+# —— 校验：文件名 期望字节数 ——
+echo "=== 校验 ==="
+check () { s=$(stat -c%s "$1" 2>/dev/null || echo 0); [ "$s" = "$2" ] && echo "✓ $1 ($s)" || echo "✗ $1 实际=$s 期望=$2"; }
+check "Anima_NIJI_SWEET_SPOT_v5.safetensors"                     183692926
+check "Oblivion100-000065.safetensors"                           139057157
+check "R3alB3auty_ANIMAv1_v2.safetensors"                        114842784
+check "anima-base-1-light-concepts-v31.safetensors"             148902616
+check "anima-highres-aesthetic-boost.safetensors"               138662176
+check "anima-rl-v0.1.safetensors"                               148902616
+check "anima_context_detailer_base10.safetensors"                91851400
+check "madruga3d_style_Anima_v1_animab_resume-00.safetensors"   367127696
+
+------------------------------------------------------------
+说明
+------------------------------------------------------------
+1) 8 个文件总计约 1.3 GB。
+2) 目标目录现有的是 ANI-*.safetensors 等，与这 8 个名字无重名，不会覆盖。
+3) 去的括号后缀：如果 ComfyUI 里想用带 (1)(2) 的原名，把 dl 的第二个参数改回原名即可
+   （此时链接里的 name= 需要把 ( 编成 %28 、) 编成 %29）。
+4) --retry-delay 3 是额外加的重试间隔，避免 302 抖动时 0 延迟连撞失败。
+5) 校验那一行给出的是官方对象字节数，跑完应看到 8 个 ✓。
+
+============================================================
+各文件明细（供核对）
+============================================================
+1  Anima_NIJI_SWEET_SPOT_v5(2).safetensors                     183,692,926 B
+2  Oblivion100-000065(1).safetensors                           139,057,157 B
+3  R3alB3auty_ANIMAv1_v2(2).safetensors                        114,842,784 B
+4  anima-base-1-light-concepts-v31(2).safetensors              148,902,616 B
+5  anima-highres-aesthetic-boost(2).safetensors                 138,662,176 B
+6  anima-rl-v0.1.safetensors                                    148,902,616 B
+7  anima_context_detailer_base10(2).safetensors                 91,851,400 B
+8  madruga3d_style_Anima_v1_animab_resume-00.safetensors        367,127,696 B

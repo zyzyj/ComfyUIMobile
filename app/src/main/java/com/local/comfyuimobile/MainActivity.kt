@@ -19,6 +19,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.local.comfyuimobile.bridge.ComfyBridge
+import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.service.JobMonitorService
 import com.local.comfyuimobile.ui.ComfyMobileApp
 import com.local.comfyuimobile.ui.ComfyMobileTheme
@@ -105,13 +106,41 @@ class MainActivity : ComponentActivity() {
         }
         val uri = rawUri ?: return
         if (uri.scheme == null) return
-        val mimeType = payload.type ?: contentResolver.getType(uri)
+        // 这个入口是导出的：任意 App 都能对它发 Intent，URI 可能没 grant 读权限、
+        // 也可能压根无效。getType / query 会对这种 URI 抛 SecurityException，
+        // 而它们跑在主线程（onCreate / onNewIntent），不接住就是整个 Activity 崩掉。
+        val mimeType = runCatching { payload.type ?: contentResolver.getType(uri) }
+            .onFailure { AppLogger.warn("读取分享图片的 MIME 失败", it) }
+            .getOrNull()
         if (mimeType?.startsWith("image/") != true) return
         // 分享进来的图片不一定能拿到文件名（content:// 常见），退回一个默认名。
-        val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
-            ?: "shared-image.png"
+        // 默认名的扩展名必须跟着 MIME 走：写成 .png 的话，一张 WebP 会在
+        // importWorkflow 里被扩展名判成 PNG，原生解析直接按 PNG 签名失败。
+        val name = runCatching {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+        }.onFailure { AppLogger.warn("读取分享图片的文件名失败", it) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?: defaultSharedImageName(mimeType, uri)
         viewModel.importSharedImage(uri, name, mimeType)
+    }
+
+    /** 拿不到文件名时的兜底名；扩展名按 MIME 给，别把 WebP 钉成 png。 */
+    private fun defaultSharedImageName(mimeType: String, uri: Uri): String {
+        val fromMime = when (mimeType.substringBefore(';').trim().lowercase()) {
+            "image/webp" -> "webp"
+            "image/avif" -> "avif"
+            "image/png" -> "png"
+            else -> null
+        }
+        if (fromMime != null) return "shared-image.$fromMime"
+        // MIME 没给出具体格式时，再退到 URI 路径里的扩展名。
+        val fromPath = uri.lastPathSegment
+            ?.substringAfterLast('.', "")
+            ?.lowercase()
+            ?.takeIf { it in setOf("png", "webp", "avif") }
+        return if (fromPath != null) "shared-image.$fromPath" else "shared-image"
     }
 
     // v0.1.82：App 挂后台时 Android 会冻结 WebView 的 JS 定时器，云端平台

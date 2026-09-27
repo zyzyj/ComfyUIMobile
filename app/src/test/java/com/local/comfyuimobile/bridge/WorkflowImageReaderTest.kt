@@ -80,6 +80,19 @@ class WorkflowImageReaderTest {
     }
 
     @Test
+    fun detectsKindFromHeader() {
+        val png = ByteArrayOutputStream().apply {
+            write(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
+            writeChunk("IEND", byteArrayOf())
+        }.toByteArray()
+        assertEquals("png", WorkflowImageReader.detectKind(ByteArrayInputStream(png)))
+        assertEquals("webp", WorkflowImageReader.detectKind(ByteArrayInputStream(buildWebpExif("workflow:{}"))))
+        // 认不出来返回 null，而不是抛异常（MIME / 扩展名都没给出格式时会走到这里）。
+        assertEquals(null, WorkflowImageReader.detectKind(ByteArrayInputStream(byteArrayOf(1, 2, 3, 4))))
+        assertEquals(null, WorkflowImageReader.detectKind(null))
+    }
+
+    @Test
     fun rejectsUnsupportedFormat() {
         val error = runCatching {
             WorkflowImageReader.readWorkflow(ByteArrayInputStream(ByteArray(0)), "image/gif")

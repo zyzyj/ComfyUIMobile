@@ -26,6 +26,29 @@ object WorkflowImageReader {
     }
 
     /**
+     * 按文件头判断图片是 PNG 还是 WebP；认不出来返回 null。
+     *
+     * 用途：MIME 和扩展名都靠不住时的最后一道判断（分享进来的图常常只有
+     * `content://` URI，文件名是兜底生成的）。只读开头几个字节就关流。
+     */
+    fun detectKind(input: InputStream?): String? {
+        if (input == null) return null
+        return runCatching {
+            input.use { stream ->
+                val header = ByteArray(12)
+                val read = stream.read(header)
+                when {
+                    read >= 8 && header.copyOfRange(0, 8).contentEquals(pngSignature) -> "png"
+                    read >= 12 &&
+                        header.copyOfRange(0, 4).toString(StandardCharsets.US_ASCII) == "RIFF" &&
+                        header.copyOfRange(8, 12).toString(StandardCharsets.US_ASCII) == "WEBP" -> "webp"
+                    else -> null
+                }
+            }
+        }.getOrNull()
+    }
+
+    /**
      * 从 WebP 的 EXIF 块里取工作流。
      *
      * ComfyUI 的动画 WebP 把元数据写在 EXIF 标签里，值形如 `workflow:{JSON}`（冒号分隔的

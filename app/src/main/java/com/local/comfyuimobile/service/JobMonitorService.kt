@@ -50,6 +50,25 @@ class JobMonitorService : Service() {
     // 停止监控，而服务器上的任务其实跑得好好的。
     // 现在一律按 promptId 从 authCookies 取，每个任务只用自己的那一份。
     private fun cookieFor(promptId: String): String = authCookies[promptId].orEmpty()
+
+    /**
+     * 彻底忘掉一个任务：停协程、清所有按 promptId 分表的状态。
+     *
+     * v0.2.46：这里必须连 `authCookies` 一起清。以前只有「任务从服务器消失」和
+     * 「连续轮询失败」两条路径清它，正常跑完、用户点停止、启动失败都不清——
+     * 而 authCookies 里是完整的反代登录 Cookie（含 BDUSS / ide-proxy），前台服务
+     * 常驻时每跑完一个任务就多留一份凭据在内存里。收尾路径统一走这里。
+     */
+    private fun forgetJob(promptId: String) {
+        monitors.remove(promptId)?.cancel()
+        workflowNames.remove(promptId)
+        workflowPaths.remove(promptId)
+        serverUrls.remove(promptId)
+        progressUpdatedAt.remove(promptId)
+        staleNotified.remove(promptId)
+        authCookies.remove(promptId)
+    }
+
     private val monitors = ConcurrentHashMap<String, Job>()
     private val workflowNames = ConcurrentHashMap<String, String>()
     private val workflowPaths = ConcurrentHashMap<String, String>()
@@ -127,12 +146,7 @@ class JobMonitorService : Service() {
             handleStartCommand(intent, startId)
         } catch (error: Throwable) {
             AppLogger.error("后台任务服务启动失败，任务=${promptId.ifBlank { "未知" }}", error)
-            monitors.remove(promptId)?.cancel()
-            workflowNames.remove(promptId)
-            workflowPaths.remove(promptId)
-serverUrls.remove(promptId)
-            progressUpdatedAt.remove(promptId)
-            staleNotified.remove(promptId)
+            forgetJob(promptId)
             runCatching { releaseBackgroundLocks() }
             runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
             stopSelf(startId)
@@ -167,12 +181,7 @@ serverUrls.remove(promptId)
             return START_STICKY
         }
         if (intent?.action == ACTION_STOP) {
-            monitors.remove(promptId)?.cancel()
-            workflowNames.remove(promptId)
-            workflowPaths.remove(promptId)
-serverUrls.remove(promptId)
-            progressUpdatedAt.remove(promptId)
-            staleNotified.remove(promptId)
+            forgetJob(promptId)
             stopIfIdle()
             return START_NOT_STICKY
         }
@@ -248,13 +257,7 @@ serverUrls.remove(promptId)
                         // 避开任务刚提交、还没进历史的瞬间。
                         if (missedPolls >= 1 && runCatching { !isQueued(baseUrl, promptId) }.getOrDefault(false)) {
                             AppLogger.warn("任务已从服务器消失（不在历史也不在队列），停止监控：$promptId")
-                            monitors.remove(promptId)
-                            workflowNames.remove(promptId)
-                            workflowPaths.remove(promptId)
-                            serverUrls.remove(promptId)
-                            progressUpdatedAt.remove(promptId)
-                            staleNotified.remove(promptId)
-                            authCookies.remove(promptId)
+                            forgetJob(promptId)
                             getSystemService(NotificationManager::class.java)
                                 .notify(
                                     notificationId(promptId),
@@ -365,12 +368,7 @@ serverUrls.remove(promptId)
                                     .putExtra(EXTRA_PROMPT_ID, promptId),
                             )
                         }
-                        monitors.remove(promptId)
-                        workflowNames.remove(promptId)
-                        workflowPaths.remove(promptId)
-serverUrls.remove(promptId)
-                        progressUpdatedAt.remove(promptId)
-                        staleNotified.remove(promptId)
+                        forgetJob(promptId)
                         stopIfIdle()
                         return@launch
                     }
@@ -392,13 +390,7 @@ serverUrls.remove(promptId)
                     // 现在才真正生效。
                     if (consecutivePollFailures >= maxConsecutiveFailures) {
                         AppLogger.warn("连续失败 $consecutivePollFailures 次，自动放弃监控任务 $promptId")
-                        monitors.remove(promptId)
-                        workflowNames.remove(promptId)
-                        workflowPaths.remove(promptId)
-serverUrls.remove(promptId)
-                        progressUpdatedAt.remove(promptId)
-                        staleNotified.remove(promptId)
-                        authCookies.remove(promptId)
+                        forgetJob(promptId)
                         getSystemService(NotificationManager::class.java)
                             .notify(
                                 notificationId(promptId),

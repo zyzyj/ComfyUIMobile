@@ -178,6 +178,15 @@ class WorkflowSnapshotStore internal constructor(private val directory: File) {
     companion object {
         /** 工作流正文动辄几百 KB，只留最近用过的这些，避免把手机存储吃干。 */
         const val MAX_SNAPSHOTS = 30
+        /**
+         * 没有服务器地址时用的快照作用域（v0.2.46）。
+         *
+         * 未连接服务器也能导入图片里的工作流（PNG/WebP 是 App 原生解析的），
+         * 但那时候 `activeServer.baseUrl` 是空串——以前拿它当 key，落盘会被
+         * `write` 开头的空值判断直接跳过，用户导入完杀掉进程就什么都没了。
+         * 统一用这个占位 key，未连接导入也能真正存到本机。
+         */
+        const val LOCAL_SCOPE = "@local"
         private const val SCHEMA = 1
         private const val DIRECTORY_NAME = "workflow_snapshots"
 
