@@ -5144,7 +5144,7 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                 enabled = panel.terminalLines.isNotEmpty(),
             ) {
                 Icon(
-                    Icons.Outlined.FileDownload, "导出终端内容", Modifier.size(20.dp),
+                    Icons.Outlined.Save, "导出终端内容", Modifier.size(20.dp),
                     tint = if (panel.terminalLines.isNotEmpty()) TerminalText
                     else TerminalText.copy(alpha = 0.35f),
                 )
