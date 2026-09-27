@@ -97,10 +97,10 @@ class AppPreferences(private val context: Context) {
             autoSaveResults = preferences[Keys.autoSaveResults] ?: true,
             localDraftsEnabled = preferences[Keys.localDraftsEnabled] ?: false,
             autoDailyTasks = preferences[Keys.autoDailyTasks] ?: true,
-            consoleQuickCommands = preferences[Keys.consoleQuickCommands],
-            consoleThemeId = preferences[Keys.consoleThemeId].orEmpty(),
+            consoleQuickCommands = preferences[Keys.consoleQuickCommands]
                 ?.let { decodeStrings(it) }
                 ?: DEFAULT_CONSOLE_QUICK_COMMANDS,
+            consoleThemeId = preferences[Keys.consoleThemeId].orEmpty(),
             lastUpdateCheck = preferences[Keys.lastUpdateCheck] ?: 0L,
             recentWorkflows = decodeStrings(preferences[Keys.recentWorkflows].orEmpty())
                 .ifEmpty { listOfNotNull(preferences[Keys.recentWorkflow]?.takeIf(String::isNotBlank)) }
