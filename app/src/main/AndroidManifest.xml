@@ -57,6 +57,30 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!--
+              从相册 / 文件管理器「分享」图片到本 App，直接导入其内容的工作流。
+              只收单张图片（ACTION_SEND），与 App 现在一次导一个工作流的交互一致。
+              仅匹配图片 MIME，普通文本、其它文件不会被列进来。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+
+            <!--
+              把本 App 列为图片的「打开方式」（ACTION_VIEW，来自相册/文件管理器）。
+              只声明常见图片 MIME，不声明 */*，也不加 BROWSABLE（那只是浏览器链接需要），
+              避免 App 出现在与自身无关的「打开方式」列表里。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/png" />
+                <data android:mimeType="image/webp" />
+                <data android:mimeType="image/avif" />
+            </intent-filter>
         </activity>
 
         <activity

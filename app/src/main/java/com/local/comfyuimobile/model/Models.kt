@@ -112,7 +112,7 @@ data class JobSummary(
     val durationMillis: Long? = null,
 )
 
-enum class AppDestination { PARAMETERS, RESULTS }
+enum class AppDestination { PARAMETERS, RESULTS, WORKFLOWS }
 
 data class AppNavigationRequest(
     val id: Long,
