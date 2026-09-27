@@ -96,14 +96,16 @@ class MainActivity : ComponentActivity() {
      */
     @Suppress("DEPRECATION")
     private fun handleSharedImage(intent: Intent?) {
-        val action = intent?.action ?: return
+        val payload = intent ?: return
+        val action = payload.action ?: return
         if (action != Intent.ACTION_SEND && action != Intent.ACTION_VIEW) return
-        val uri: Uri? = when (action) {
-            Intent.ACTION_SEND -> intent.getParcelableExtra(Intent.EXTRA_STREAM)
-            else -> intent.data
-        } ?: return
+        val rawUri: Uri? = when (action) {
+            Intent.ACTION_SEND -> @Suppress("DEPRECATION") payload.getParcelableExtra(Intent.EXTRA_STREAM)
+            else -> payload.data
+        }
+        val uri = rawUri ?: return
         if (uri.scheme == null) return
-        val mimeType = intent.type ?: contentResolver.getType(uri)
+        val mimeType = payload.type ?: contentResolver.getType(uri)
         if (mimeType?.startsWith("image/") != true) return
         // 分享进来的图片不一定能拿到文件名（content:// 常见），退回一个默认名。
         val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
