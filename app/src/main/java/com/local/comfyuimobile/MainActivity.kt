@@ -92,7 +92,7 @@ class MainActivity : ComponentActivity() {
      * 处理从外部 App（相册 / 文件管理器）分享或「打开」进来的图片。
      *
      * 支持两种形式：ACTION_SEND 带 EXTRA_STREAM 的图片，与 ACTION_VIEW 直接指向图片的 URI。
-     * 只收 image/*，普通文本分享不处理（避免把一段文字当图片读）。
+     * 只接受图片类型（MIME 以 image 开头），普通文本分享不处理（避免把一段文字当图片读）。
      */
     @Suppress("DEPRECATION")
     private fun handleSharedImage(intent: Intent?) {
