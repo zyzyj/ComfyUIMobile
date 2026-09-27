@@ -48,6 +48,8 @@ data class StoredSettings(
      * 用户删到空也存成"已设置"的空列表，不会被默认值又填回来。
      */
     val consoleQuickCommands: List<String> = emptyList(),
+    /** 控制台终端配色主题 id（见客户端 TERMINAL_THEMES）；空则用默认主题。 */
+    val consoleThemeId: String = "",
     val lastUpdateCheck: Long = 0L,
     val recentWorkflows: List<String> = emptyList(),
     val cacheOutputRules: List<CacheOutputRule> = emptyList(),
@@ -72,6 +74,7 @@ class AppPreferences(private val context: Context) {
         val localDraftsEnabled = booleanPreferencesKey("local_drafts_enabled")
         val autoDailyTasks = booleanPreferencesKey("auto_daily_tasks")
         val consoleQuickCommands = stringPreferencesKey("console_quick_commands")
+        val consoleThemeId = stringPreferencesKey("console_theme_id")
         val lastUpdateCheck = longPreferencesKey("last_update_check")
         val recentWorkflow = stringPreferencesKey("recent_workflow")
         val recentWorkflows = stringPreferencesKey("recent_workflows")
@@ -94,7 +97,8 @@ class AppPreferences(private val context: Context) {
             autoSaveResults = preferences[Keys.autoSaveResults] ?: true,
             localDraftsEnabled = preferences[Keys.localDraftsEnabled] ?: false,
             autoDailyTasks = preferences[Keys.autoDailyTasks] ?: true,
-            consoleQuickCommands = preferences[Keys.consoleQuickCommands]
+            consoleQuickCommands = preferences[Keys.consoleQuickCommands],
+            consoleThemeId = preferences[Keys.consoleThemeId].orEmpty(),
                 ?.let { decodeStrings(it) }
                 ?: DEFAULT_CONSOLE_QUICK_COMMANDS,
             lastUpdateCheck = preferences[Keys.lastUpdateCheck] ?: 0L,
@@ -155,6 +159,10 @@ class AppPreferences(private val context: Context) {
                 commands.map(String::trim).filter(String::isNotBlank).distinct().take(MAX_QUICK_COMMANDS),
             )
         }
+    }
+
+    suspend fun setConsoleThemeId(id: String) {
+        context.dataStore.edit { it[Keys.consoleThemeId] = id }
     }
 
     suspend fun setLastUpdateCheck(timestamp: Long) {

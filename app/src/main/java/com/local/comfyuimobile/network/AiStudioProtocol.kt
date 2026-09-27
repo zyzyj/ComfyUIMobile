@@ -591,6 +591,27 @@ object AiStudioProtocol {
     }
 
     /**
+     * 拆分结尾处**未完成**的转义序列，供跨 WebSocket 帧拼接用。
+     *
+     * 为什么需要：WS 帧边界与转义序列边界无关，一个 `ESC[01;34m` 完全可能被切成
+     * 两帧。若不处理，第一帧的 `ESC[01;` 不匹配完整序列，会被当普通文本留下；
+     * 界面渲染时 ESC 被滤掉、`[01;` 就赤裸裸地显示出来（用户反馈的"终端里冒出
+     * [0m、[01;34m 这种乱码"正是它）。
+     *
+     * 返回 (可立即处理的部分, 需挂起到下一帧的部分)。结尾若确实是完整序列或普通
+     * 文本，第二部分为空。
+     */
+    fun splitTrailingIncompleteEscape(text: String): Pair<String, String> {
+        val esc = text.lastIndexOf('\u001B')
+        if (esc < 0) return text to ""
+        val tail = text.substring(esc)
+        // 从 ESC 起能被匹配到一个完整转义序列，说明它是完整的（后面是正文）。
+        val match = ANSI_PATTERN.find(tail)
+        if (match != null && match.range.first == 0) return text to ""
+        return text.substring(0, esc) to tail
+    }
+
+    /**
      * 剥离终端输出里的 ANSI 转义序列。
      *
      * Jupyter 终端（xterm 协议）会给输出带上大量控制序列：设标题的 OSC

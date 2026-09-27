@@ -137,6 +137,8 @@ data class AiStudioState(
      * 首次安装时由偏好层给出默认值（见 AppPreferences）。
      */
     val consoleQuickCommands: List<String> = emptyList(),
+    /** 终端配色主题 id（见客户端 TERMINAL_THEMES）。 */
+    val consoleThemeId: String = "",
     /**
      * 运行中项目暴露的 ComfyUI 地址。
      *

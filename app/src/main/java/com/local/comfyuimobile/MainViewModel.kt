@@ -275,6 +275,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             accounts = stored.aiStudioAccounts,
                             activeAccountId = stored.aiStudioActiveId.ifBlank { null },
                             consoleQuickCommands = stored.consoleQuickCommands,
+                            consoleThemeId = stored.consoleThemeId,
                         ),
                     )
                 }
@@ -927,6 +928,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onOpen = {
                 terminalManualClose = false
                 AppLogger.info("控制台：终端已连接 $name")
+                // 修正远端 locale：平台环境把 LANG 设成 en_US.UTF-8，但这个 locale
+                // 在镜像里并未生成（只有 C / C.UTF-8 / POSIX），于是 ls 等工具按非
+                // UTF-8 处理，把中文文件名转义成 $'\345\220\257...' 这种八进制串，
+                // 根本没法看。实测改成 C.UTF-8 后中文立即正常。连接后静默设一次。
+                kernelClient.sendInput(TERMINAL_LOCALE_FIX)
                 // 终端连上意味着刚刚做过一次真实项目请求，CookieJar 里的项目级 Cookie
                 // （ide-proxy、user-{uid}-{pid}）已是最新。项目级 Cookie 会轮换，而
                 // ComfyUI 客户端里那份只在连接那一刻设过——跟新一下，减少网关 403 的窗口。
@@ -1052,6 +1058,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runCatching { preferences.saveConsoleQuickCommands(commands) }
                 .onFailure { AppLogger.error("保存终端快捷命令失败", it) }
+        }
+    }
+
+    /** 控制台：切换终端配色主题。 */
+    fun aiStudioSetConsoleTheme(themeId: String) {
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleThemeId = themeId)) }
+        viewModelScope.launch {
+            runCatching { preferences.setConsoleThemeId(themeId) }
+                .onFailure { AppLogger.error("保存终端配色主题失败", it) }
         }
     }
 
@@ -5549,6 +5564,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
         const val MIN_VISIBLE_NODE_MILLIS = 450L
+        /**
+         * 连接终端后立即执行的 locale 修正。
+         *
+         * 平台镜像只生成了 C / C.UTF-8 / POSIX，而环境变量却写着 LANG=en_US.UTF-8，
+         * 这个不存在的 locale 会让 shell 回退到 C 语义（实测 `LC_ALL=en_US.UTF-8
+         * locale charmap` 输出 ANSI_X3.4-1968），于是 ls 把中文文件名转义成
+         * `$'\345\220\257...'` 八进制串（实测 `LC_ALL=C ls` 复现、`LC_ALL=C.UTF-8`
+         * 则正常）。
+         *
+         * 不能靠 `locale charmap` 判断（默认环境下它恰好报 UTF-8，测不出来）。
+         * 这里只在镜像确实有 C.UTF-8 时把它设为生效 locale——它一定能正确显示
+         * UTF-8，且不像 en_US.UTF-8 那样可能不存在。开头加空格避开 shell 历史。
+         */
+        const val TERMINAL_LOCALE_FIX =
+            " locale -a 2>/dev/null | grep -qi '^C\\.UTF-8\$' && " +
+                "export LANG=C.UTF-8 LC_ALL=C.UTF-8; true"
         /** 静默重开 WebSocket 的最小退避。 */
         const val WS_RECONNECT_MIN_MS = 2_000L
         const val DRAFT_SAVE_DEBOUNCE_MILLIS = 250L
