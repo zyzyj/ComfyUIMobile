@@ -109,7 +109,11 @@ class AiStudioKernelClient {
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
-        .pingInterval(20, TimeUnit.SECONDS)
+        // v0.2.43：心跳从 20 秒放宽到 30 秒。OkHttp 给 pong 的宽限就等于 ping 间隔，
+        // 而 App 切后台时系统会节流网络、反代又爱抬长连接，20 秒很容易来不及——
+        // 日志里"sent ping but didn't receive pong within 20000ms"反复出现，
+        // 终端就这么断开。放宽到 30 秒给 pong 留出余量（断开后已有持续重连兜底）。
+        .pingInterval(30, TimeUnit.SECONDS)
         .cookieJar(cookieJar)
         .build()
 

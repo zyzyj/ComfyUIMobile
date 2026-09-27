@@ -40,7 +40,15 @@ data class StoredSettings(
     val promptHistory: List<String> = emptyList(),
     val submittedJobs: Set<String> = emptySet(),
     val autoSaveResults: Boolean = true,
-    val localDraftsEnabled: Boolean = false,
+    /**
+     * 是否保存/恢复本地未保存草稿。
+     *
+     * v0.2.43：默认**开启**。以前默认关，于是参数页改完不保存，切走再回来、
+     * 或 App 被杀掉后修改全部丢失（用户反馈「修改过的内容不会自动保存」）；
+     * 而 README 一直声称会保存，两者对不上。草稿只存用户改过的字段（增量），
+     * 开销很小，默认开才符合预期。用户可在设置里关掉。
+     */
+    val localDraftsEnabled: Boolean = true,
     /** 每日自动签到 + 领算力（默认开：不自动就断签）。 */
     val autoDailyTasks: Boolean = true,
     /**
@@ -95,7 +103,7 @@ class AppPreferences(private val context: Context) {
             promptHistory = decodeStrings(preferences[Keys.promptHistory].orEmpty()).take(PromptHistory.MAX_SIZE),
             submittedJobs = decodeStrings(preferences[Keys.submittedJobs].orEmpty()).toSet(),
             autoSaveResults = preferences[Keys.autoSaveResults] ?: true,
-            localDraftsEnabled = preferences[Keys.localDraftsEnabled] ?: false,
+            localDraftsEnabled = preferences[Keys.localDraftsEnabled] ?: true,
             autoDailyTasks = preferences[Keys.autoDailyTasks] ?: true,
             consoleQuickCommands = preferences[Keys.consoleQuickCommands]
                 ?.let { decodeStrings(it) }

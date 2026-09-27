@@ -327,6 +327,12 @@ class ComfyClient {
                     else -> JobState.UNKNOWN
                 }
                 val extraData = item.optJSONArray("prompt")?.optJSONObject(3)
+                // 失败时把 messages 里的真实原因抽出来（node_id 翻成节点标题）。
+                // 以前 message 只有 status_str（就一个 "error"），任务列表里
+                // 看不出为什么失败。
+                val failure = if (state == JobState.ERROR) {
+                    ExecutionError.describe(status, nodeTitles(item))
+                } else ""
                 add(
                     JobSummary(
                         id = id,
@@ -334,7 +340,7 @@ class ComfyClient {
                         workflowName = workflowName(extraData),
                         workflowPath = workflowPath(extraData),
                         workflowJson = workflowJson(extraData),
-                        message = statusString,
+                        message = failure.ifBlank { statusString },
                         durationMillis = executionDuration(status),
                     ),
                 )
@@ -762,6 +768,26 @@ class ComfyClient {
             is JSONObject -> value.toString()
             is String -> value
             else -> null
+        }
+    }
+
+    /**
+     * 从 history 条目的 `extra_pnginfo.workflow.nodes` 取「节点 id → 标题」，
+     * 用于把错误里的 node_id 翻译成用户认得的名字。
+     */
+    private fun nodeTitles(item: JSONObject): Map<String, String> {
+        val extraData = item.optJSONArray("prompt")?.optJSONObject(3) ?: return emptyMap()
+        val nodes = extraData.optJSONObject("extra_pnginfo")
+            ?.optJSONObject("workflow")
+            ?.optJSONArray("nodes")
+            ?: return emptyMap()
+        return buildMap {
+            repeat(nodes.length()) { index ->
+                val node = nodes.optJSONObject(index) ?: return@repeat
+                val id = node.opt("id")?.toString().orEmpty()
+                val title = node.optString("title")
+                if (id.isNotBlank() && title.isNotBlank()) put(id, title)
+            }
         }
     }
 

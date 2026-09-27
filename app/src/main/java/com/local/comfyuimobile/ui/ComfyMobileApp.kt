@@ -1701,22 +1701,87 @@ private fun ParameterEditor(
 @Composable
 private fun ComboField(field: ParameterField, viewModel: MainViewModel) {
     var expanded by remember { mutableStateOf(false) }
-    var query by remember { mutableStateOf("") }
     Box {
         OutlinedButton(onClick = { expanded = true }, enabled = !field.linked, modifier = Modifier.fillMaxWidth()) {
-            Text(field.displayValue, modifier = Modifier.weight(1f)); Icon(Icons.Outlined.ArrowDownward, null)
+            Text(field.displayValue, modifier = Modifier.weight(1f), maxLines = 1); Icon(Icons.Outlined.ArrowDownward, null)
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false; query = "" }) {
-            if (field.options.size > 12) {
-                OutlinedTextField(query, { query = it }, label = { Text("搜索选项") }, singleLine = true, modifier = Modifier.padding(8.dp))
-            }
-            val matches = field.options.filter { query.isBlank() || it.contains(query, ignoreCase = true) }
-            matches.take(100).forEach { option ->
-                DropdownMenuItem(text = { Text(option) }, onClick = { viewModel.updateField(field.key, option); expanded = false; query = "" })
-            }
-            if (matches.size > 100) DropdownMenuItem(text = { Text("还有 ${matches.size - 100} 项，请继续搜索") }, onClick = {})
+        if (expanded) {
+            ComboPickerDialog(
+                title = field.label.ifBlank { field.name },
+                options = field.options,
+                onPick = { viewModel.updateField(field.key, it); expanded = false },
+                onDismiss = { expanded = false },
+            )
         }
     }
+}
+
+/**
+ * 下拉选项选择器（带搜索 + 虚拟化列表）。
+ *
+ * v0.2.43：以前用 DropdownMenu + `matches.take(100).forEach` —— DropdownMenu 不是
+ * 惰性布局，一次会把 100 个菜单项全建出来；LoRA 动辄上千项时，打开就卡、滑动掉帧
+ * （用户反馈"lora 数量过多浏览不够流畅"）。改成对话框 + LazyColumn：只渲染可见行，
+ * 且搜索结果不设上限（滚动就能看全）。
+ */
+@Composable
+private fun ComboPickerDialog(
+    title: String,
+    options: List<String>,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    val matches = remember(options, query) {
+        if (query.isBlank()) options else options.filter { it.contains(query, ignoreCase = true) }
+    }
+    val listState = rememberLazyListState()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title, maxLines = 1) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("搜索（共 ${options.size} 项）") },
+                    leadingIcon = { Icon(Icons.Outlined.Search, null) },
+                    singleLine = true,
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            IconButton(onClick = { query = "" }) { Icon(Icons.Outlined.Close, "清空") }
+                        }
+                    },
+                )
+                Spacer(Modifier.height(8.dp))
+                if (matches.isEmpty()) {
+                    Text(
+                        "没有匹配项",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 12.dp),
+                    )
+                } else {
+                    LazyColumn(Modifier.fillMaxHeight(0.6f), state = listState) {
+                        items(matches, key = { it }) { option ->
+                            Text(
+                                option,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onPick(option) }
+                                    .padding(vertical = 10.dp, horizontal = 4.dp),
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                            )
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
 }
 
 @Composable
@@ -3130,9 +3195,26 @@ private fun BatchConfigDialog(
                     TextButton(onClick = { selected = candidates.toSet() }) { Text("全选") }
                     TextButton(onClick = { selected = emptySet() }) { Text("清空") }
                 }
+                // v0.2.43：加搜索。LoRA 上千项时逐项翻找不现实（用户反馈"没有搜索功能"）。
+                var loraQuery by remember { mutableStateOf("") }
+                OutlinedTextField(
+                    value = loraQuery,
+                    onValueChange = { loraQuery = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("搜索 LoRA（共 ${candidates.size} 项）") },
+                    leadingIcon = { Icon(Icons.Outlined.Search, null) },
+                    singleLine = true,
+                )
+                // 预先算好"疑似不匹配"集合，别在每行里重复算（那才是滑动掉帧的真因）。
+                val suspectNames = remember(candidates, checkpointName) {
+                    candidates.filter { BatchCompareLogic.suspectIncompatible(checkpointName, it) }.toSet()
+                }
+                val shown = remember(candidates, loraQuery) {
+                    if (loraQuery.isBlank()) candidates else candidates.filter { it.contains(loraQuery, ignoreCase = true) }
+                }
                 LazyColumn(Modifier.heightIn(max = 380.dp)) {
-                    items(candidates) { name ->
-                        val suspect = BatchCompareLogic.suspectIncompatible(checkpointName, name)
+                    items(shown, key = { it }) { name ->
+                        val suspect = name in suspectNames
                         Row(
                             Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -3369,6 +3451,16 @@ private fun JobCard(job: JobSummary, viewModel: MainViewModel, tracked: Boolean)
             }
             if (job.submittedByApp) Text("本 App 提交", style = MaterialTheme.typography.labelSmall)
             job.currentNode?.let { Text("节点：$it", style = MaterialTheme.typography.bodySmall) }
+            // 失败时把真实原因显示出来（v0.2.43）。以前任务列表只说"失败"，
+            // 用户看不出是显存不够、模型缺失还是参数错。
+            job.message.takeIf { it.isNotBlank() && job.state != JobState.SUCCESS }?.let { detail ->
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (job.state == JobState.ERROR) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             job.progress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) }
             if (trackable) {
                 TextButton(onClick = { viewModel.cancelJob(job) }, modifier = Modifier.align(Alignment.End)) { Text("取消任务") }
