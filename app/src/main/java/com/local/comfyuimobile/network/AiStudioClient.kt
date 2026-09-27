@@ -196,6 +196,29 @@ class AiStudioClient {
     }
 
     /**
+     * 读项目正在使用的算力档位显示名（如 "V100 16GB"）。
+     *
+     * 项目列表接口**不返回** GPU 字段，只有 `/studio/project/detail` 的
+     * `runningClusterInfo` 在项目真的运行时才带。所以单独拿一次详情；读不到
+     * （未运行 / 接口异常）返回空串，不影响主流程。
+     */
+    suspend fun fetchRunningGpuLabel(account: AiStudioAccount, projectId: String): String {
+        val result = runCatching {
+            request(
+                account,
+                AiStudioProtocol.PATH_PROJECT_DETAIL,
+                "POST",
+                AiStudioProtocol.formEncode(mapOf("projectId" to projectId)),
+                "读取项目详情",
+            )
+        }.onFailure { error ->
+            if (error is CancellationException) throw error
+            AppLogger.warn("读取项目运行档位失败：${error.message.orEmpty()}")
+        }.getOrNull() ?: return ""
+        return AiStudioProtocol.parseRunningGpuLabel(result)
+    }
+
+    /**
      * 启动项目环境。
      *
      * 启动前先问一次「是否需要人机校验」（[AiStudioProtocol.PATH_REQUIRE_GRAPHIC]，

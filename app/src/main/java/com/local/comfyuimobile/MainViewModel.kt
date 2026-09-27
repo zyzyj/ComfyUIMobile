@@ -1325,26 +1325,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     // 冷启动时 environmentReadyProjectId 是空的，运行中的项目会被
                     // 当成"正在启动环境…"一直转圈。这里后台补确认一次（不调 enter，
-                    // 只问 baseinfo），确认到就把它标为 ready。
+                    // 只问 baseinfo），确认到就把它标为 ready；同时读一次详情拿到
+                    // 正在使用的 GPU 档位（项目列表接口不带这个字段）。
                     val running = page.projects.firstOrNull { it.running }
-                    if (running != null &&
-                        _state.value.aiStudio.environmentReadyProjectId != running.projectId
-                    ) {
-                        val ready = runCatching {
-                            kernelClient.peekEndpoint(account, running.projectId)
-                        }.getOrNull() != null
-                        if (ready) {
-                            _state.update {
-                                it.copy(
-                                    aiStudio = it.aiStudio.copy(
-                                        environmentReadyProjectId = running.projectId,
-                                    ),
-                                )
+                    if (running != null) {
+                        if (_state.value.aiStudio.environmentReadyProjectId != running.projectId) {
+                            val ready = runCatching {
+                                kernelClient.peekEndpoint(account, running.projectId)
+                            }.getOrNull() != null
+                            if (ready) {
+                                _state.update {
+                                    it.copy(
+                                        aiStudio = it.aiStudio.copy(
+                                            environmentReadyProjectId = running.projectId,
+                                        ),
+                                    )
+                                }
                             }
+                        }
+                        if (running.runningGpuLabel.isBlank()) {
+                            refreshRunningGpuLabel(account, running.projectId)
                         }
                     }
                 }
                 .onFailure { error -> failAiStudio("读取项目列表失败", error) }
+        }
+    }
+
+    /**
+     * 补读运行中项目的 GPU 档位显示名，写回项目列表。
+     *
+     * 项目列表接口没有 GPU 字段，得单独请求 `/studio/project/detail`。它只在项目
+     * 真的运行时才带 `runningClusterInfo.displayName`，所以列表里运行中的项目若
+     * 还是空的就补一次；读不到（接口异常）静默返回，不打断轮询。
+     */
+    private suspend fun refreshRunningGpuLabel(account: AiStudioAccount, projectId: String) {
+        val label = aiStudio.fetchRunningGpuLabel(account, projectId)
+        if (label.isBlank()) return
+        _state.update { current ->
+            current.copy(
+                aiStudio = current.aiStudio.copy(
+                    projects = current.aiStudio.projects.map { project ->
+                        if (project.projectId == projectId) project.copy(runningGpuLabel = label) else project
+                    },
+                ),
+            )
         }
     }
 
@@ -1454,17 +1479,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         ),
                     )
                 }
+                // 刚刚就绪：立即把"正在使用的 GPU"读出来显示。平台可能还没把
+                // runningClusterInfo 写好，读不到也不强求，下一轮列表刷新会再试。
+                refreshRunningGpuLabel(account, projectId)
                 return
             }
             // 停止方向：running=false 就是真的停了。
             AppLogger.info("AI Studio 项目状态已更新：$projectId running=${project.running}")
             _state.update {
+                val studio = it.aiStudio
                 it.copy(
-                    aiStudio = it.aiStudio.copy(
+                    aiStudio = studio.copy(
                         stoppingProjectId = null,
                         message = "已停止",
-                        environmentReadyProjectId = it.aiStudio.environmentReadyProjectId
+                        environmentReadyProjectId = studio.environmentReadyProjectId
                             ?.takeIf { id -> id != projectId },
+                        // 停了就不再使用任何 GPU 档，清掉标签，免得下次打开面板还挂着旧型号。
+                        projects = studio.projects.map { item ->
+                            if (item.projectId == projectId) item.copy(runningGpuLabel = "") else item
+                        },
                     ),
                 )
             }

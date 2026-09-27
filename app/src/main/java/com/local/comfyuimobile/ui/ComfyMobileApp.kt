@@ -4663,6 +4663,10 @@ private fun ProjectCard(project: AiStudioProject, panel: AiStudioState, viewMode
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // v0.2.41：运行中的项目不允许再点启动（正在用的机器没回收就再提交
+                // 启动会白扣算力，平台也可能拒绝），按钮直接置灰，并把正在使用的
+                // GPU 显示在按钮上（"使用中 · V100 16GB"）；读不到型号时退回"使用中"。
+                val gpuInUse = project.running
                 Button(
                     onClick = {
                         if (expanded) {
@@ -4674,8 +4678,18 @@ private fun ProjectCard(project: AiStudioProject, panel: AiStudioState, viewMode
                         }
                     },
                     modifier = Modifier.weight(1f),
-                    enabled = !starting && !stopping,
-                ) { Text(if (expanded) "默认档启动" else "选择 GPU 启动") }
+                    enabled = !starting && !stopping && !gpuInUse,
+                ) {
+                    Text(
+                        when {
+                            gpuInUse -> project.runningGpuLabel
+                                .takeIf { it.isNotBlank() }
+                                ?.let { "使用中 · $it" } ?: "使用中"
+                            expanded -> "默认档启动"
+                            else -> "选择 GPU 启动"
+                        },
+                    )
+                }
                 OutlinedButton(
                     onClick = {
                         if (allocating) confirmStop = true
@@ -5040,6 +5054,22 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
     var keysExpanded by remember { mutableStateOf(false) }
     // 终端字号：12.5sp 偏小，给用户可调。
     var fontSizeSp by remember { mutableStateOf(12.5f) }
+    // 终端内容导出：先缓存要写出的文本，再启动系统「新建文件」选择器。
+    //
+    // 为什么用导出而不是复制到剪贴板：手机剪贴板对超长文本会截断，终端输出
+    // 动辄几万行，复制出去只剩一小段；导出成文件才能完整拿到。
+    var pendingTerminalExport by remember { mutableStateOf("") }
+    val terminalExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        if (uri != null) {
+            val ok = runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { it.write(pendingTerminalExport.toByteArray()) }
+            }.isSuccess
+            Toast.makeText(context, if (ok) "已导出终端内容" else "导出失败", Toast.LENGTH_SHORT).show()
+        }
+        pendingTerminalExport = ""
+    }
 
     // 新输出到了就滚到底，不然用户看不到刚跑出来的日志。
     LaunchedEffect(panel.terminalLines.size) {
@@ -5108,14 +5138,13 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
             }
             IconButton(
                 onClick = {
-                    val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                    manager?.setPrimaryClip(ClipData.newPlainText("终端输出", panel.terminalLines.joinToString("\n")))
-                    Toast.makeText(context, "已复制终端内容", Toast.LENGTH_SHORT).show()
+                    pendingTerminalExport = panel.terminalLines.joinToString("\n")
+                    terminalExportLauncher.launch("ComfyUIMobile-terminal-${System.currentTimeMillis()}.txt")
                 },
                 enabled = panel.terminalLines.isNotEmpty(),
             ) {
                 Icon(
-                    Icons.Outlined.ContentCopy, "复制全部输出", Modifier.size(20.dp),
+                    Icons.Outlined.FileDownload, "导出终端内容", Modifier.size(20.dp),
                     tint = if (panel.terminalLines.isNotEmpty()) TerminalText
                     else TerminalText.copy(alpha = 0.35f),
                 )

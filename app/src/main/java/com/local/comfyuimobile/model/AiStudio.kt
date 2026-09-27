@@ -44,6 +44,13 @@ data class AiStudioProject(
     val running: Boolean = false,
     val updatedAt: Long = 0L,
     val isNotebook: Boolean = true,
+    /**
+     * 正在使用的算力档位显示名（如 "V100 16GB"）；空表示未运行或读不到。
+     *
+     * 来源是 `/studio/project/detail` 的 `runningClusterInfo.displayName`——只有
+     * 项目真的在跑时平台才带这个字段，所以它同时是"当前用哪张卡"的最可靠来源。
+     */
+    val runningGpuLabel: String = "",
 ) {
     fun displayName(): String = name.ifBlank { "项目 $projectId" }
 }
