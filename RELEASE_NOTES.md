@@ -18,7 +18,7 @@
 
 | 编号 | 问题 | 修复 |
 |------|------|------|
-| B-06 | 切账号后 CookieJar / 终端仍是旧账号 | 切账号时断开终端 + 新增 `clearProjectCookies()` 清掉项目级 Cookie；停止 GPU 时也清（实例重建后旧 `ide-proxy` 已失效但名字还在） |
+| B-06 | 切账号后 CookieJar / 终端仍是旧账号 | 抽出 `releaseAiStudioIdentity()`，在**切换 / 删除当前账号 / 新登录**三处统一清理（取消旧协程 + 断终端 + 清项目级 Cookie）；停止 GPU 时也清（实例重建后旧 `ide-proxy` 已失效但名字还在） |
 | B-07 | DataStore 任意写入会把刚切好的账号打回去 | 加 `pendingAccountId`：落盘完成前不让磁盘旧快照覆盖内存 |
 | B-08 | 旧账号网络协程仍把积分/项目写进新面板 | 切账号取消旧 job；写回前用 `isActiveAiStudioAccount()` 核对身份 |
 
