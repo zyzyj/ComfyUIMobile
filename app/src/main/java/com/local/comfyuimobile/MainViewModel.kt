@@ -291,12 +291,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (!stored.localDraftsEnabled) {
                     // v0.1.86：只在"用户主动把开关关掉"的那一刻清一次。
                     //
-                    // 以前这里是每次 DataStore 推送都清——而开关默认就是 false，于是
-                    // AI Studio 上那条降级保存路径（服务器不提供 /userdata 时把工作流
-                    // 存到本机，saveWorkflowAsLocalDraft，它不受这个开关约束）刚写完就被
-                    // 清掉。界面还提示"下次打开自动恢复"，实际下次打开什么都没有。
+                    // 以前这里是每次 DataStore 推送都清，会把刚写完的草稿抹掉。
                     // 用"上一次观察到的状态"来识别 true→false 这一刻：首次启动时
                     // lastLocalDraftsEnabled 还是 null，不会误清历史草稿。
+                    // （v0.2.43：开关默认值已改为 true，这段仍按 true→false 判定。）
                     if (lastLocalDraftsEnabled == true) {
                         cancelPendingDraftSave()
                         runCatching { workflowDrafts.clearAll() }
@@ -970,10 +968,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         terminalReconnectJob = viewModelScope.launch {
             // 用循环而不是递归：递归时本 job 还是 active，会被上面的判断提前挡掉，
             // 重试链静默中断（真机表现：断一次后就再也不重连了）。
+            //
+            // v0.2.43：改成**持续重试**。以前只试 4 档（2/5/10/20 秒，共约 37 秒）
+            // 就彻底放弃，而 AI Studio 反代会周期性抬断长连接（日志里"sent ping but
+            // didn't receive pong within 20000ms"反复出现），App 挂后台一会儿回来就
+            // 发现终端永远断了、只能手动重连。现在退避封顶 30 秒、一直重试到用户主动
+            // 断开（terminalManualClose）为止。
             var current = attempt
-            while (current < TERMINAL_RECONNECT_DELAYS_MS.size) {
-                delay(TERMINAL_RECONNECT_DELAYS_MS[current])
+            while (true) {
+                val wait = TERMINAL_RECONNECT_DELAYS_MS.getOrElse(current) { TERMINAL_RECONNECT_MAX_MS }
+                delay(wait)
                 if (terminalManualClose) return@launch
+                // 用户已经手动断开/换了服务器，就不用再重连了。
+                if (_state.value.activeServer == null) return@launch
                 _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "终端重连中…")) }
                 // 终端名可能因项目重启而失效，重连前重新确认一次。
                 val fresh = runCatching {
@@ -988,7 +995,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 current += 1
             }
-            _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "终端多次重连失败，可手动重连")) }
         }
     }
 
@@ -3610,6 +3616,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // 两发请求是必败的，中文文件名还会额外打一条 400 到日志，然后才降级。
                     // 现在直接本地化，不浪费那两发注定失败的请求。
                     AppLogger.info("此服务器不提供云端工作流存储，导入直接保存在本机")
+                    // v0.2.43：本机同名时也加后缀。以前本地分支不查重，两次导入同一个
+                    // 文件名会写到同一份快照上、互相覆盖（用户反馈"导入两个，第一个
+                    // 消失"）。服务器分支早就有这段去重，本地分支漏了。
+                    val existingLocal = runCatching {
+                        workflowSnapshots.list(_state.value.activeServer?.baseUrl.orEmpty())
+                    }.getOrElse { emptyList() }
+                    var copyNumber = 2
+                    while (existingLocal.any { it.path == "workflows/$candidateName" }) {
+                        candidateName = "$baseName-$copyNumber.json"
+                        copyNumber += 1
+                    }
                     localOnlyEntry(candidateName, json)
                 }
                 // 内存 + 磁盘各存一份：AI Studio 上服务器那份永远读不回来，
@@ -4323,7 +4340,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 所以逐步拉长间隔（2s → 4s → … → 30s 封顶）。
                 // 期间 HTTP 正常，状态保持「已连接」，不影响生图。
                 val wait = wsReconnectBackoffMs
-                wsReconnectBackoffMs = (wsReconnectBackoffMs * 2).coerceAtMost(30_000L)
+                // v0.2.43：封顶从 30 秒降到 10 秒。反代抬断后最多等 10 秒就能重连，
+                // 进度断档窗口更短（用户反馈"进度长时间不动"）。
+                wsReconnectBackoffMs = (wsReconnectBackoffMs * 2).coerceAtMost(WS_RECONNECT_MAX_MS)
                 delay(wait)
                 if (_state.value.activeServer == null) return@launch
                 // 这种抖动在繁忙期能达到每 2.3 秒一次（一分钟 26 条），不节流会把
@@ -4415,6 +4434,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun handleSocketMessage(message: JSONObject) {
         val type = message.optString("type")
         val data = message.optJSONObject("data") ?: JSONObject()
+        // v0.2.43：收到任何消息就说明连接是活的，把重连退避归零。
+        // 以前只在 onOpen 重置，而反代会在打开后很快又抬断——每次断都翻倍，
+        // 退避很快涨到 30 秒并停在那里，期间收不到 progress（用户看到的
+        // "通知栏/任务列表进度长时间不动"）。收到消息即归零，让真正的活跃
+        // 连接保持最小重连间隔。
+        if (wsReconnectBackoffMs != WS_RECONNECT_MIN_MS) {
+            wsReconnectBackoffMs = WS_RECONNECT_MIN_MS
+            lastWsBackoffLoggedMs = 0L
+        }
         when (type) {
             "execution_start" -> {
                 val id = data.optString("prompt_id")
@@ -4594,8 +4622,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val current = document?.let { selected -> entries.firstOrNull { it.path == selected.entry.path } }
                 val conflict = document?.hasUnsavedChanges == true &&
                     (current == null || WorkflowPolicy.hasModifiedConflict(document.baseModified, current.modified))
+                // v0.2.43：把本机快照里的工作流合进来。
+                //
+                // AI Studio 的 /userdata 网关行为不稳定，列表会偶发返回 200 空（或只回一部分）。
+                // 以前这里直接用服务器结果整体替掉列表，于是刚导入（存到本机快照）的工作流
+                // 会当场消失——用户看到的就是"导入两个，第一个不见了"。
+                // 现在服务器条目优先，本机快照里同路径的跳过、多出来的补上。
+                val serverPaths = entries.mapTo(mutableSetOf()) { it.path }
+                val localExtras = runCatching { workflowSnapshots.list(ui.activeServer?.baseUrl.orEmpty()) }
+                    .getOrElse { emptyList() }
+                    .filterNot { it.path in serverPaths }
                 ui.copy(
-                    workflows = entries,
+                    workflows = entries + localExtras,
                     selectedWorkflow = if (document != null && current != null) document.copy(entry = current) else document,
                     workflowDraftConflictRequired = ui.workflowDraftConflictRequired || conflict,
                     workflowDraftConflictReason = when {
@@ -4678,7 +4716,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runCatching {
             val existing = _state.value.jobs.associateBy { it.id }
             val live = client.queue()
-            val history = client.historyJobs()
+            // 任务列表也只看最近一批，不拉全量历史（理由同 refreshResultsInternal）。
+            val history = client.historyJobs(maxItems = HISTORY_FOR_RESULTS)
             val submitted = _state.value.submittedJobIds
             (live + history).distinctBy { it.id }.map { fresh ->
                 val previous = existing[fresh.id]
@@ -4805,7 +4844,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun refreshResultsInternal() {
         runCatching {
-            val history = client.history()
+            // v0.2.43：只取最近的一批，不再全量拉 /history。
+            //
+            // 云端（AI Studio 反代）的历史会越积越大（几 MB），而全量拉取 +
+            // 逐节点解析是在结果页每次刷新、每个任务完成时都跑一遍的。用户反馈
+            // "图 8 秒就生成好了，看到却要 1 分钟"，很大一部分就耗在这里：
+            // 生成完成后那次刷新要先等几 MB 历史下完。结果页只展示最近的任务，
+            // 取最近 HISTORY_FOR_RESULTS 条就够了。
+            val history = client.history(maxItems = HISTORY_FOR_RESULTS)
             ResultParser.parse(client.serverUrl(), history)
         }.onSuccess { results ->
             // v0.1.76：把本机记录的"提交→完成"总耗时合并进结果（含排队时间）。
@@ -5565,6 +5611,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
         const val MIN_VISIBLE_NODE_MILLIS = 450L
         /**
+         * 结果页一次拉多少条历史。ComfyUI 的 `/history?max_items=N` 只返回最近 N 条，
+         * 避免云端几 MB 的历史把"出图后看到图"拖成几十秒。
+         */
+        const val HISTORY_FOR_RESULTS = 60
+        /**
          * 连接终端后立即执行的 locale 修正。
          *
          * 平台镜像只生成了 C / C.UTF-8 / POSIX，而环境变量却写着 LANG=en_US.UTF-8，
@@ -5582,6 +5633,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 "export LANG=C.UTF-8 LC_ALL=C.UTF-8; true"
         /** 静默重开 WebSocket 的最小退避。 */
         const val WS_RECONNECT_MIN_MS = 2_000L
+        /** WebSocket 重连退避封顶。反代抬断频繁，等太久会让进度长时间不动。 */
+        const val WS_RECONNECT_MAX_MS = 10_000L
         const val DRAFT_SAVE_DEBOUNCE_MILLIS = 250L
         /** v0.1.82：恢复窗口里每失败这么多次，就自己重载一次页面推进恢复。 */
         const val RELOAD_EVERY_ATTEMPTS = 2
@@ -5604,6 +5657,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val CONSOLE_ROWS = 40
         /** 控制台终端断线重连退避（毫秒）。最后一次失败后不再自动重试，提示手动重连。 */
         val TERMINAL_RECONNECT_DELAYS_MS = longArrayOf(2_000L, 5_000L, 10_000L, 20_000L)
+        /** 终端重连退避封顶；超过后一直按这个间隔重试（不再放弃）。 */
+        const val TERMINAL_RECONNECT_MAX_MS = 30_000L
         /** ComfyUI 启动完成时终端会打印的特征行（命中即尝试自动连接）。 */
         val COMFY_READY_HINTS = listOf("To see the GUI go to", "Starting server")
         /** 自动连接前的探测次数：刚打印就绪日志时端口可能还没 listen。 */

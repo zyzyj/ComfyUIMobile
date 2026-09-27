@@ -248,7 +248,8 @@ data class AppUiState(
     val promptHistory: List<String> = emptyList(),
     val submittedJobIds: Set<String> = emptySet(),
     val autoSaveResults: Boolean = false,
-    val localDraftsEnabled: Boolean = false,
+    /** 本地草稿保存（默认开，与 AppPreferences 保持一致）。 */
+    val localDraftsEnabled: Boolean = true,
     /** 每日自动签到 + 领算力。 */
     val autoDailyTasks: Boolean = true,
     val loggingEnabled: Boolean = false,
