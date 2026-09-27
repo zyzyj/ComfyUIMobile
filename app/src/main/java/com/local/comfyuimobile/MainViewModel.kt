@@ -576,7 +576,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 now = System.currentTimeMillis(),
             )
             val merged = existing.accounts.filterNot { it.id == account.id } + account
+            // 新账号不能继承上一个账号的身份（项目级 Cookie 绑定在具体实例上）。
+            releaseAiStudioIdentity()
             persistAiStudio(merged, account.id)
+            pendingAccountId = account.id
             _state.update {
                 it.copy(
                     aiStudio = it.aiStudio.copy(
@@ -604,19 +607,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val accounts = panel.accounts.map {
             if (it.id == accountId) it.copy(lastUsedAt = System.currentTimeMillis()) else it
         }
-        // v0.2.46：切账号前先把上一个账号还在跑的刷新/拉取取消掉。以前这些协程
-        // 回来时会无条件写 _state，于是"切到 B 之后，A 的积分和项目列表又盖回来"。
-        aiStudioActionJob?.cancel()
-        aiStudioProjectJob?.cancel()
-        aiStudioStartPollJob?.cancel()
-        aiStudioActionJob = null
-        aiStudioProjectJob = null
-        aiStudioStartPollJob = null
-        // v0.2.46：身份残留。终端还连在旧账号的机器上，CookieJar 里也是旧账号的
-        // 项目级 Cookie（ide-proxy / user-*），不清掉的话新账号的请求会混着旧身份，
-        // 轻则 403 / 登录墙，重则打到旧账号的实例上。
-        aiStudioDisconnectConsole()
-        kernelClient.clearProjectCookies()
+        releaseAiStudioIdentity()
         persistAiStudio(accounts, accountId)
         // 标记"内存刚改过、还在等落盘"：这期间 DataStore 的其它字段发射不能拿
         // 磁盘上的旧账号把内存盖回去（见 init 里的 settings.collect）。
@@ -631,7 +622,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val nextActive = panel.activeAccountId
             ?.takeIf { id -> remaining.any { it.id == id } }
             ?: remaining.firstOrNull()?.id
+        // 删掉正在用的账号等价于切账号，同样要清掉它留下的身份。
+        if (removedActive) releaseAiStudioIdentity()
         persistAiStudio(remaining, nextActive)
+        if (removedActive) pendingAccountId = nextActive
         _state.update {
             val updated = if (removedActive) {
                 // 删的是正在用的账号：面板上属于它的数据全部作废，清干净。
@@ -778,6 +772,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 三个接口各自独立：任何一个失败都不影响其它两个——否则积分接口一改版，
      * 算力卡也跟着显示不出来。失败只记日志，界面上对应那块显示「—」。
      */
+    /**
+     * 切换到另一个 AI Studio 账号时，把上一个账号留下的一切都清干净（v0.2.46）。
+     *
+     * 三件事缺一不可，否则新账号会带着旧身份干活：
+     * 1. 取消旧账号还在跑的刷新/拉取协程（回来会无条件写 _state）；
+     * 2. 断开终端——它还连在旧账号那台机器上；
+     * 3. 清掉项目级 Cookie（ide-proxy / user-*），它们绑定在具体实例上。
+     */
+    private fun releaseAiStudioIdentity() {
+        aiStudioActionJob?.cancel()
+        aiStudioProjectJob?.cancel()
+        aiStudioStartPollJob?.cancel()
+        aiStudioActionJob = null
+        aiStudioProjectJob = null
+        aiStudioStartPollJob = null
+        aiStudioDisconnectConsole()
+        kernelClient.clearProjectCookies()
+    }
+
     /**
      * 这个 id 还是当前账号吗（v0.2.46）。
      *
