@@ -434,6 +434,27 @@ class AiStudioKernelClient {
     }
 
     /**
+     * 丢掉项目级 Cookie（`ide-proxy` / `user-*`），账号级 Cookie 保留（v0.2.46）。
+     *
+     * 切换 AI Studio 账号时必须调它。项目级 Cookie 是绑定在**具体实例**上的
+     * （`user-{uid}-{pid}` 里就带着 uid 和 pid），换账号后它们属于上一个账号：
+     * 留着会让新账号的请求带着旧身份，轻则 403 / 登录墙，重则打到旧账号的实例上。
+     * 同一账号"停掉 GPU 再启动"也一样——实例重建后旧 `ide-proxy` 已经失效，
+     * 但名字还在，`hasProjectCookies()` 仍返回 true，连接前就不会去换新 Cookie。
+     */
+    fun clearProjectCookies() {
+        synchronized(cookieLock) {
+            cookieStore.keys.toList().forEach { host ->
+                val list = cookieStore[host] ?: return@forEach
+                list.removeAll { cookie ->
+                    cookie.name == "ide-proxy" || cookie.name.startsWith("user-")
+                }
+            }
+        }
+        AppLogger.info("已清除项目级 Cookie，剩余 Cookie=[${cookieNames().joinToString()}]")
+    }
+
+    /**
      * 预热项目 Cookie：像浏览器那样访问一次 Codelab 环境首页（用户路径）。
      *
      * 网关在访问 `/user/{uid}/{pid}/` 时会下发项目级 Cookie（`ide-proxy`、

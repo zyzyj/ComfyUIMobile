@@ -1,0 +1,108 @@
+2026-09-22 13:05:49.986 [信息] 应用启动，日志记录=开启
+2026-09-22 13:05:50.407 [信息] WebView 运行时（初始化）：包=com.google.android.webview，版本=151.0.7922.170
+2026-09-22 13:06:08.490 [信息] AI Studio 登录完成：Cookie 长度=658，bdToken=已取到，uid=20104163，昵称=ZAYANJ
+2026-09-22 13:06:08.527 [信息] AI Studio 账号已保存：ZAYANJ（UID=20104163）
+2026-09-22 13:06:08.782 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":12,"continuousSingCount":2,"isFinishSign":1}
+2026-09-22 13:06:08.816 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":12,"continuousSingCount":2,"isFinishSign":1}
+2026-09-22 13:06:08.825 [信息] AI Studio[项目列表] 响应 1359 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 13:06:08.826 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 13:06:09.022 [信息] AI Studio[算力卡] 响应 320 字：{"id":966594,"resourceTotal":4237,"resourceConsume":5245,"resourceIncome":9480,"resourceFree":4237,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-22 12:35:27","resourceWeekQuotaMap":{"DEV":2880,"DCU":4237,"V10
+2026-09-22 13:06:09.050 [信息] AI Studio[算力卡] 响应 320 字：{"id":966594,"resourceTotal":4237,"resourceConsume":5245,"resourceIncome":9480,"resourceFree":4237,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-22 12:35:27","resourceWeekQuotaMap":{"DEV":2880,"DCU":4237,"V10
+2026-09-22 13:06:09.151 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-22 13:06:09.152 [信息] AI Studio 资源：积分=12，算力卡=70.6，A币=0
+2026-09-22 13:06:09.222 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-22 13:06:09.223 [信息] AI Studio 资源：积分=12，算力卡=70.6，A币=0
+2026-09-22 13:06:10.573 [信息] 检查更新 开始
+2026-09-22 13:06:11.822 [信息] 检查更新 完成
+2026-09-22 13:06:21.049 [信息] AI Studio 可用算力：基础版, 异构算力 16GB, BI-V150S 32GB, V100 16GB, V100 32GB
+2026-09-22 13:06:24.730 [信息] AI Studio 启动请求已提交：项目=10716006，算力=resourceCardVGpuSchedule
+2026-09-22 13:06:24.972 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 13:06:24.975 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 13:06:28.985 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 13:06:28.987 [信息] AI Studio 项目状态已更新：10716006 running=true
+2026-09-22 13:06:44.845 [信息] 终端通道：baseUrl=https://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/
+2026-09-22 13:06:45.776 [信息] 读取终端列表：HTTP 200 application/json（经重定向 302 → https://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/api/terminals）
+2026-09-22 13:06:45.778 [信息] 终端列表响应：[]
+2026-09-22 13:06:46.111 [信息] 新建终端：HTTP 200 application/json
+2026-09-22 13:06:46.112 [信息] 新建终端响应：{"name": "1", "last_activity": "2026-09-22T05:06:46.523584Z"}
+2026-09-22 13:06:46.375 [信息] 控制台：终端已连接 1
+2026-09-22 13:06:53.150 [信息] 控制台：终端断开（连接中断）
+2026-09-22 13:06:56.441 [信息] 请求连接服务器：https://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/api_serving/8188
+2026-09-22 13:06:56.443 [信息] 连接 开始
+2026-09-22 13:06:56.444 [信息] 连接：开始探测服务器 https://aistudio.baidu.com:443/bj-cpu-01/user/20104163/10716006/api_serving/8188（/system_stats）
+2026-09-22 13:06:56.953 [错误] 登录已失效
+com.local.comfyuimobile.network.PlatformResponseException: 需要登录或登录已失效（HTTP 200，服务器返回的是登录页）
+	at com.local.comfyuimobile.network.PlatformResponseGuard.guard(PlatformResponseGuard.kt:100)
+	at com.local.comfyuimobile.network.ComfyClient.executeText(ComfyClient.kt:634)
+	at com.local.comfyuimobile.network.ComfyClient.executeText$default(ComfyClient.kt:626)
+	at com.local.comfyuimobile.network.ComfyClient.executeJson(ComfyClient.kt:585)
+	at com.local.comfyuimobile.network.ComfyClient.access$executeJson(ComfyClient.kt:42)
+	at com.local.comfyuimobile.network.ComfyClient$probeOnceWithRetry$2.invokeSuspend(ComfyClient.kt:126)
+	at com.local.comfyuimobile.network.ComfyClient$probeOnceWithRetry$2.invoke(Unknown Source:8)
+	at com.local.comfyuimobile.network.ComfyClient$probeOnceWithRetry$2.invoke(Unknown Source:4)
+	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturn(Undispatched.kt:42)
+	at kotlinx.coroutines.BuildersKt__Builders_commonKt.withContext(Builders.common.kt:164)
+	at kotlinx.coroutines.BuildersKt.withContext(Unknown Source:1)
+	at com.local.comfyuimobile.network.ComfyClient.probeOnceWithRetry(ComfyClient.kt:121)
+	at com.local.comfyuimobile.network.ComfyClient.access$probeOnceWithRetry(ComfyClient.kt:42)
+	at com.local.comfyuimobile.network.ComfyClient$probe$2.invokeSuspend(ComfyClient.kt:149)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-22 13:07:04.883 [信息] 终端通道：baseUrl=https://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/
+2026-09-22 13:07:05.012 [信息] 读取终端列表：HTTP 200 application/json
+2026-09-22 13:07:05.013 [信息] 终端列表响应：[{"name": "1", "last_activity": "2026-09-22T05:06:46.851483Z"}]
+2026-09-22 13:07:05.197 [信息] 控制台：终端已连接 1
+2026-09-22 13:07:18.251 [信息] 控制台：终端断开（连接中断）
+2026-09-22 13:07:27.714 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":12,"continuousSingCount":2,"isFinishSign":1}
+2026-09-22 13:07:27.905 [信息] AI Studio[算力卡] 响应 320 字：{"id":966594,"resourceTotal":4237,"resourceConsume":5245,"resourceIncome":9480,"resourceFree":4237,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-22 12:35:27","resourceWeekQuotaMap":{"DEV":2880,"DCU":4237,"V10
+2026-09-22 13:07:28.035 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-22 13:07:28.038 [信息] AI Studio 资源：积分=12，算力卡=70.6，A币=0
+2026-09-22 13:07:32.434 [信息] 请求连接服务器：https://aistudio.baidu.com:443/bj-cpu-01/user/20104163/10716006/api_serving/8188
+2026-09-22 13:07:32.435 [信息] 连接 开始
+2026-09-22 13:07:32.437 [信息] 连接：开始探测服务器 https://aistudio.baidu.com:443/bj-cpu-01/user/20104163/10716006/api_serving/8188（/system_stats）
+2026-09-22 13:07:32.910 [错误] 登录已失效
+com.local.comfyuimobile.network.PlatformResponseException: 需要登录或登录已失效（HTTP 200，服务器返回的是登录页）
+	at com.local.comfyuimobile.network.PlatformResponseGuard.guard(PlatformResponseGuard.kt:100)
+	at com.local.comfyuimobile.network.ComfyClient.executeText(ComfyClient.kt:634)
+	at com.local.comfyuimobile.network.ComfyClient.executeText$default(ComfyClient.kt:626)
+	at com.local.comfyuimobile.network.ComfyClient.executeJson(ComfyClient.kt:585)
+	at com.local.comfyuimobile.network.ComfyClient.access$executeJson(ComfyClient.kt:42)
+	at com.local.comfyuimobile.network.ComfyClient$probeOnceWithRetry$2.invokeSuspend(ComfyClient.kt:126)
+	at com.local.comfyuimobile.network.ComfyClient$probeOnceWithRetry$2.invoke(Unknown Source:8)
+	at com.local.comfyuimobile.network.ComfyClient$probeOnceWithRetry$2.invoke(Unknown Source:4)
+	at kotlinx.coroutines.intrinsics.UndispatchedKt.startUndispatchedOrReturn(Undispatched.kt:42)
+	at kotlinx.coroutines.BuildersKt__Builders_commonKt.withContext(Builders.common.kt:164)
+	at kotlinx.coroutines.BuildersKt.withContext(Unknown Source:1)
+	at com.local.comfyuimobile.network.ComfyClient.probeOnceWithRetry(ComfyClient.kt:121)
+	at com.local.comfyuimobile.network.ComfyClient.access$probeOnceWithRetry(ComfyClient.kt:42)
+	at com.local.comfyuimobile.network.ComfyClient$probe$2.invokeSuspend(ComfyClient.kt:149)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-22 13:07:42.895 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":12,"continuousSingCount":2,"isFinishSign":1}
+2026-09-22 13:07:43.135 [信息] AI Studio[算力卡] 响应 320 字：{"id":966594,"resourceTotal":4237,"resourceConsume":5245,"resourceIncome":9480,"resourceFree":4237,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-22 12:35:27","resourceWeekQuotaMap":{"DEV":2880,"DCU":4237,"V10
+2026-09-22 13:07:43.275 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-22 13:07:43.277 [信息] AI Studio 资源：积分=12，算力卡=70.6，A币=0
+2026-09-22 13:07:45.858 [信息] AI Studio 停止请求已提交：项目=10716006
+2026-09-22 13:07:46.057 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 13:07:46.059 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 13:07:50.115 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 13:07:54.359 [信息] AI Studio[项目列表] 响应 1359 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 13:07:54.365 [信息] AI Studio 项目状态已更新：10716006 running=false
+2026-09-22 13:08:05.460 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":12,"continuousSingCount":2,"isFinishSign":1}
+2026-09-22 13:08:05.691 [信息] AI Studio[算力卡] 响应 320 字：{"id":966594,"resourceTotal":4235,"resourceConsume":5247,"resourceIncome":9480,"resourceFree":4235,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-22 13:07:52","resourceWeekQuotaMap":{"DEV":2880,"DCU":4235,"V10
+2026-09-22 13:08:05.834 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-22 13:08:05.836 [信息] AI Studio 资源：积分=12，算力卡=70.6，A币=0

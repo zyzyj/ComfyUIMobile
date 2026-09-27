@@ -1,0 +1,166 @@
+2026-09-22 11:20:41.002 [信息] 应用启动，日志记录=开启
+2026-09-22 11:20:41.477 [信息] WebView 运行时（初始化）：包=com.google.android.webview，版本=151.0.7922.170
+2026-09-22 11:21:01.570 [信息] 检查更新 开始
+2026-09-22 11:21:02.853 [信息] 检查更新 完成
+2026-09-22 11:21:09.416 [信息] AI Studio 登录完成：Cookie 长度=658，bdToken=已取到，uid=20104163，昵称=ZAYANJ
+2026-09-22 11:21:09.454 [信息] AI Studio 账号已保存：ZAYANJ（UID=20104163）
+2026-09-22 11:21:09.702 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":12,"continuousSingCount":2,"isFinishSign":1}
+2026-09-22 11:21:09.713 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":12,"continuousSingCount":2,"isFinishSign":1}
+2026-09-22 11:21:09.804 [信息] AI Studio[项目列表] 响应 1359 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 11:21:09.806 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 11:21:10.138 [信息] AI Studio[算力卡] 响应 320 字：{"id":966594,"resourceTotal":4241,"resourceConsume":5241,"resourceIncome":9480,"resourceFree":4241,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-22 10:23:02","resourceWeekQuotaMap":{"DEV":2880,"DCU":4241,"V10
+2026-09-22 11:21:10.139 [信息] AI Studio[积分任务] 响应 882 字：{"result":[{"pointActionDesc":"完善个人信息","isDisposableAction":true,"rewardPoint":5,"isFinished":true,"jumpUrl":"https:\/\/aistudio.baidu.com\/account"},{"pointActionDesc":"公开项目","isDisposableAction":false,"rewardPoint":5,"isFinished":false,"jumpUrl":"https:\/\/aistudio.baidu.com\/my\/project"},{"point
+2026-09-22 11:21:10.141 [信息] AI Studio[算力卡] 响应 320 字：{"id":966594,"resourceTotal":4241,"resourceConsume":5241,"resourceIncome":9480,"resourceFree":4241,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-22 10:23:02","resourceWeekQuotaMap":{"DEV":2880,"DCU":4241,"V10
+2026-09-22 11:21:10.141 [信息] AI Studio[积分任务] 响应 882 字：{"result":[{"pointActionDesc":"完善个人信息","isDisposableAction":true,"rewardPoint":5,"isFinished":true,"jumpUrl":"https:\/\/aistudio.baidu.com\/account"},{"pointActionDesc":"公开项目","isDisposableAction":false,"rewardPoint":5,"isFinished":false,"jumpUrl":"https:\/\/aistudio.baidu.com\/my\/project"},{"point
+2026-09-22 11:21:10.261 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-22 11:21:10.263 [信息] AI Studio 资源：积分=12，算力卡=70.7，A币=0，任务=6 项
+2026-09-22 11:21:10.333 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-22 11:21:10.334 [信息] AI Studio 资源：积分=12，算力卡=70.7，A币=0，任务=6 项
+2026-09-22 11:21:51.860 [信息] 积分任务：开始建项目 tmp-0922-112151
+2026-09-22 11:21:52.186 [信息] 积分任务：已建项目 id=10720970
+2026-09-22 11:21:52.331 [错误] 积分任务失败
+com.local.comfyuimobile.network.AiStudioException: 生成版本失败：项目未运行,无法创建版本（错误码 500）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:90)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:388)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-22 11:22:27.100 [信息] AI Studio 可用算力：基础版, 异构算力 16GB, BI-V150S 32GB, V100 16GB, V100 32GB
+2026-09-22 11:22:32.742 [信息] AI Studio 启动请求已提交：项目=10716006，算力=resourceCardVGpuSchedule
+2026-09-22 11:22:32.949 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 11:22:32.952 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-22 11:22:36.992 [信息] AI Studio[项目列表] 响应 1358 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-22 11:22:36.995 [信息] AI Studio 项目已运行：10716006
+2026-09-22 11:22:38.209 [信息] 内核通道：baseUrl= hubBaseUrl=
+2026-09-22 11:22:38.215 [错误] 连接控制台失败
+com.local.comfyuimobile.network.AiStudioException: 内核通道失败：平台没有返回 hubBaseUrl
+	at com.local.comfyuimobile.network.AiStudioKernelClient.kernelBase(AiStudioKernelClient.kt:154)
+	at com.local.comfyuimobile.network.AiStudioKernelClient.access$kernelBase(AiStudioKernelClient.kt:31)
+	at com.local.comfyuimobile.network.AiStudioKernelClient$listKernels$2.invokeSuspend(AiStudioKernelClient.kt:108)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-22 11:22:40.726 [信息] 内核通道：baseUrl= hubBaseUrl=
+2026-09-22 11:22:40.728 [错误] 连接控制台失败
+com.local.comfyuimobile.network.AiStudioException: 内核通道失败：平台没有返回 hubBaseUrl
+	at com.local.comfyuimobile.network.AiStudioKernelClient.kernelBase(AiStudioKernelClient.kt:154)
+	at com.local.comfyuimobile.network.AiStudioKernelClient.access$kernelBase(AiStudioKernelClient.kt:31)
+	at com.local.comfyuimobile.network.AiStudioKernelClient$listKernels$2.invokeSuspend(AiStudioKernelClient.kt:108)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-22 11:22:43.169 [信息] 内核通道：baseUrl=https://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/ hubBaseUrl=https://aistudio.baidu.com/bj-cpu-01/hub/user/20104163/10716006/
+2026-09-22 11:22:43.471 [信息] 控制台已连接：内核 0 个
+2026-09-22 11:22:45.498 [错误] 新建内核失败
+com.local.comfyuimobile.network.AiStudioException: 新建内核失败：HTTP 405（<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<title>405 Method Not Allowed</title>
+<h1>Method Not Allowed</h1）
+	at com.local.comfyuimobile.network.AiStudioKernelClient.post(AiStudioKernelClient.kt:208)
+	at com.local.comfyuimobile.network.AiStudioKernelClient.access$post(AiStudioKernelClient.kt:31)
+	at com.local.comfyuimobile.network.AiStudioKernelClient$startKernel$2.invokeSuspend(AiStudioKernelClient.kt:137)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-22 11:22:47.236 [信息] 内核通道：baseUrl=https://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/ hubBaseUrl=https://aistudio.baidu.com/bj-cpu-01/hub/user/20104163/10716006/
+2026-09-22 11:22:47.529 [信息] 控制台已连接：内核 0 个
+2026-09-22 11:22:52.909 [错误] 新建内核失败
+com.local.comfyuimobile.network.AiStudioException: 新建内核失败：HTTP 405（<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<title>405 Method Not Allowed</title>
+<h1>Method Not Allowed</h1）
+	at com.local.comfyuimobile.network.AiStudioKernelClient.post(AiStudioKernelClient.kt:208)
+	at com.local.comfyuimobile.network.AiStudioKernelClient.access$post(AiStudioKernelClient.kt:31)
+	at com.local.comfyuimobile.network.AiStudioKernelClient$startKernel$2.invokeSuspend(AiStudioKernelClient.kt:137)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-22 11:22:55.367 [信息] 内核通道：baseUrl=https://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/ hubBaseUrl=https://aistudio.baidu.com/bj-cpu-01/hub/user/20104163/10716006/
+2026-09-22 11:22:55.671 [信息] 控制台已连接：内核 0 个
+2026-09-22 11:22:57.322 [错误] 新建内核失败
+com.local.comfyuimobile.network.AiStudioException: 新建内核失败：HTTP 405（<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<title>405 Method Not Allowed</title>
+<h1>Method Not Allowed</h1）
+	at com.local.comfyuimobile.network.AiStudioKernelClient.post(AiStudioKernelClient.kt:208)
+	at com.local.comfyuimobile.network.AiStudioKernelClient.access$post(AiStudioKernelClient.kt:31)
+	at com.local.comfyuimobile.network.AiStudioKernelClient$startKernel$2.invokeSuspend(AiStudioKernelClient.kt:137)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-22 11:23:01.853 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":12,"continuousSingCount":2,"isFinishSign":1}
+2026-09-22 11:23:02.188 [信息] AI Studio[算力卡] 响应 320 字：{"id":966594,"resourceTotal":4241,"resourceConsume":5241,"resourceIncome":9480,"resourceFree":4241,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-22 10:23:02","resourceWeekQuotaMap":{"DEV":2880,"DCU":4241,"V10
+2026-09-22 11:23:02.190 [信息] AI Studio[积分任务] 响应 882 字：{"result":[{"pointActionDesc":"完善个人信息","isDisposableAction":true,"rewardPoint":5,"isFinished":true,"jumpUrl":"https:\/\/aistudio.baidu.com\/account"},{"pointActionDesc":"公开项目","isDisposableAction":false,"rewardPoint":5,"isFinished":false,"jumpUrl":"https:\/\/aistudio.baidu.com\/my\/project"},{"point
+2026-09-22 11:23:02.327 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-22 11:23:02.328 [信息] AI Studio 资源：积分=12，算力卡=70.7，A币=0，任务=6 项
+2026-09-22 11:23:18.032 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":12,"continuousSingCount":2,"isFinishSign":1}
+2026-09-22 11:23:18.412 [信息] AI Studio[算力卡] 响应 320 字：{"id":966594,"resourceTotal":4241,"resourceConsume":5241,"resourceIncome":9480,"resourceFree":4241,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-22 10:23:02","resourceWeekQuotaMap":{"DEV":2880,"DCU":4241,"V10
+2026-09-22 11:23:18.413 [信息] AI Studio[积分任务] 响应 882 字：{"result":[{"pointActionDesc":"完善个人信息","isDisposableAction":true,"rewardPoint":5,"isFinished":true,"jumpUrl":"https:\/\/aistudio.baidu.com\/account"},{"pointActionDesc":"公开项目","isDisposableAction":false,"rewardPoint":5,"isFinished":false,"jumpUrl":"https:\/\/aistudio.baidu.com\/my\/project"},{"point
+2026-09-22 11:23:18.541 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-22 11:23:18.543 [信息] AI Studio 资源：积分=12，算力卡=70.7，A币=0，任务=6 项
+2026-09-22 11:23:25.949 [信息] 内核通道：baseUrl=https://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/ hubBaseUrl=https://aistudio.baidu.com/bj-cpu-01/hub/user/20104163/10716006/
+2026-09-22 11:23:26.626 [信息] 控制台已连接：内核 0 个
+2026-09-22 11:23:31.371 [错误] 新建内核失败
+com.local.comfyuimobile.network.AiStudioException: 新建内核失败：HTTP 405（<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<title>405 Method Not Allowed</title>
+<h1>Method Not Allowed</h1）
+	at com.local.comfyuimobile.network.AiStudioKernelClient.post(AiStudioKernelClient.kt:208)
+	at com.local.comfyuimobile.network.AiStudioKernelClient.access$post(AiStudioKernelClient.kt:31)
+	at com.local.comfyuimobile.network.AiStudioKernelClient$startKernel$2.invokeSuspend(AiStudioKernelClient.kt:137)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-22 11:23:34.578 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":12,"continuousSingCount":2,"isFinishSign":1}
+2026-09-22 11:23:35.018 [信息] AI Studio[算力卡] 响应 320 字：{"id":966594,"resourceTotal":4241,"resourceConsume":5241,"resourceIncome":9480,"resourceFree":4241,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-22 10:23:02","resourceWeekQuotaMap":{"DEV":2880,"DCU":4241,"V10
+2026-09-22 11:23:35.020 [信息] AI Studio[积分任务] 响应 882 字：{"result":[{"pointActionDesc":"完善个人信息","isDisposableAction":true,"rewardPoint":5,"isFinished":true,"jumpUrl":"https:\/\/aistudio.baidu.com\/account"},{"pointActionDesc":"公开项目","isDisposableAction":false,"rewardPoint":5,"isFinished":false,"jumpUrl":"https:\/\/aistudio.baidu.com\/my\/project"},{"point
+2026-09-22 11:23:35.152 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-22 11:23:35.154 [信息] AI Studio 资源：积分=12，算力卡=70.7，A币=0，任务=6 项
+2026-09-22 11:23:37.026 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":12,"continuousSingCount":2,"isFinishSign":1}
+2026-09-22 11:23:37.384 [信息] AI Studio[算力卡] 响应 320 字：{"id":966594,"resourceTotal":4241,"resourceConsume":5241,"resourceIncome":9480,"resourceFree":4241,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-22 10:23:02","resourceWeekQuotaMap":{"DEV":2880,"DCU":4241,"V10
+2026-09-22 11:23:37.385 [信息] AI Studio[积分任务] 响应 882 字：{"result":[{"pointActionDesc":"完善个人信息","isDisposableAction":true,"rewardPoint":5,"isFinished":true,"jumpUrl":"https:\/\/aistudio.baidu.com\/account"},{"pointActionDesc":"公开项目","isDisposableAction":false,"rewardPoint":5,"isFinished":false,"jumpUrl":"https:\/\/aistudio.baidu.com\/my\/project"},{"point
+2026-09-22 11:23:37.510 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-22 11:23:37.512 [信息] AI Studio 资源：积分=12，算力卡=70.7，A币=0，任务=6 项
+2026-09-22 11:23:38.678 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":12,"continuousSingCount":2,"isFinishSign":1}
+2026-09-22 11:23:39.096 [信息] AI Studio[算力卡] 响应 320 字：{"id":966594,"resourceTotal":4241,"resourceConsume":5241,"resourceIncome":9480,"resourceFree":4241,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-22 10:23:02","resourceWeekQuotaMap":{"DEV":2880,"DCU":4241,"V10
+2026-09-22 11:23:39.098 [信息] AI Studio[积分任务] 响应 882 字：{"result":[{"pointActionDesc":"完善个人信息","isDisposableAction":true,"rewardPoint":5,"isFinished":true,"jumpUrl":"https:\/\/aistudio.baidu.com\/account"},{"pointActionDesc":"公开项目","isDisposableAction":false,"rewardPoint":5,"isFinished":false,"jumpUrl":"https:\/\/aistudio.baidu.com\/my\/project"},{"point
+2026-09-22 11:23:39.230 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-22 11:23:39.231 [信息] AI Studio 资源：积分=12，算力卡=70.7，A币=0，任务=6 项

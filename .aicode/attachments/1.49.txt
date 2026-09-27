@@ -1,0 +1,49 @@
+# 柳墨丹青 · 运行日志
+# 导出时间: 09-23 13:49:26.388
+# 记录条数: 45
+
+[09-23 13:41:56.549] INFO    App: 日志系统启动
+[09-23 13:41:56.730] INFO    Main: 外壳就绪
+[09-23 13:41:58.999] INFO    Create: 创作页打开，体裁=image
+[09-23 13:41:59.011] INFO    Create: 切体裁 → image
+[09-23 13:41:59.060] DEBUG   HTTP: → GET https://www.modelscope.cn/api/v1/muse/predict/unauth/defaultTemplateV2 [m_session_id=85073e…]
+[09-23 13:41:59.742] DEBUG   HTTP: ← 200 682ms {"Code":200,"Data":{"code":0,"data":{"AUDIO":{"promptTags":[{"category":"style","displayName":"风格","displayNameEn":"Style","tagList":[{"chineseName":"Funk","name":"Funk","tagKey":"music-style-funk"},{"chineseName":"民谣","name":"Folk","tagKey":"music-style-folk"},{"chineseName":"情歌","name":"Love Song","tagKey":"music-style-love-song"},{"chineseName":"流行","name":"Pop","tagKey":"music-style-pop"},{"chineseName":"布鲁斯","name":"Blues","tagKey":"music-style-blues"},{"chineseName":"爵士","name":"Jazz","tagKey":"music-style-jazz"},{"chineseName":"灵魂","name":"Soul","tagKey":"music-style-soul"},{"chineseName":"r\u0026b","name":"r\u0026b","tagKey":"music-style-rnb"},{"chineseName":"乡村","name":"Country","tagKey":"music-style-country"},{"chineseName":"摇滚","name":"Rock","tagKey":"music-style-rock"},{"chineseName":"日系","name":"Japanese-style","tagKey":"music-style-japanese-style"},{"chineseName":"拉美","name":"Latin American","tagKey":"music-style-latin-american"},{"chineseName":"西部","name":"Western","tagKey":"music-style-western"},{"chineseName":"雷鬼","name":"Reggae","tagKey":"music-style-reggae"},{"chineseName":"拉丁","name":"Latin","tagKey":"music-style-latin"},{"chineseName":"西部荒野","name":"Wild West","tagKey":"music-style-wild-west"},{"chineseName":"嘻哈","name":"Hip-Hop","tagKey":"music-style-hip-hop"},{"chineseName":"kpop","name":"kpop","tagKey":"music-style-kpop"},{"chineseName":"电音","name":"Electronic","tagKey":"music-style-electronic"},{"chineseName":"disco","name":"disco","tagKey":"music-sty
+[09-23 13:41:59.796] INFO    Create: 拉取模型 image：22 个
+[09-23 13:41:59.808] INFO    Create: 套用模型默认：Z-Image-Turbo 尺寸=1024x1024 步=8 引导=1.0 采样器=euler
+[09-23 13:42:03.413] INFO    Create: 套用模型默认：Qwen-Image-2.1 尺寸=1104x1472 步=40 引导=0.0 采样器=Euler
+[09-23 13:42:03.414] INFO    Create: 手动选模型：Qwen-Image-2.1
+[09-23 13:42:15.739] INFO    Create: 开始生成 genre=image model=Qwen/Qwen-Image-2.1 ver=1079253 1104x1472
+[09-23 13:42:15.747] INFO    Create: 已交给前台服务，共 1 张
+[09-23 13:42:15.791] DEBUG   HTTP: → GET https://www.modelscope.cn/openapi/v1/magicubes/balance [m_session_id=85073e…]
+[09-23 13:42:15.912] DEBUG   HTTP: ← 200 121ms {"success":true,"request_id":"6697db84-41db-4523-b3ed-7c05309b209c","data":{"total_balance":197,"available_balance":197,"frozen_amount":0}}
+[09-23 13:42:15.919] INFO    GenService: 账号 眨眼睛 余额：197
+[09-23 13:42:15.937] DEBUG   HTTP: → GET https://www.modelscope.cn/openapi/v1/magicubes/balance [m_session_id=3b6aca…]
+[09-23 13:42:16.034] DEBUG   HTTP: ← 200 97ms {"success":true,"request_id":"56f52691-013e-46e2-90ea-3157f982070c","data":{"total_balance":290,"available_balance":290,"frozen_amount":0}}
+[09-23 13:42:16.039] INFO    GenService: 账号 zzzj11 余额：290
+[09-23 13:42:16.062] INFO    GenService: 账号 #1 开始，第 1/1 张
+[09-23 13:42:16.063] DEBUG   HTTP: → GET https://www.modelscope.cn/openapi/v1/magicubes/balance [m_session_id=3b6aca…]
+[09-23 13:42:16.065] DEBUG   HTTP: → POST https://www.modelscope.cn/api/v1/muse/predict/task/submit [m_session_id=3b6aca…]
+[09-23 13:42:16.066] DEBUG   HTTP:   body: {"predictType":"TXT_2_IMG","modelArgs":{"checkpointModelVersionId":1079253,"loraArgs":[]},"promptArgs":{"prompt":"写实写真摄影，一位成年年轻女性躺在粗糙深灰色水泥地面上，黑色长发向后散开，肤色白皙，红色唇妆明显，表情平静冷淡，正面看向镜头；\n\n身穿深蓝黑色半透明蕾丝内衣套装，细肩带文胸与低腰蕾丝内裤，花纹蕾丝材质清晰，巨乳非常突出，胸部被薄蕾丝罩杯包裹并形成明显乳沟，腹部柔和自然，肚脐清晰可见，双腿向两侧分开弯曲，一只手抬到头顶，另一只手放在大腿附近，指甲细长；\n\n画面为俯拍视角，人物斜向铺满画面，从头部到大腿完整呈现，近距离广角感，主体占据大部分画面，前景为腿部与蕾丝内裤，中景为腹部、胸部和面部，背景为带斑驳纹理的水泥地面，右上方有少量模糊细小文字痕迹；\n\n竖幅构图，视觉重心集中在人物身体和深色蕾丝内衣，背景极简粗粝；\n\n光线为柔和自然散射光，整体偏冷，阴影轻微，高光均匀分布在皮肤和蕾丝边缘，水泥地面呈哑光质感；\n\n色彩搭配以白皙肤色、深蓝黑蕾丝、灰黑水泥背景和红唇形成对比，低饱和冷色调，真实胶片写真质感，轻微颗粒感，细节密度中高，主体清晰，构图稳定，画面干净，无水印，无乱码文字，无多余元素，无畸形结构。","negativePrompt":""},"basicDiffusionArgs":{"sampler":"Euler","guidanceScale":1.0,"width":1104,"height":1472,"numInferenceSteps":40,"seed":-1,"numImagesPerPrompt":1,"advanced":false},"adetailerArgsMap":{},"hiresFixFrontAr
+[09-23 13:42:16.169] DEBUG   HTTP: ← 200 106ms {"success":true,"request_id":"041942cc-5cb7-49f8-bbb6-33e819fae2af","data":{"total_balance":290,"available_balance":290,"frozen_amount":0}}
+[09-23 13:42:16.886] DEBUG   HTTP: ← 200 821ms {"Code":200,"Data":{"code":0,"data":{"recordId":8001891,"taskId":"8001891","taskIdList":[16331878],"taskUuid":null},"message":"操作成功","requestId":"196df904-aa71-4c9e-ab2c-dabe7d813a50","success":true,"traceback":null},"Message":"success","RequestId":"98b0dbae-3462-4c90-a4bd-f3692a7f2588","Success":true}
+[09-23 13:42:16.889] INFO    GenService: 任务已提交：8001891（此后不再换账号重试）
+[09-23 13:42:18.896] DEBUG   HTTP: → GET https://www.modelscope.cn/api/v1/muse/predict/task/status?taskId=8001891 [m_session_id=3b6aca…]
+[09-23 13:42:19.123] DEBUG   HTTP: ← 200 227ms {"Code":200,"Data":{"code":0,"data":{"errorCode":null,"errorMsg":null,"predictResult":null,"progress":{"detail":"排队中，共有25人在排队，您在第25位。","percent":0},"status":"PROCESSING","taskId":8001891,"taskQueue":{"currentPosition":25,"total":25}},"message":"操作成功","requestId":"33a91d73-ee83-418d-8568-c6aca6f593bc","success":true,"traceback":null},"Message":"success","RequestId":"ec43710d-6502-474b-a5e0-3acacbbe96e0","Success":true}
+[09-23 13:42:21.139] DEBUG   HTTP: → GET https://www.modelscope.cn/api/v1/muse/predict/task/status?taskId=8001891 [m_session_id=3b6aca…]
+[09-23 13:42:21.273] DEBUG   HTTP: ← 200 134ms {"Code":200,"Data":{"code":0,"data":{"errorCode":null,"errorMsg":null,"predictResult":null,"progress":{"detail":"排队中，共有23人在排队，您在第23位。","percent":0},"status":"PROCESSING","taskId":8001891,"taskQueue":{"currentPosition":23,"total":23}},"message":"操作成功","requestId":"6637fe10-a173-4868-89e5-a8e49e4ab82d","success":true,"traceback":null},"Message":"success","RequestId":"ac227089-9d37-4f8f-a86f-92430a31b217","Success":true}
+[09-23 13:42:23.285] DEBUG   HTTP: → GET https://www.modelscope.cn/api/v1/muse/predict/task/status?taskId=8001891 [m_session_id=3b6aca…]
+[09-23 13:42:23.409] DEBUG   HTTP: ← 200 124ms {"Code":200,"Data":{"code":0,"data":{"errorCode":null,"errorMsg":null,"predictResult":null,"progress":{"detail":"排队中，共有23人在排队，您在第23位。","percent":0},"status":"PROCESSING","taskId":8001891,"taskQueue":{"currentPosition":23,"total":23}},"message":"操作成功","requestId":"994ce8e8-22b1-4260-a1bb-1739ad1dd7ba","success":true,"traceback":null},"Message":"success","RequestId":"e501c49b-71ea-4949-ab4a-9703c68adfb2","Success":true}
+[09-23 13:42:25.415] DEBUG   HTTP: → GET https://www.modelscope.cn/api/v1/muse/predict/task/status?taskId=8001891 [m_session_id=3b6aca…]
+[09-23 13:42:25.534] DEBUG   HTTP: ← 200 119ms {"Code":200,"Data":{"code":0,"data":{"errorCode":null,"errorMsg":null,"predictResult":null,"progress":{"detail":"排队中，共有22人在排队，您在第22位。","percent":0},"status":"PROCESSING","taskId":8001891,"taskQueue":{"currentPosition":22,"total":22}},"message":"操作成功","requestId":"d7dd0088-4da5-4c32-bb0b-a7d87532f20f","success":true,"traceback":null},"Message":"success","RequestId":"a00562bf-d96b-45f3-91d4-f6b8b83145a3","Success":true}
+[09-23 13:42:27.543] DEBUG   HTTP: → GET https://www.modelscope.cn/api/v1/muse/predict/task/status?taskId=8001891 [m_session_id=3b6aca…]
+[09-23 13:42:27.674] DEBUG   HTTP: ← 200 131ms {"Code":200,"Data":{"code":0,"data":{"errorCode":null,"errorMsg":null,"predictResult":null,"progress":{"detail":"排队中，共有21人在排队，您在第21位。","percent":0},"status":"PROCESSING","taskId":8001891,"taskQueue":{"currentPosition":21,"total":21}},"message":"操作成功","requestId":"f53f4dcf-5d32-46d3-8ef5-40e728fedf75","success":true,"traceback":null},"Message":"success","RequestId":"47af2103-a6b4-44bc-9e1b-7fb1b065710d","Success":true}
+[09-23 13:42:29.683] DEBUG   HTTP: → GET https://www.modelscope.cn/api/v1/muse/predict/task/status?taskId=8001891 [m_session_id=3b6aca…]
+[09-23 13:42:29.779] DEBUG   HTTP: ← 200 96ms {"Code":200,"Data":{"code":0,"data":{"errorCode":null,"errorMsg":null,"predictResult":null,"progress":{"detail":"排队中，共有21人在排队，您在第21位。","percent":0},"status":"PROCESSING","taskId":8001891,"taskQueue":{"currentPosition":21,"total":21}},"message":"操作成功","requestId":"bed83b53-912a-44d5-8369-1f7dc11ef5a0","success":true,"traceback":null},"Message":"success","RequestId":"c15f19e4-cfde-4c13-86e4-00eb55ed9669","Success":true}
+[09-23 13:42:31.789] DEBUG   HTTP: → GET https://www.modelscope.cn/api/v1/muse/predict/task/status?taskId=8001891 [m_session_id=3b6aca…]
+[09-23 13:42:31.906] DEBUG   HTTP: ← 200 117ms {"Code":200,"Data":{"code":0,"data":{"errorCode":null,"errorMsg":null,"predictResult":null,"progress":{"detail":"排队中，共有19人在排队，您在第19位。","percent":0},"status":"PROCESSING","taskId":8001891,"taskQueue":{"currentPosition":19,"total":19}},"message":"操作成功","requestId":"0755da32-a9d2-4312-940e-b16759520192","success":true,"traceback":null},"Message":"success","RequestId":"ad6c1220-1441-4de1-aa89-f258b5b86629","Success":true}
+[09-23 13:49:00.111] DEBUG   HTTP: → GET https://www.modelscope.cn/api/v1/muse/predict/task/status?taskId=8001891 [m_session_id=3b6aca…]
+[09-23 13:49:00.138] INFO    Main: 发现 1 个未完成任务，开始接回
+[09-23 13:49:00.435] DEBUG   HTTP: ← 200 324ms {"Code":200,"Data":{"code":0,"data":{"errorCode":null,"errorMsg":"生图失败","predictResult":null,"progress":null,"status":"FAILED","taskId":8001891,"taskQueue":null},"message":"操作成功","requestId":"713da805-e945-4cce-988d-c3b13899b432","success":true,"traceback":null},"Message":"success","RequestId":"915eca3d-9de7-4c35-8b8b-d8a2e7ae300c","Success":true}
+[09-23 13:49:00.442] WARN    GenService: 账号失败：生图失败
+[09-23 13:49:00.443] INFO    GenService: 服务结束：成功 0 张，错误=生图失败
+[09-23 13:49:05.638] INFO    Settings: 设置页打开

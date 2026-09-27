@@ -1,0 +1,671 @@
+2026-09-25 11:41:17.195 [信息] 应用启动，日志记录=开启
+2026-09-25 11:41:17.205 [信息] 系统历史退出：时间=2026-09-25 00:26:24.815，原因=用户或系统请求停止，进程=com.local.comfyuimobile.debug，PID=3996，状态=0，重要性=400，PSS=194949KB，RSS=172644KB，描述=[FORCE STOP] stop com.local.comfyuimobile.debug due to LockScreenClean
+2026-09-25 11:41:17.207 [信息] 系统历史退出：时间=2026-09-25 00:26:24.827，原因=其他(13)，进程=com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0，PID=6625，状态=0，重要性=300，PSS=13924KB，RSS=92592KB，描述=[ISOLATED NOT NEEDED] isolated not needed
+2026-09-25 11:41:17.209 [信息] 系统历史退出：时间=2026-09-25 01:58:03.358，原因=软件更新，进程=com.local.comfyuimobile.debug，PID=31418，状态=0，重要性=400，PSS=194643KB，RSS=167572KB，描述=stop com.local.comfyuimobile.debug due to installPackageLI
+2026-09-25 11:41:17.210 [信息] 系统历史退出：时间=2026-09-25 01:58:03.366，原因=其他(13)，进程=com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0，PID=26057，状态=0，重要性=300，PSS=14133KB，RSS=89500KB，描述=[ISOLATED NOT NEEDED] isolated not needed
+2026-09-25 11:41:17.214 [信息] 系统历史退出：时间=2026-09-25 02:55:49.259，原因=软件更新，进程=com.local.comfyuimobile.debug，PID=13371，状态=0，重要性=125，PSS=713809KB，RSS=754150KB，描述=stop com.local.comfyuimobile.debug due to installPackageLI
+2026-09-25 11:41:17.216 [信息] 系统历史退出：时间=2026-09-25 02:55:49.266，原因=其他(13)，进程=com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0，PID=19529，状态=0，重要性=300，PSS=245025KB，RSS=352580KB，描述=[ISOLATED NOT NEEDED] isolated not needed
+2026-09-25 11:41:17.217 [信息] 系统历史退出：时间=2026-09-25 03:07:25.257，原因=用户或系统请求停止，进程=com.local.comfyuimobile.debug，PID=16432，状态=0，重要性=125，PSS=522765KB，RSS=717890KB，描述=[FORCE STOP] stop com.local.comfyuimobile.debug due to clear data
+2026-09-25 11:41:17.219 [信息] 系统历史退出：时间=2026-09-25 03:07:25.269，原因=其他(13)，进程=com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0，PID=21257，状态=0，重要性=300，PSS=266269KB，RSS=415292KB，描述=[ISOLATED NOT NEEDED] isolated not needed
+2026-09-25 11:41:17.452 [信息] WebView 运行时（初始化）：包=com.google.android.webview，版本=153.0.8010.36
+2026-09-25 16:52:57.422 [信息] 应用启动，日志记录=开启
+2026-09-25 16:52:57.435 [信息] 系统历史退出：时间=2026-09-25 11:41:26.692，原因=其他(13)，进程=com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0，PID=30575，状态=0，重要性=400，PSS=0KB，RSS=0KB，描述=SwipeUpClean
+2026-09-25 16:52:57.437 [信息] 系统历史退出：时间=2026-09-25 11:41:26.697，原因=用户或系统请求停止，进程=com.local.comfyuimobile.debug，PID=11103，状态=0，重要性=400，PSS=0KB，RSS=0KB，描述=[FORCE STOP] stop com.local.comfyuimobile.debug due to SwipeUpClean
+2026-09-25 18:36:43.479 [信息] 应用启动，日志记录=开启
+2026-09-25 18:36:43.488 [信息] 系统历史退出：时间=2026-09-25 17:23:06.712，原因=内存不足，进程=com.local.comfyuimobile.debug，PID=15818，状态=0，重要性=400，PSS=86721KB，RSS=48980KB，描述=
+2026-09-25 18:36:43.794 [信息] WebView 运行时（初始化）：包=com.google.android.webview，版本=153.0.8010.36
+2026-09-25 18:36:59.064 [信息] AI Studio 登录完成：Cookie 长度=754，bdToken=已取到，uid=20104163，昵称=ZAYANJ
+2026-09-25 18:36:59.094 [信息] AI Studio 账号已保存：ZAYANJ（UID=20104163）
+2026-09-25 18:36:59.372 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:36:59.404 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:36:59.405 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 18:36:59.408 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:36:59.440 [信息] AI Studio[项目列表] 响应 1360 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-25 18:36:59.442 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 18:36:59.644 [信息] 每日自动领算力：今日已领过，明天再来
+2026-09-25 18:36:59.646 [信息] AI Studio[算力卡] 响应 321 字：{"id":966594,"resourceTotal":4241,"resourceConsume":6681,"resourceIncome":10920,"resourceFree":4241,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-25 17:25:09","resourceWeekQuotaMap":{"DEV":2880,"DCU":4241,"V1
+2026-09-25 18:36:59.841 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-25 18:36:59.842 [信息] AI Studio 资源：积分=15，算力卡=70.7，A币=0
+2026-09-25 18:37:01.058 [信息] AI Studio 签到成功：ZAYANJ
+2026-09-25 18:37:01.244 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:37:01.246 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 18:37:01.457 [信息] 每日自动领算力：今日已领过，明天再来
+2026-09-25 18:37:03.876 [信息] 检查更新 开始
+2026-09-25 18:37:04.561 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:37:04.587 [信息] AI Studio[算力卡] 响应 321 字：{"id":966594,"resourceTotal":4241,"resourceConsume":6681,"resourceIncome":10920,"resourceFree":4241,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-25 17:25:09","resourceWeekQuotaMap":{"DEV":2880,"DCU":4241,"V1
+2026-09-25 18:37:04.729 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-25 18:37:04.732 [信息] AI Studio 资源：积分=15，算力卡=70.7，A币=0
+2026-09-25 18:37:04.802 [信息] AI Studio[算力卡] 响应 321 字：{"id":966594,"resourceTotal":4241,"resourceConsume":6681,"resourceIncome":10920,"resourceFree":4241,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-25 17:25:09","resourceWeekQuotaMap":{"DEV":2880,"DCU":4241,"V1
+2026-09-25 18:37:04.952 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-25 18:37:04.956 [信息] AI Studio 资源：积分=15，算力卡=70.7，A币=0
+2026-09-25 18:37:06.318 [信息] 检查更新 完成
+2026-09-25 18:37:06.341 [信息] AI Studio 可用算力：基础版, 异构算力 16GB, BI-V150S 32GB, V100 16GB, V100 32GB
+2026-09-25 18:37:10.268 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:37:10.272 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 18:37:10.454 [信息] 每日自动领算力：今日已领过，明天再来
+2026-09-25 18:37:13.301 [信息] AI Studio 可用算力：基础版, 异构算力 16GB, BI-V150S 32GB, V100 16GB, V100 32GB
+2026-09-25 18:37:15.754 [信息] AI Studio 启动请求已提交：项目=10716006，算力=resourceCardVGpuSchedule
+2026-09-25 18:37:15.974 [信息] AI Studio[项目列表] 响应 1359 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-25 18:37:15.976 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 18:37:16.336 [信息] 环境信息响应：{"logId":"859bdbe12e0e0b09e74fcddc8c05948f","errorCode":0,"errorMsg":"成功","timestamp":1790332636581,"result":{"baseUrl":"http://aistudio.baidu.comnull","hubBaseUrl":"http://aistudio.baidu.comnull","token":null}}
+2026-09-25 18:37:20.010 [信息] AI Studio[项目列表] 响应 1359 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-25 18:37:20.246 [信息] 环境信息响应：{"logId":"2dc9ec4763c3e95b60970a1169b77703","errorCode":0,"errorMsg":"成功","timestamp":1790332640495,"result":{"baseUrl":"http://aistudio.baidu.comnull","hubBaseUrl":"http://aistudio.baidu.comnull","token":null}}
+2026-09-25 18:37:24.485 [信息] AI Studio[项目列表] 响应 1359 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-25 18:37:24.709 [信息] 环境信息响应：{"logId":"5f910785ef017c0a373d1b39418612b4","errorCode":0,"errorMsg":"成功","timestamp":1790332644956,"result":{"baseUrl":"http://aistudio.baidu.comnull","hubBaseUrl":"http://aistudio.baidu.comnull","token":null}}
+2026-09-25 18:37:28.926 [信息] AI Studio[项目列表] 响应 1359 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-25 18:37:29.145 [信息] 环境信息响应：{"logId":"431e1b431fb7d04591a2103a5edd581b","errorCode":0,"errorMsg":"成功","timestamp":1790332649396,"result":{"baseUrl":"http://aistudio.baidu.comnull","hubBaseUrl":"http://aistudio.baidu.comnull","token":null}}
+2026-09-25 18:38:28.397 [信息] AI Studio[项目列表] 响应 1359 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-25 18:38:28.747 [信息] 环境信息响应：{"logId":"540b109710951f156ab427f4b45a35ab","errorCode":0,"errorMsg":"成功","timestamp":1790332708985,"result":{"baseUrl":"http://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/","hubBaseUrl":"http://aistudio.baidu.com/bj-cpu-01/hub/user/20104163/10716006/","token":"<已省略 len=32>"}}
+2026-09-25 18:38:28.825 [信息] AI Studio 项目状态已更新：10716006 running=true 环境已就绪
+2026-09-25 18:38:28.973 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:38:29.217 [信息] AI Studio[算力卡] 响应 321 字：{"id":966594,"resourceTotal":4241,"resourceConsume":6681,"resourceIncome":10920,"resourceFree":4241,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-25 17:25:09","resourceWeekQuotaMap":{"DEV":2880,"DCU":4241,"V1
+2026-09-25 18:38:29.372 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-25 18:38:29.374 [信息] AI Studio 资源：积分=15，算力卡=70.7，A币=0
+2026-09-25 18:38:31.707 [信息] 进入 notebook 响应：{"logId":"e1ab6e0dbf3a9336a9b2141d1008cb0f","errorCode":0,"errorMsg":"成功","timestamp":0,"result":{"homedownload":{"finishedCount":0,"totalSize":0,"finishedSize":0,"messageId":"d7c7df8dae7e0ee944b670b5c0de824b","progressInfo":"文件同步完成","totalCount":0,"userId":20104163,"projectId":10716006,"status":1,"
+2026-09-25 18:38:31.907 [信息] 环境信息响应：{"logId":"69fc2c853f6cf4e8bad3b1025db0c3c0","errorCode":0,"errorMsg":"成功","timestamp":1790332712151,"result":{"baseUrl":"http://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/","hubBaseUrl":"http://aistudio.baidu.com/bj-cpu-01/hub/user/20104163/10716006/","token":"<已省略 len=32>"}}
+2026-09-25 18:38:31.911 [信息] 终端通道：baseUrl=http://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/
+2026-09-25 18:38:32.576 [信息] 读取终端列表：HTTP 200 application/json（经重定向 302 → https://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/api/terminals）
+2026-09-25 18:38:32.578 [信息] 终端列表响应：[]
+2026-09-25 18:38:32.857 [信息] 新建终端：HTTP 200 application/json
+2026-09-25 18:38:32.858 [信息] 新建终端响应：{"name": "1", "last_activity": "2026-09-25T10:38:33.103528Z"}
+2026-09-25 18:38:32.874 [信息] 终端已连上，当前 Cookie=[BAIDUID, BAIDUID_BFESS, BDUSS, BDUSS_BFESS, __bid_n, ai-studio-ticket, fuid, ide-hub-token, ide-proxy, jsdk-uuid, user-20104163-10716006]
+2026-09-25 18:38:32.931 [信息] 连接保活已建立：AI Studio 终端
+2026-09-25 18:38:33.117 [信息] 控制台：终端已连接 1
+2026-09-25 18:38:33.207 [信息] Codelab 预热：200 /bj-cpu-01/user/20104163/10716006/lab
+2026-09-25 18:38:33.361 [信息] Codelab 预热：200 /bj-cpu-01/user/20104163/10716006/home
+2026-09-25 18:38:33.497 [信息] Codelab 预热：200 /bj-cpu-01/user/20104163/10716006/lab
+2026-09-25 18:38:33.884 [信息] Codelab 预热：404 /bj-cpu-01/user/20104163/10716006/notebooks/10716006.ipynb
+2026-09-25 18:38:33.886 [信息] Codelab 预热完成：已捕获 Cookie=[BAIDUID, BAIDUID_BFESS, BDUSS, BDUSS_BFESS, __bid_n, _xsrf, ai-studio-ticket, fuid, ide-hub-token, ide-proxy, jsdk-uuid, user-20104163-10716006]
+2026-09-25 18:38:43.563 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:38:43.565 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 18:38:43.732 [信息] 每日自动领算力：今日已领过，明天再来
+2026-09-25 18:38:45.015 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:38:45.017 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 18:38:45.204 [信息] 每日自动领算力：今日已领过，明天再来
+2026-09-25 18:38:48.899 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:38:48.900 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 18:38:49.196 [信息] 每日自动领算力：今日已领过，明天再来
+2026-09-25 18:39:24.489 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:39:24.491 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 18:39:24.670 [信息] 每日自动领算力：今日已领过，明天再来
+2026-09-25 18:39:27.478 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:39:27.480 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 18:39:27.645 [信息] 每日自动领算力：今日已领过，明天再来
+2026-09-25 18:40:37.343 [信息] 终端输出检测到 ComfyUI 启动特征，准备自动连接 https://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/api_serving/8188
+2026-09-25 18:40:37.716 [信息] ComfyUI 已就绪，自动连接
+2026-09-25 18:40:37.720 [信息] 请求连接服务器：https://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/api_serving/8188
+2026-09-25 18:40:37.722 [信息] 连接 开始
+2026-09-25 18:40:37.725 [信息] 连接：开始探测服务器 https://aistudio.baidu.com:443/bj-cpu-01/user/20104163/10716006/api_serving/8188（/system_stats）
+2026-09-25 18:40:38.019 [信息] 连接：探测成功 ComfyUI=0.33.0 前端=1.49.6 设备=cuda:0 Tesla V100-SXM2-32GB : cudaMallocAsync
+2026-09-25 18:40:38.020 [信息] 连接：加载网页 https://aistudio.baidu.com:443/bj-cpu-01/user/20104163/10716006/api_serving/8188
+2026-09-25 18:40:38.453 [信息] ComfyUI 网页开始加载：轮次=1，地址=https://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/api_serving/8188/
+2026-09-25 18:40:41.853 [信息] ComfyUI 网页完成加载：轮次=1，进度=100%，已挂载=true，地址=https://aistudio.baidu.com/bj-cpu-01/user/20104163/10716006/api_serving/8188/
+2026-09-25 18:40:41.874 [信息] 连接：等待前端就绪
+2026-09-25 18:41:02.637 [信息] 连接：前端已就绪
+2026-09-25 18:41:02.692 [信息] 连接 完成
+2026-09-25 18:41:02.712 [信息] 连接保活已建立：aistudio.baidu.com
+2026-09-25 18:41:02.821 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:41:02.824 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 18:41:02.997 [信息] 每日自动领算力：今日已领过，明天再来
+2026-09-25 18:41:04.686 [信息] 节点定义已缓存：1790 种类型，可用于缺失预检
+2026-09-25 18:41:05.538 [信息] ComfyUI WebSocket 被反代抬断（HTTP 正常，不影响生图），2 秒后静默重开
+2026-09-25 18:41:09.992 [信息] ComfyUI WebSocket 被反代抬断（HTTP 正常，不影响生图），4 秒后静默重开
+2026-09-25 18:41:18.369 [信息] ComfyUI WebSocket 被反代抬断（HTTP 正常，不影响生图），8 秒后静默重开
+2026-09-25 18:41:21.407 [信息] 预读取工作流：workflows/anima+1lora_pt.json
+2026-09-25 18:41:21.411 [信息] 工作流加载 开始
+2026-09-25 18:41:21.655 [错误] 工作流加载失败
+java.lang.IllegalStateException: anima+1lora_pt.json 读不到：这台服务器不提供云端工作流存储，本机也没有保存过它的内容。请回「工作流」页点「打开工作流文件」从手机导入一次，导入后会自动保存在本机，以后直接点开就能用。
+	at com.local.comfyuimobile.MainViewModel.readWorkflowOrGuide(MainViewModel.kt:1906)
+	at com.local.comfyuimobile.MainViewModel.access$readWorkflowOrGuide(MainViewModel.kt:115)
+	at com.local.comfyuimobile.MainViewModel$readWorkflowOrGuide$1.invokeSuspend(Unknown Source:15)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:99)
+	at android.os.Handler.handleCallback(Handler.java:959)
+	at android.os.Handler.dispatchMessage(Handler.java:100)
+	at android.os.Looper.loopOnce(Looper.java:249)
+	at android.os.Looper.loop(Looper.java:337)
+	at android.app.ActivityThread.main(ActivityThread.java:9497)
+	at java.lang.reflect.Method.invoke(Native Method)
+	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:636)
+	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:1005)
+
+2026-09-25 18:41:26.424 [信息] 预读取工作流：workflows/anima+1lora_pt.json
+2026-09-25 18:41:26.425 [信息] 工作流加载 开始
+2026-09-25 18:41:26.473 [错误] 工作流加载失败
+java.lang.IllegalStateException: anima+1lora_pt.json 读不到：这台服务器不提供云端工作流存储，本机也没有保存过它的内容。请回「工作流」页点「打开工作流文件」从手机导入一次，导入后会自动保存在本机，以后直接点开就能用。
+	at com.local.comfyuimobile.MainViewModel.readWorkflowOrGuide(MainViewModel.kt:1906)
+	at com.local.comfyuimobile.MainViewModel.access$readWorkflowOrGuide(MainViewModel.kt:115)
+	at com.local.comfyuimobile.MainViewModel$readWorkflowOrGuide$1.invokeSuspend(Unknown Source:15)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:99)
+	at android.os.Handler.handleCallback(Handler.java:959)
+	at android.os.Handler.dispatchMessage(Handler.java:100)
+	at android.os.Looper.loopOnce(Looper.java:249)
+	at android.os.Looper.loop(Looper.java:337)
+	at android.app.ActivityThread.main(ActivityThread.java:9497)
+	at java.lang.reflect.Method.invoke(Native Method)
+	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:636)
+	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:1005)
+
+2026-09-25 18:41:34.024 [信息] 删除工作流 开始
+2026-09-25 18:41:34.051 [错误] 删除工作流失败
+com.local.comfyuimobile.network.PlatformResponseException: 该服务器不支持此接口（HTTP 404，返回的是网页错误页）
+	at com.local.comfyuimobile.network.ComfyClient.userdataCall(ComfyClient.kt:187)
+	at com.local.comfyuimobile.network.ComfyClient.access$userdataCall(ComfyClient.kt:50)
+	at com.local.comfyuimobile.network.ComfyClient$deleteWorkflow$2.invokeSuspend(ComfyClient.kt:294)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 18:41:34.760 [信息] ComfyUI WebSocket 被反代抬断（HTTP 正常，不影响生图），16 秒后静默重开
+2026-09-25 18:41:35.781 [信息] 删除工作流 开始
+2026-09-25 18:41:35.809 [错误] 删除工作流失败
+com.local.comfyuimobile.network.PlatformResponseException: 该服务器不支持此接口（HTTP 404，返回的是网页错误页）
+	at com.local.comfyuimobile.network.ComfyClient.userdataCall(ComfyClient.kt:187)
+	at com.local.comfyuimobile.network.ComfyClient.access$userdataCall(ComfyClient.kt:50)
+	at com.local.comfyuimobile.network.ComfyClient$deleteWorkflow$2.invokeSuspend(ComfyClient.kt:294)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 18:41:37.880 [信息] 删除工作流 开始
+2026-09-25 18:41:37.912 [错误] 删除工作流失败
+com.local.comfyuimobile.network.PlatformResponseException: 该服务器不支持此接口（HTTP 404，返回的是网页错误页）
+	at com.local.comfyuimobile.network.ComfyClient.userdataCall(ComfyClient.kt:187)
+	at com.local.comfyuimobile.network.ComfyClient.access$userdataCall(ComfyClient.kt:50)
+	at com.local.comfyuimobile.network.ComfyClient$deleteWorkflow$2.invokeSuspend(ComfyClient.kt:294)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 18:41:39.889 [信息] 删除工作流 开始
+2026-09-25 18:41:39.909 [错误] 删除工作流失败
+com.local.comfyuimobile.network.PlatformResponseException: 该服务器不支持此接口（HTTP 404，返回的是网页错误页）
+	at com.local.comfyuimobile.network.ComfyClient.userdataCall(ComfyClient.kt:187)
+	at com.local.comfyuimobile.network.ComfyClient.access$userdataCall(ComfyClient.kt:50)
+	at com.local.comfyuimobile.network.ComfyClient$deleteWorkflow$2.invokeSuspend(ComfyClient.kt:294)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 18:41:43.691 [信息] 预读取工作流：workflows/ComfyUI_3_USD放大.json
+2026-09-25 18:41:43.693 [信息] 工作流加载 开始
+2026-09-25 18:41:43.711 [错误] 工作流加载失败
+java.lang.IllegalStateException: ComfyUI_3_USD放大.json 读不到：这台服务器不提供云端工作流存储，本机也没有保存过它的内容。请回「工作流」页点「打开工作流文件」从手机导入一次，导入后会自动保存在本机，以后直接点开就能用。
+	at com.local.comfyuimobile.MainViewModel.readWorkflowOrGuide(MainViewModel.kt:1906)
+	at com.local.comfyuimobile.MainViewModel.access$readWorkflowOrGuide(MainViewModel.kt:115)
+	at com.local.comfyuimobile.MainViewModel$readWorkflowOrGuide$1.invokeSuspend(Unknown Source:15)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:99)
+	at android.os.Handler.handleCallback(Handler.java:959)
+	at android.os.Handler.dispatchMessage(Handler.java:100)
+	at android.os.Looper.loopOnce(Looper.java:249)
+	at android.os.Looper.loop(Looper.java:337)
+	at android.app.ActivityThread.main(ActivityThread.java:9497)
+	at java.lang.reflect.Method.invoke(Native Method)
+	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:636)
+	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:1005)
+
+2026-09-25 18:41:45.211 [信息] 预读取工作流：workflows/ComfyUI_3_浅空间放大.json
+2026-09-25 18:41:45.213 [信息] 工作流加载 开始
+2026-09-25 18:41:45.240 [错误] 工作流加载失败
+java.lang.IllegalStateException: ComfyUI_3_浅空间放大.json 读不到：这台服务器不提供云端工作流存储，本机也没有保存过它的内容。请回「工作流」页点「打开工作流文件」从手机导入一次，导入后会自动保存在本机，以后直接点开就能用。
+	at com.local.comfyuimobile.MainViewModel.readWorkflowOrGuide(MainViewModel.kt:1906)
+	at com.local.comfyuimobile.MainViewModel.access$readWorkflowOrGuide(MainViewModel.kt:115)
+	at com.local.comfyuimobile.MainViewModel$readWorkflowOrGuide$1.invokeSuspend(Unknown Source:15)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:99)
+	at android.os.Handler.handleCallback(Handler.java:959)
+	at android.os.Handler.dispatchMessage(Handler.java:100)
+	at android.os.Looper.loopOnce(Looper.java:249)
+	at android.os.Looper.loop(Looper.java:337)
+	at android.app.ActivityThread.main(ActivityThread.java:9497)
+	at java.lang.reflect.Method.invoke(Native Method)
+	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:636)
+	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:1005)
+
+2026-09-25 18:41:49.732 [信息] 删除工作流 开始
+2026-09-25 18:41:49.760 [错误] 删除工作流失败
+com.local.comfyuimobile.network.PlatformResponseException: 该服务器不支持此接口（HTTP 404，返回的是网页错误页）
+	at com.local.comfyuimobile.network.ComfyClient.userdataCall(ComfyClient.kt:187)
+	at com.local.comfyuimobile.network.ComfyClient.access$userdataCall(ComfyClient.kt:50)
+	at com.local.comfyuimobile.network.ComfyClient$deleteWorkflow$2.invokeSuspend(ComfyClient.kt:294)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 18:41:51.866 [信息] 删除工作流 开始
+2026-09-25 18:41:52.001 [警告] 服务器拒绝路径里的中文（HTTP 400），改用双重编码重试一次
+com.local.comfyuimobile.network.PlatformResponseException: HTTP 400：Invalid char in url path: b'DELETE /userdata/workflows/ComfyUI_3_USD\xe6\x94\xbe\xe5\xa4\xa7.json HTTP/1.1' ^
+	at com.local.comfyuimobile.network.PlatformResponseGuard.guard(PlatformResponseGuard.kt:109)
+	at com.local.comfyuimobile.network.ComfyClient.executeText(ComfyClient.kt:697)
+	at com.local.comfyuimobile.network.ComfyClient.access$executeText(ComfyClient.kt:50)
+	at com.local.comfyuimobile.network.ComfyClient$deleteWorkflow$2.invokeSuspend$lambda$0(ComfyClient.kt:295)
+	at com.local.comfyuimobile.network.ComfyClient$deleteWorkflow$2.$r8$lambda$2RdsE-0dyBj08dmkyu9zmSjV_yY(Unknown Source:0)
+	at com.local.comfyuimobile.network.ComfyClient$deleteWorkflow$2$$ExternalSyntheticLambda0.invoke(D8$$SyntheticClass:0)
+	at com.local.comfyuimobile.network.ComfyClient.userdataCall(ComfyClient.kt:196)
+	at com.local.comfyuimobile.network.ComfyClient.access$userdataCall(ComfyClient.kt:50)
+	at com.local.comfyuimobile.network.ComfyClient$deleteWorkflow$2.invokeSuspend(ComfyClient.kt:294)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 18:41:52.355 [信息] 删除工作流 完成
+2026-09-25 18:41:52.372 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:41:52.372 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 18:41:52.561 [信息] 每日自动领算力：今日已领过，明天再来
+2026-09-25 18:42:01.574 [信息] 导入工作流 开始
+2026-09-25 18:42:03.667 [信息] 导入工作流 完成
+2026-09-25 18:42:05.151 [信息] ComfyUI WebSocket 被反代抬断（HTTP 正常，不影响生图），30 秒后静默重开
+2026-09-25 18:42:07.198 [信息] 删除工作流 开始
+2026-09-25 18:42:07.534 [信息] 删除工作流 完成
+2026-09-25 18:42:09.814 [信息] 删除工作流 开始
+2026-09-25 18:42:10.114 [信息] 删除工作流 完成
+2026-09-25 18:42:12.067 [信息] 删除工作流 开始
+2026-09-25 18:42:12.357 [信息] 删除工作流 完成
+2026-09-25 18:42:13.198 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:42:13.200 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 18:42:13.354 [信息] 每日自动领算力：今日已领过，明天再来
+2026-09-25 18:42:24.386 [信息] 开始提交生成：workflows/anima+1lora_pt-2.json
+2026-09-25 18:42:24.388 [信息] 提交生成 开始
+2026-09-25 18:42:24.682 [信息] 前端桥接：准备参数，共 25 项
+2026-09-25 18:42:24.684 [信息] 前端桥接：Android 已比较参数，仅应用实际修改，共 2 项
+2026-09-25 18:42:24.685 [信息] 前端桥接阶段：应用参数：UNet加载器/UNet名称（78/unet_name）
+2026-09-25 18:42:24.694 [信息] 前端桥接阶段：应用参数：K采样器（高级）/种子（79/noise_seed）
+2026-09-25 18:42:24.703 [信息] 前端桥接阶段：执行排队前回调
+2026-09-25 18:42:24.713 [信息] 前端桥接阶段：调用官方 graphToPrompt
+2026-09-25 18:42:25.017 [信息] 前端桥接阶段：序列化 Prompt 和工作流
+2026-09-25 18:42:25.019 [信息] 前端桥接：Prompt 已返回 Android，响应=10909 字符
+2026-09-25 18:42:25.022 [信息] Prompt 执行链整理：官方节点=10，根节点命中=10，保留节点=10，完整保留=false
+2026-09-25 18:42:25.235 [信息] 生成任务已加入队列：6a2f4037-b804-4660-9325-ad13cd87e287
+2026-09-25 18:42:25.243 [信息] 后台前台通知已建立：任务=6a2f4037-b804-4660-9325-ad13cd87e287
+2026-09-25 18:42:25.244 [信息] 后台开始监控任务：6a2f4037-b804-4660-9325-ad13cd87e287，工作流=anima+1lora_pt-2.json
+2026-09-25 18:42:25.750 [信息] 提交生成 完成
+2026-09-25 18:42:25.886 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:42:25.888 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 18:42:26.054 [信息] 每日自动领算力：今日已领过，明天再来
+2026-09-25 18:45:02.288 [信息] 后台保存诊断：任务=6a2f4037-b804-4660-9325-ad13cd87e287，服务器=https://aistudio.baidu.com:443/bj-cpu-01/user/20104163/10716006/api_serving/8188，规则已启用=true，历史里解析到=1 项，节点类型=[SaveImage]，符合规则=1 项，已提交任务记录=有
+2026-09-25 18:45:03.206 [信息] 后台任务完成：6a2f4037-b804-4660-9325-ad13cd87e287，总输出=1，失败=0，详情=
+2026-09-25 18:50:09.651 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 18:50:09.947 [信息] AI Studio[算力卡] 响应 321 字：{"id":966594,"resourceTotal":4219,"resourceConsume":6703,"resourceIncome":10920,"resourceFree":4219,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-25 18:48:52","resourceWeekQuotaMap":{"DEV":2880,"DCU":4219,"V1
+2026-09-25 18:50:10.127 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-25 18:50:10.128 [信息] AI Studio 资源：积分=15，算力卡=70.3，A币=0
+2026-09-25 18:50:13.072 [信息] AI Studio 停止请求已提交：项目=10716006
+2026-09-25 18:50:13.312 [信息] AI Studio[项目列表] 响应 1359 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-25 18:50:13.314 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 18:50:16.011 [信息] 控制台：终端断开（连接中断）
+2026-09-25 18:50:17.684 [信息] AI Studio[项目列表] 响应 1359 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-25 18:50:18.758 [信息] 读取终端列表：HTTP 200 text/html;charset=UTF-8（经重定向 302 → https://aistudio.baidu.com/aistudio/projectdetail/10716006）
+2026-09-25 18:50:18.761 [信息] 终端列表响应：<!doctype html>
+<html lang="zh-cmn-Hans-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>飞桨AI Studio星河社区-人工智能学习与实训社区</title>
+    <meta name="keywords" content="PaddlePaddle AI Studio,飞桨星河社区, 人工智能, 数据科学, 数据集, 模型库,比赛, 开源算法, 免费算力,大模型社区">
+    <meta name="description" content="飞桨星河社区是面向AI学习者的人工智能学习与实训社区
+2026-09-25 18:50:21.701 [信息] AI Studio[项目列表] 响应 1360 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-25 18:50:21.702 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 18:50:21.917 [信息] AI Studio[项目列表] 响应 1360 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-25 18:50:21.921 [信息] AI Studio 项目状态已更新：10716006 running=false
+2026-09-25 18:50:24.451 [信息] 读取终端列表：HTTP 200 text/html;charset=UTF-8（经重定向 302 → https://aistudio.baidu.com/aistudio/projectdetail/10716006）
+2026-09-25 18:50:24.453 [信息] 终端列表响应：<!doctype html>
+<html lang="zh-cmn-Hans-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>飞桨AI Studio星河社区-人工智能学习与实训社区</title>
+    <meta name="keywords" content="PaddlePaddle AI Studio,飞桨星河社区, 人工智能, 数据科学, 数据集, 模型库,比赛, 开源算法, 免费算力,大模型社区">
+    <meta name="description" content="飞桨星河社区是面向AI学习者的人工智能学习与实训社区
+2026-09-25 18:54:25.839 [信息] 读取终端列表：HTTP 200 text/html;charset=UTF-8（经重定向 302 → https://aistudio.baidu.com/aistudio/projectdetail/10716006）
+2026-09-25 18:54:25.841 [信息] 终端列表响应：<!doctype html>
+<html lang="zh-cmn-Hans-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>飞桨AI Studio星河社区-人工智能学习与实训社区</title>
+    <meta name="keywords" content="PaddlePaddle AI Studio,飞桨星河社区, 人工智能, 数据科学, 数据集, 模型库,比赛, 开源算法, 免费算力,大模型社区">
+    <meta name="description" content="飞桨星河社区是面向AI学习者的人工智能学习与实训社区
+2026-09-25 19:09:26.314 [信息] 读取终端列表：HTTP 200 text/html;charset=UTF-8（经重定向 302 → https://aistudio.baidu.com/aistudio/projectdetail/10716006）
+2026-09-25 19:09:26.319 [信息] 终端列表响应：<!doctype html>
+<html lang="zh-cmn-Hans-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>飞桨AI Studio星河社区-人工智能学习与实训社区</title>
+    <meta name="keywords" content="PaddlePaddle AI Studio,飞桨星河社区, 人工智能, 数据科学, 数据集, 模型库,比赛, 开源算法, 免费算力,大模型社区">
+    <meta name="description" content="飞桨星河社区是面向AI学习者的人工智能学习与实训社区
+2026-09-25 19:35:22.956 [信息] 应用启动，日志记录=开启
+2026-09-25 19:35:22.966 [信息] 系统历史退出：时间=2026-09-25 19:35:19.204，原因=软件更新，进程=com.local.comfyuimobile.debug，PID=7852，状态=0，重要性=125，PSS=339269KB，RSS=381664KB，描述=stop com.local.comfyuimobile.debug due to installPackageLI
+2026-09-25 19:35:22.968 [信息] 系统历史退出：时间=2026-09-25 19:35:19.212，原因=其他(13)，进程=com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0，PID=18976，状态=0，重要性=300，PSS=222353KB，RSS=207868KB，描述=[ISOLATED NOT NEEDED] isolated not needed
+2026-09-25 19:35:23.268 [信息] WebView 运行时（初始化）：包=com.google.android.webview，版本=153.0.8010.36
+2026-09-25 19:35:24.364 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 19:35:24.365 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 19:35:24.538 [信息] 每日自动领算力：今日已领过，明天再来
+2026-09-25 19:35:25.107 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 19:35:25.250 [信息] AI Studio[项目列表] 响应 1360 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-25 19:35:25.251 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 19:35:25.322 [信息] AI Studio[算力卡] 响应 321 字：{"id":966594,"resourceTotal":4217,"resourceConsume":6705,"resourceIncome":10920,"resourceFree":4217,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-25 18:50:17","resourceWeekQuotaMap":{"DEV":2880,"DCU":4217,"V1
+2026-09-25 19:35:25.455 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-25 19:35:25.457 [信息] AI Studio 资源：积分=15，算力卡=70.3，A币=0
+2026-09-25 20:25:04.778 [信息] 应用启动，日志记录=开启
+2026-09-25 20:25:04.789 [信息] 系统历史退出：时间=2026-09-25 20:24:55.423，原因=软件更新，进程=com.local.comfyuimobile.debug，PID=10311，状态=0，重要性=400，PSS=176391KB，RSS=160940KB，描述=stop com.local.comfyuimobile.debug due to installPackageLI
+2026-09-25 20:25:04.791 [信息] 系统历史退出：时间=2026-09-25 20:24:55.429，原因=其他(13)，进程=com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0，PID=11502，状态=0，重要性=300，PSS=15519KB，RSS=92912KB，描述=[ISOLATED NOT NEEDED] isolated not needed
+2026-09-25 20:25:05.049 [信息] WebView 运行时（初始化）：包=com.google.android.webview，版本=153.0.8010.36
+2026-09-25 20:25:07.664 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 20:25:07.666 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 20:25:07.992 [信息] 每日自动领算力：今日已领过，明天再来
+2026-09-25 20:25:08.167 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":15,"continuousSingCount":5,"isFinishSign":1}
+2026-09-25 20:25:08.318 [信息] AI Studio[项目列表] 响应 1360 字：{"page":1,"data":[{"projectId":10716006,"privateKey":null,"projectName":"1","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20104163,"createTime":"2026-09-21 01
+2026-09-25 20:25:08.319 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 20:25:08.557 [信息] AI Studio[算力卡] 响应 321 字：{"id":966594,"resourceTotal":4217,"resourceConsume":6705,"resourceIncome":10920,"resourceFree":4217,"resourcePay":0,"quanyiMaxWeekQuota":{"DEV":2880,"DCU":0,"V100":2880,"A100":240},"createTime":"2026-07-13 15:15:31","updateTime":"2026-09-25 18:50:17","resourceWeekQuotaMap":{"DEV":2880,"DCU":4217,"V1
+2026-09-25 20:25:08.818 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-25 20:25:08.819 [信息] AI Studio 资源：积分=15，算力卡=70.3，A币=0
+2026-09-25 20:26:49.820 [信息] AI Studio 登录完成：Cookie 长度=575，bdToken=未取到，uid=未取到，昵称=未取到
+2026-09-25 20:26:50.651 [警告] 读取 AI Studio 账号信息失败（仍按登录成功保存）
+com.local.comfyuimobile.network.AiStudioException: 读取账号信息失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 20:26:50.659 [信息] AI Studio 账号已保存：未命名账号（UID=未知）
+2026-09-25 20:26:50.950 [信息] AI Studio[积分] 响应 57 字：{"totalPoint":9,"continuousSingCount":0,"isFinishSign":0}
+2026-09-25 20:26:51.012 [信息] AI Studio[项目列表] 响应 1366 字：{"page":1,"data":[{"projectId":10707054,"privateKey":null,"projectName":"comfyui","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20222217,"createTime":"2026-09
+2026-09-25 20:26:51.013 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 20:26:51.066 [信息] AI Studio[积分] 响应 57 字：{"totalPoint":9,"continuousSingCount":0,"isFinishSign":0}
+2026-09-25 20:26:51.092 [信息] AI Studio[积分] 响应 57 字：{"totalPoint":9,"continuousSingCount":0,"isFinishSign":0}
+2026-09-25 20:26:51.288 [警告] 读取算力卡失败：读取算力失败：没有权限（错误码 403）
+2026-09-25 20:26:51.367 [信息] 每日自动签到成功：未命名账号
+2026-09-25 20:26:51.405 [警告] 读取算力卡失败：读取算力失败：没有权限（错误码 403）
+2026-09-25 20:26:51.567 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-25 20:26:51.570 [信息] AI Studio 资源：积分=9，算力卡=未知，A币=0
+2026-09-25 20:26:51.680 [警告] 每日自动领算力失败（不影响其它功能）
+com.local.comfyuimobile.network.AiStudioException: 领取算力失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 20:26:51.681 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-25 20:26:51.682 [信息] AI Studio 资源：积分=9，算力卡=未知，A币=0
+2026-09-25 20:26:54.420 [信息] AI Studio 签到成功：未命名账号
+2026-09-25 20:26:54.825 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":10,"continuousSingCount":1,"isFinishSign":1}
+2026-09-25 20:26:54.826 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 20:26:55.154 [警告] 每日自动领算力失败（不影响其它功能）
+com.local.comfyuimobile.network.AiStudioException: 领取算力失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 20:26:59.680 [信息] AI Studio 签到成功：未命名账号
+2026-09-25 20:27:00.126 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":10,"continuousSingCount":1,"isFinishSign":1}
+2026-09-25 20:27:00.128 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 20:27:00.444 [警告] 每日自动领算力失败（不影响其它功能）
+com.local.comfyuimobile.network.AiStudioException: 领取算力失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 20:27:06.873 [信息] AI Studio 签到成功：未命名账号
+2026-09-25 20:27:07.235 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":10,"continuousSingCount":1,"isFinishSign":1}
+2026-09-25 20:27:07.237 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 20:27:07.679 [警告] 每日自动领算力失败（不影响其它功能）
+com.local.comfyuimobile.network.AiStudioException: 领取算力失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 20:27:21.676 [信息] AI Studio[项目列表] 响应 1366 字：{"page":1,"data":[{"projectId":10707054,"privateKey":null,"projectName":"comfyui","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20222217,"createTime":"2026-09
+2026-09-25 20:27:21.677 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 20:27:23.646 [信息] AI Studio[项目列表] 响应 1366 字：{"page":1,"data":[{"projectId":10707054,"privateKey":null,"projectName":"comfyui","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20222217,"createTime":"2026-09
+2026-09-25 20:27:23.648 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 20:39:58.195 [信息] 应用启动，日志记录=开启
+2026-09-25 20:39:58.208 [信息] 系统历史退出：时间=2026-09-25 20:37:53.241，原因=用户或系统请求停止，进程=com.local.comfyuimobile.debug，PID=20487，状态=0，重要性=400，PSS=236045KB，RSS=309028KB，描述=[FORCE STOP] stop com.local.comfyuimobile.debug due to LockScreenClean
+2026-09-25 20:39:58.210 [信息] 系统历史退出：时间=2026-09-25 20:37:53.259，原因=其他(13)，进程=com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0，PID=22242，状态=0，重要性=300，PSS=82338KB，RSS=238256KB，描述=[ISOLATED NOT NEEDED] isolated not needed
+2026-09-25 20:39:58.439 [信息] WebView 运行时（初始化）：包=com.google.android.webview，版本=153.0.8010.36
+2026-09-25 20:39:59.180 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":10,"continuousSingCount":1,"isFinishSign":1}
+2026-09-25 20:39:59.181 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 20:39:59.416 [警告] 每日自动领算力失败（不影响其它功能）
+com.local.comfyuimobile.network.AiStudioException: 领取算力失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 20:40:00.255 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":10,"continuousSingCount":1,"isFinishSign":1}
+2026-09-25 20:40:00.529 [警告] 读取算力卡失败：读取算力失败：没有权限（错误码 403）
+2026-09-25 20:40:00.682 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-25 20:40:00.686 [信息] AI Studio 资源：积分=10，算力卡=未知，A币=0
+2026-09-25 20:40:01.210 [信息] AI Studio[项目列表] 响应 1366 字：{"page":1,"data":[{"projectId":10707054,"privateKey":null,"projectName":"comfyui","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20222217,"createTime":"2026-09
+2026-09-25 20:40:01.212 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 22:08:54.176 [信息] 应用启动，日志记录=开启
+2026-09-25 22:08:54.186 [信息] 系统历史退出：时间=2026-09-25 21:57:09.491，原因=用户或系统请求停止，进程=com.local.comfyuimobile.debug，PID=20488，状态=0，重要性=400，PSS=204964KB，RSS=191684KB，描述=[FORCE STOP] stop com.local.comfyuimobile.debug due to LockScreenClean
+2026-09-25 22:08:54.188 [信息] 系统历史退出：时间=2026-09-25 21:57:09.503，原因=其他(13)，进程=com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0，PID=28009，状态=0，重要性=300，PSS=13810KB，RSS=92236KB，描述=[ISOLATED NOT NEEDED] isolated not needed
+2026-09-25 22:08:54.541 [信息] WebView 运行时（初始化）：包=com.google.android.webview，版本=153.0.8010.36
+2026-09-25 22:08:55.297 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":10,"continuousSingCount":1,"isFinishSign":1}
+2026-09-25 22:08:55.297 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 22:08:55.511 [警告] 每日自动领算力失败（不影响其它功能）
+com.local.comfyuimobile.network.AiStudioException: 领取算力失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 22:10:10.192 [信息] 应用启动，日志记录=开启
+2026-09-25 22:10:10.204 [信息] 系统历史退出：时间=2026-09-25 22:08:59.942，原因=其他(13)，进程=com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0，PID=25660，状态=0，重要性=400，PSS=0KB，RSS=0KB，描述=SwipeUpClean
+2026-09-25 22:10:10.206 [信息] 系统历史退出：时间=2026-09-25 22:08:59.949，原因=用户或系统请求停止，进程=com.local.comfyuimobile.debug，PID=28200，状态=0，重要性=400，PSS=0KB，RSS=0KB，描述=[FORCE STOP] stop com.local.comfyuimobile.debug due to SwipeUpClean
+2026-09-25 22:10:10.481 [信息] WebView 运行时（初始化）：包=com.google.android.webview，版本=153.0.8010.36
+2026-09-25 22:10:11.420 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":10,"continuousSingCount":1,"isFinishSign":1}
+2026-09-25 22:10:11.421 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 22:10:11.685 [警告] 每日自动领算力失败（不影响其它功能）
+com.local.comfyuimobile.network.AiStudioException: 领取算力失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 22:10:14.152 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":10,"continuousSingCount":1,"isFinishSign":1}
+2026-09-25 22:10:14.200 [信息] AI Studio[项目列表] 响应 1366 字：{"page":1,"data":[{"projectId":10707054,"privateKey":null,"projectName":"comfyui","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20222217,"createTime":"2026-09
+2026-09-25 22:10:14.201 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 22:10:14.355 [警告] 读取算力卡失败：读取算力失败：没有权限（错误码 403）
+2026-09-25 22:10:14.508 [信息] AI Studio[A币] 响应 29 字：{"coinNum":0,"coinNumShow":0}
+2026-09-25 22:10:14.511 [信息] AI Studio 资源：积分=10，算力卡=未知，A币=0
+2026-09-25 22:10:16.919 [错误] 领取算力失败
+com.local.comfyuimobile.network.AiStudioException: 领取算力失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 22:10:21.943 [错误] 领取算力失败
+com.local.comfyuimobile.network.AiStudioException: 领取算力失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 22:10:33.565 [错误] 读取可用算力失败
+com.local.comfyuimobile.network.AiStudioException: 读取可用算力失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 22:10:36.570 [警告] 启动校验预检失败（按免校验继续）: 检查启动校验失败：没有权限（错误码 403）
+2026-09-25 22:10:36.782 [错误] 启动失败
+com.local.comfyuimobile.network.AiStudioException: 启动环境失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 22:10:41.221 [信息] AI Studio[项目列表] 响应 1366 字：{"page":1,"data":[{"projectId":10707054,"privateKey":null,"projectName":"comfyui","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20222217,"createTime":"2026-09
+2026-09-25 22:10:41.222 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 22:10:42.136 [警告] 启动校验预检失败（按免校验继续）: 检查启动校验失败：没有权限（错误码 403）
+2026-09-25 22:10:42.316 [错误] 启动失败
+com.local.comfyuimobile.network.AiStudioException: 启动环境失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 22:10:43.463 [警告] 启动校验预检失败（按免校验继续）: 检查启动校验失败：没有权限（错误码 403）
+2026-09-25 22:10:43.647 [错误] 启动失败
+com.local.comfyuimobile.network.AiStudioException: 启动环境失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 22:10:44.776 [信息] AI Studio[项目列表] 响应 1366 字：{"page":1,"data":[{"projectId":10707054,"privateKey":null,"projectName":"comfyui","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20222217,"createTime":"2026-09
+2026-09-25 22:10:44.777 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 22:10:48.256 [错误] 领取算力失败
+com.local.comfyuimobile.network.AiStudioException: 领取算力失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 22:10:51.039 [信息] AI Studio 签到成功：未命名账号
+2026-09-25 22:10:51.245 [信息] AI Studio[积分] 响应 58 字：{"totalPoint":10,"continuousSingCount":1,"isFinishSign":1}
+2026-09-25 22:10:51.246 [信息] 每日自动签到：今天已签过，跳过
+2026-09-25 22:10:51.463 [警告] 每日自动领算力失败（不影响其它功能）
+com.local.comfyuimobile.network.AiStudioException: 领取算力失败：没有权限（错误码 403）
+	at com.local.comfyuimobile.network.AiStudioProtocol.unwrap(AiStudioProtocol.kt:82)
+	at com.local.comfyuimobile.network.AiStudioClient$request$2.invokeSuspend(AiStudioClient.kt:302)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:113)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:89)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:589)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:823)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:720)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:707)
+
+2026-09-25 22:27:44.717 [信息] AI Studio[项目列表] 响应 1366 字：{"page":1,"data":[{"projectId":10707054,"privateKey":null,"projectName":"comfyui","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20222217,"createTime":"2026-09
+2026-09-25 22:27:44.720 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 22:27:45.532 [信息] AI Studio[项目列表] 响应 1366 字：{"page":1,"data":[{"projectId":10707054,"privateKey":null,"projectName":"comfyui","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20222217,"createTime":"2026-09
+2026-09-25 22:27:45.533 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 22:27:45.953 [信息] AI Studio[项目列表] 响应 1366 字：{"page":1,"data":[{"projectId":10707054,"privateKey":null,"projectName":"comfyui","projectAbs":"","projectType":1,"projectDataset":[],"projectEnvironment":2,"projectFramework":44,"projectEnvText":null,"projectFraText":null,"pythonVersion":"","paddleVersion":"","userId":20222217,"createTime":"2026-09
+2026-09-25 22:27:45.954 [信息] AI Studio 项目列表：1 个（共 1）
+2026-09-25 22:27:49.090 [信息] 检查更新 开始

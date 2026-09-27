@@ -1,0 +1,16 @@
+{
+    "permissions": {
+        "allow": [
+            "editFile",
+            "Bash(cd)",
+            "Bash(python3)",
+            "Bash(for)",
+            "Bash(do)",
+            "Bash(done)",
+            "Bash(echo)",
+            "Bash(grep)",
+            "Bash(git diff)"
+        ],
+        "deny": []
+    }
+}

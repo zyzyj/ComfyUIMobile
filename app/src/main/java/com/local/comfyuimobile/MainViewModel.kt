@@ -224,6 +224,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 启动后的状态轮询任务。用户点「停止」时要把它取消——否则它会把“平台把
      * running 退回 false”误判成“分配失败”（那其实是用户自己停的）。 */
     private var aiStudioStartPollJob: Job? = null
+    /**
+     * 刚在内存里切好、还没落盘的账号 id（v0.2.46）。
+     *
+     * `persistAiStudio` 是另起协程写的，而 DataStore 的 `settings` 每写一次任意字段
+     * 就会发射一次。以前 collect 里无条件用磁盘快照覆盖 `activeAccountId`，于是刚切
+     * 完账号，任何一次无关写入（改服务器地址、更新检查时间戳、Cookie 防抖落盘……）
+     * 都会把界面打回上一个账号。这里记下"内存领先磁盘"这件事，等落盘完成再解除。
+     */
+    @Volatile private var pendingAccountId: String? = null
 
     init {
         viewModelScope.launch {
@@ -273,7 +282,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         llmConfig = stored.llmConfig,
                         aiStudio = _state.value.aiStudio.copy(
                             accounts = stored.aiStudioAccounts,
-                            activeAccountId = stored.aiStudioActiveId.ifBlank { null },
+                            // v0.2.46：账号字段跟 serverInput 一样需要"内存领先磁盘"的
+                            // 保护。刚切完账号、落盘还没完成时，任何一次无关的 DataStore
+                            // 写入都会把 activeAccountId 盖回上一个账号——表现为"切了
+                            // 又跳回去"，随后的启动 GPU / 签到 / 拉项目全打到旧账号上。
+                            activeAccountId = pendingAccountId
+                                ?: stored.aiStudioActiveId.ifBlank { null },
                             consoleQuickCommands = stored.consoleQuickCommands,
                             consoleThemeId = stored.consoleThemeId,
                         ),
@@ -590,7 +604,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val accounts = panel.accounts.map {
             if (it.id == accountId) it.copy(lastUsedAt = System.currentTimeMillis()) else it
         }
+        // v0.2.46：切账号前先把上一个账号还在跑的刷新/拉取取消掉。以前这些协程
+        // 回来时会无条件写 _state，于是"切到 B 之后，A 的积分和项目列表又盖回来"。
+        aiStudioActionJob?.cancel()
+        aiStudioProjectJob?.cancel()
+        aiStudioStartPollJob?.cancel()
+        aiStudioActionJob = null
+        aiStudioProjectJob = null
+        aiStudioStartPollJob = null
+        // v0.2.46：身份残留。终端还连在旧账号的机器上，CookieJar 里也是旧账号的
+        // 项目级 Cookie（ide-proxy / user-*），不清掉的话新账号的请求会混着旧身份，
+        // 轻则 403 / 登录墙，重则打到旧账号的实例上。
+        aiStudioDisconnectConsole()
+        kernelClient.clearProjectCookies()
         persistAiStudio(accounts, accountId)
+        // 标记"内存刚改过、还在等落盘"：这期间 DataStore 的其它字段发射不能拿
+        // 磁盘上的旧账号把内存盖回去（见 init 里的 settings.collect）。
+        pendingAccountId = accountId
         _state.update { it.copy(aiStudio = clearedAccountPanel(panel, accounts, accountId)) }
     }
 
@@ -748,6 +778,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 三个接口各自独立：任何一个失败都不影响其它两个——否则积分接口一改版，
      * 算力卡也跟着显示不出来。失败只记日志，界面上对应那块显示「—」。
      */
+    /**
+     * 这个 id 还是当前账号吗（v0.2.46）。
+     *
+     * 面板刷新的网络请求是异步的，发出去之后用户可能已经切了账号。以前协程回来时
+     * 无条件写 `_state`，于是"切到 B 之后，A 的积分 / 算力卡 / 项目列表又盖回面板"。
+     * 写回前用这个核对一次身份。
+     */
+    private fun isActiveAiStudioAccount(accountId: String): Boolean {
+        val panel = _state.value.aiStudio
+        return panel.activeAccountId == accountId && panel.accounts.any { it.id == accountId }
+    }
+
     fun aiStudioRefreshAccount() {
         val account = _state.value.aiStudio.activeAccount() ?: return
         viewModelScope.launch {
@@ -769,6 +811,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     AppLogger.warn("读取 AI Studio A币失败", error)
                 }
                 .getOrNull()
+            // v0.2.46：请求发出去之后用户可能已经切了账号。这些协程回来时无条件写
+            // _state，于是"切到 B，A 的积分又盖回面板上"。写回前核对一下账号。
+            if (!isActiveAiStudioAccount(account.id)) return@launch
             // 签到状态优先用平台返回的 isFinishSign；拿不到才退回本机记录的日期。
             val lastSign = account.lastSignInAt
             val signedTodayLocal = lastSign > 0L &&
@@ -1326,13 +1371,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun aiStudioLoadProjects(silent: Boolean = false) {
         val account = _state.value.aiStudio.activeAccount() ?: return
-        if (aiStudioProjectJob?.isActive == true) return
+        // v0.2.46：旧 job 还在跑时不能简单 return——那样切账号后新账号这次拉取会被
+        // 直接丢掉，面板一直空着。旧 job 属于上一个账号，取消它再拉新的。
+        if (aiStudioProjectJob?.isActive == true) {
+            if (!silent && _state.value.aiStudio.projects.isNotEmpty()) return
+            aiStudioProjectJob?.cancel()
+            aiStudioProjectJob = null
+        }
         if (!silent) {
             _state.update { it.copy(aiStudio = it.aiStudio.copy(loadingProjects = true, error = null)) }
         }
         aiStudioProjectJob = viewModelScope.launch {
             runCatching { aiStudio.listProjects(account) }
                 .onSuccess { page ->
+                    // v0.2.46：拉列表期间可能已经切了账号，别把旧账号的项目写进新面板。
+                    if (!isActiveAiStudioAccount(account.id)) return@launch
                     AppLogger.info("AI Studio 项目列表：${page.projects.size} 个（共 ${page.total}）")
                     _state.update {
                         it.copy(
@@ -1603,6 +1656,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { aiStudio.stopProject(account, projectId) }
                 .onSuccess {
                     AppLogger.info("AI Studio 停止请求已提交：项目=$projectId")
+                    // v0.2.46：机器回收后旧的 ide-proxy 就失效了，但它的名字还在
+                    // CookieJar 里，`hasProjectCookies()` 仍返回 true——下次启动 GPU
+                    // 会跳过预热、带着失效的身份去连 api_serving。停掉就清掉。
+                    kernelClient.clearProjectCookies()
                     _state.update {
                         it.copy(
                             aiStudio = it.aiStudio.copy(
@@ -1626,6 +1683,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun persistAiStudio(accounts: List<AiStudioAccount>, activeId: String?) {
         viewModelScope.launch {
             runCatching { preferences.saveAiStudioAccounts(accounts, activeId.orEmpty()) }
+                .onSuccess {
+                    // 磁盘已经是新账号了，解除"内存领先于磁盘"的保护。
+                    if (pendingAccountId == activeId) pendingAccountId = null
+                }
                 .onFailure { AppLogger.error("保存 AI Studio 账号失败", it) }
         }
     }
@@ -2035,17 +2096,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 服务器读成功时两边一起刷新，直连 ComfyUI 的行为跟以前完全一样。
      */
     private suspend fun readWorkflowWithFallback(serverUrl: String, path: String): String {
+        // v0.2.46：未连接导入的工作流存在本机作用域下，读的时候要走同一个 key。
+        val scope = snapshotScopeFor(serverUrl)
         // v0.1.85：进程内缓存命中就直接返回。工作流正文在一次会话里不会自己变
         // （重新导入时走 put 覆盖），以前命中了还照发一次 HTTP，等于每次点开工作流都
         // 要多付一个往返——在 AI Studio 上还会因为中文路径被网关 400 打回、再双重编码
         // 重试一次，白白多花时间。
-        WorkflowContentCache[serverUrl, path]?.let { return it }
-        val cached = runCatching { workflowSnapshots.read(serverUrl, path) }.getOrNull()
+        WorkflowContentCache[scope, path]?.let { return it }
+        val cached = runCatching { workflowSnapshots.read(scope, path) }.getOrNull()
         // v0.1.85：已经确认这台服务器不提供云端工作流存储（AI Studio 这类反代对
         // /userdata 永远 404/400，日志里"服务器上读不到 xxx"反复出现就是这么来的），
         // 就别再发一次注定失败的请求了，直接用本机快照。
         if (cached != null && bridge?.serverWorkflowStoreAvailable == false) {
             return cached
+        }
+        // v0.2.46：没有服务器地址（未连接 / 只存在本机的工作流）时不要去请求服务器——
+        // 空 baseUrl 会让 OkHttp 以 IllegalArgumentException 崩掉，白等一轮。
+        if (serverUrl.isBlank()) {
+            return cached ?: error("本机没有保存过这个工作流的内容")
         }
         // 不能写成 runCatching{}.onSuccess{ cacheWorkflowContent(...) }：
         // onSuccess 的 lambda 不是 suspend 上下文，里面调不了挂起函数。
@@ -2066,11 +2134,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 把工作流正文写进两级缓存：内存（立即）+ 磁盘快照（尽力而为）。 */
     private suspend fun cacheWorkflowContent(serverUrl: String, path: String, json: String) {
-        if (serverUrl.isBlank() || path.isBlank() || json.isBlank()) return
-        WorkflowContentCache.put(serverUrl, path, json)
-        runCatching { workflowSnapshots.write(serverUrl, path, json) }
+        val scope = serverUrl.ifBlank { WorkflowSnapshotStore.LOCAL_SCOPE }
+        if (path.isBlank() || json.isBlank()) return
+        WorkflowContentCache.put(scope, path, json)
+        runCatching { workflowSnapshots.write(scope, path, json) }
             .onFailure { AppLogger.warn("工作流本地快照写入失败（不影响使用）", it) }
     }
+
+    /**
+     * 工作流快照按「服务器」分域；未连接时用统一的本机作用域，保证导入能落盘。
+     */
+    private fun snapshotScope(): String = snapshotScopeFor(_state.value.activeServer?.baseUrl)
+
+    private fun snapshotScopeFor(serverUrl: String?): String =
+        serverUrl.orEmpty().ifBlank { WorkflowSnapshotStore.LOCAL_SCOPE }
 
     /**
      * 读工作流正文；读不到且本机也没存过内容时，报一条"该怎么办"的指引。
@@ -3569,22 +3646,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // 未连接时也能导入；只有 AVIF 仍交给隐藏 WebView 的前端解析（少见且
                     // 原生实现成本高）。原生解析失败时对 WebP 再回退一次到前端，
                     // 兼顾兼容性。
+                    //
+                    // v0.2.46：判格式的优先级是 MIME > 扩展名 > 文件头。以前扩展名排前面，
+                    // 而分享进来又常常拿不到真实文件名（兜底成 shared-image.png），于是
+                    // 一张 image/webp 会被当成 PNG 读，死在 PNG 签名校验上。
+                    val declaredMime = mimeType.orEmpty().substringBefore(';').trim().lowercase()
                     val nativeKind = when {
-                        extension == "png" || mimeType.equals("image/png", ignoreCase = true) -> "png"
-                        extension == "webp" || mimeType.equals("image/webp", ignoreCase = true) -> "webp"
-                        else -> null
+                        declaredMime == "image/png" -> "png"
+                        declaredMime == "image/webp" -> "webp"
+                        extension == "png" -> "png"
+                        extension == "webp" -> "webp"
+                        else -> WorkflowImageReader.detectKind(app.contentResolver.openInputStream(uri))
                     }
                     val native = nativeKind?.let { kind ->
                         withContext(Dispatchers.IO) {
                             runCatching {
                                 app.contentResolver.openInputStream(uri)?.use { WorkflowImageReader.readWorkflow(it, kind) }
                                     ?: error("无法读取所选图片")
-                            }.getOrNull()
+                            }
                         }
                     }
+                    // 未连接时前端那个隐藏 WebView 里根本没加载 ComfyUI 页面，
+                    // extractWorkflowFromImage 一进去就是 awaitReady(90s)，用户要干等
+                    // 一分半才看到一句「前端桥接超时」，而真实原因（图里没有工作流 /
+                    // 不是这个格式）被吞掉了。未连接就直接把原生解析的错误抛出来。
+                    val frontendUsable = bridge != null && _state.value.status == ConnectionStatus.CONNECTED
                     when {
-                        native != null -> native
-                        nativeKind != null && bridge == null -> error("无法读取所选图片里的工作流")
+                        native == null -> error(
+                            "未连接服务器时无法解析这种图片（AVIF 需要先连接服务器）"
+                        )
+                        native.isSuccess -> native.getOrThrow()
+                        !frontendUsable -> error(native.exceptionOrNull()?.message ?: "无法读取所选图片里的工作流")
                         else -> (bridge ?: error("前端桥接不可用")).extractWorkflowFromImage(uri, mimeType, filename)
                     }
                 } else {
@@ -3609,7 +3701,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 不支持（AI Studio 等返回 404/400）时降级为仅本地加载，不中断导入。
                 val baseName = safeName.substringBeforeLast(".json", safeName)
                 var candidateName = safeName
-                val entry = if (bridge?.serverWorkflowStoreAvailable == true) {
+                // v0.2.46：未连接时一律走本地分支。以前只看
+                // `bridge?.serverWorkflowStoreAvailable`（默认 true），于是会拿空
+                // baseUrl 去请求 `/v2/userdata?...`——OkHttp 对无 scheme 的 URL 抛
+                // IllegalArgumentException，而这里只 catch IllegalStateException，
+                // 异常直接冒出去变成「导入工作流失败」，内容一行都没存下。
+                val connected = _state.value.status == ConnectionStatus.CONNECTED &&
+                    _state.value.activeServer?.baseUrl.orEmpty().isNotBlank()
+                val entry = if (connected && bridge?.serverWorkflowStoreAvailable == true) {
                     // 服务器支持云端工作流管理：先检查重名再写入服务器。
                     try {
                         val existingPaths = client.listWorkflows().mapTo(mutableSetOf()) { it.path }
@@ -3623,19 +3722,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         if (!isUserdataUnavailable(error)) throw error
                         AppLogger.warn("服务器不支持云端工作流，导入降级为仅本地加载", error)
                         localOnlyEntry(candidateName, json)
+                    } catch (error: IllegalArgumentException) {
+                        // v0.2.46：地址为空这类非法 URL 也降级本地，不要让整个导入失败。
+                        AppLogger.warn("服务器地址不可用，导入降级为仅本地加载", error)
+                        localOnlyEntry(candidateName, json)
                     }
                 } else {
                     // v0.1.72：已知这台服务器不开放 /userdata（AI Studio 等反向代理）。
                     // 以前这里也会先白跑一遍 listWorkflows + writeWorkflow——在代理上这
                     // 两发请求是必败的，中文文件名还会额外打一条 400 到日志，然后才降级。
                     // 现在直接本地化，不浪费那两发注定失败的请求。
-                    AppLogger.info("此服务器不提供云端工作流存储，导入直接保存在本机")
+                    AppLogger.info("此服务器不提供云端工作流存储（或尚未连接），导入直接保存在本机")
                     // v0.2.43：本机同名时也加后缀。以前本地分支不查重，两次导入同一个
                     // 文件名会写到同一份快照上、互相覆盖（用户反馈"导入两个，第一个
                     // 消失"）。服务器分支早就有这段去重，本地分支漏了。
-                    val existingLocal = runCatching {
-                        workflowSnapshots.list(_state.value.activeServer?.baseUrl.orEmpty())
-                    }.getOrElse { emptyList() }
+                    val existingLocal = runCatching { workflowSnapshots.list(snapshotScope()) }
+                        .getOrElse { emptyList() }
                     var copyNumber = 2
                     while (existingLocal.any { it.path == "workflows/$candidateName" }) {
                         candidateName = "$baseName-$copyNumber.json"
@@ -3645,11 +3747,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 // 内存 + 磁盘各存一份：AI Studio 上服务器那份永远读不回来，
                 // 只放内存的话杀掉 App 再进就又打不开了。
-                cacheWorkflowContent(
-                    _state.value.activeServer?.baseUrl.orEmpty(),
-                    entry.path,
-                    json.toString(),
-                )
+                cacheWorkflowContent(snapshotScope(), entry.path, json.toString())
                 // v0.2.34：导入先落盘并清掉 loading 遮罩，用户立刻能看到工作流已进列表。
                 // 以前这里会卡在下面的 loadWorkflow——它要等前端桥接，页面在重载时
                 // 最多要耗 3×20 秒，期间全屏遮罩挂着，用户感觉就是“添加工作流会卡顿”。
@@ -4341,20 +4439,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun openSocket() {
         client.openWebSocket(
             clientId = clientId,
-            onOpen = {
-                reconnectJob?.cancel()
-                // v0.2.34：连上了就把退避重置回最小。以前退避只涨不落：每被反代抬断一次
-                // 就翻倍，涨到 30 秒封顶后永远停在 30 秒。于是每次断线都要干等半分钟才
-                // 重开，期间收不到任何 progress / execution_success 事件——用户看到的就是
-                // “通知栏进度长时间不动、服务器已出图 App 还显示在跑”。连上就归零，
-                // 下次掉线又能立即重连。
-                wsReconnectBackoffMs = WS_RECONNECT_MIN_MS
-                lastWsBackoffLoggedMs = 0L
-                _state.update { it.copy(status = ConnectionStatus.CONNECTED, connectionMessage = "已连接 ${it.activeServer?.name.orEmpty()}") }
-            },
+            onOpen = ::onComfySocketOpen,
             onMessage = ::handleSocketMessage,
             onFailure = { scheduleReconnect() },
         )
+    }
+
+    /**
+     * Comfy WebSocket 建连成功。
+     *
+     * v0.2.46：断开后迟到的 onOpen 不能把状态打回「已连接」。disconnect() 已经清掉
+     * activeServer 并置 DISCONNECTED，此时再写 CONNECTED 会让顶栏撒谎——用户看到
+     * 「已连接」，实际既没有服务器也没有可用 socket。（ComfyClient 侧还有一层按
+     * socket 身份的判断，这里是第二道防线。）
+     */
+    private fun onComfySocketOpen() {
+        if (_state.value.activeServer == null) {
+            AppLogger.info("收到迟到的 WebSocket onOpen，但连接已断开，忽略")
+            return
+        }
+        reconnectJob?.cancel()
+        // v0.2.34：连上了就把退避重置回最小。以前退避只涨不落：每被反代抬断一次
+        // 就翻倍，涨到 30 秒封顶后永远停在 30 秒。于是每次断线都要干等半分钟才
+        // 重开，期间收不到任何 progress / execution_success 事件——用户看到的就是
+        // “通知栏进度长时间不动、服务器已出图 App 还显示在跑”。连上就归零，
+        // 下次掉线又能立即重连。
+        wsReconnectBackoffMs = WS_RECONNECT_MIN_MS
+        lastWsBackoffLoggedMs = 0L
+        _state.update { it.copy(status = ConnectionStatus.CONNECTED, connectionMessage = "已连接 ${it.activeServer?.name.orEmpty()}") }
     }
 
     private fun scheduleReconnect() {
@@ -4661,7 +4773,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 会当场消失——用户看到的就是"导入两个，第一个不见了"。
                 // 现在服务器条目优先，本机快照里同路径的跳过、多出来的补上。
                 val serverPaths = entries.mapTo(mutableSetOf()) { it.path }
-                val localExtras = runCatching { workflowSnapshots.list(ui.activeServer?.baseUrl.orEmpty()) }
+                val localExtras = runCatching { workflowSnapshots.list(snapshotScopeFor(ui.activeServer?.baseUrl)) }
                     .getOrElse { emptyList() }
                     .filterNot { it.path in serverPaths }
                 ui.copy(
@@ -4694,7 +4806,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 userdataUnsupportedLogged = true
             }
             _state.update { ui ->
-                val serverKey = ui.activeServer?.baseUrl.orEmpty()
+                val serverKey = snapshotScopeFor(ui.activeServer?.baseUrl)
                 // v0.1.70：优先展示本机保存过正文的工作流——列表里的每一条都真正打得开。
                 // 以前只有"最近浏览过的路径"占位，那种条目只有路径没有内容，用户点了
                 // 必然报"该服务器不支持此接口"（日志里连点 15 次失败全是它），看起来就像 App 坏了。

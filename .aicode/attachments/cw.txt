@@ -1,0 +1,113 @@
+aistudio@jupyter-20103961-10660803:~$ tail -f /home/aistudio/work/comfyui.log
+  File "/home/aistudio/external-libraries/lib/python3.10/site-packages/transformers/dependency_versions_check.py", line 56, in <module>
+    require_version_core(deps[pkg])
+  File "/home/aistudio/external-libraries/lib/python3.10/site-packages/transformers/utils/versions.py", line 116, in require_version_core
+    return require_version(requirement, hint)
+  File "/home/aistudio/external-libraries/lib/python3.10/site-packages/transformers/utils/versions.py", line 110, in require_version
+    _compare_versions(op, got_ver, want_ver, requirement, pkg, hint)
+  File "/home/aistudio/external-libraries/lib/python3.10/site-packages/transformers/utils/versions.py", line 43, in _compare_versions
+    raise ImportError(
+ImportError: tokenizers>=0.22.0,<=0.23.0 is required for a normal functioning of this module, but found tokenizers==0.21.4.
+Try: `pip install transformers -U` or `pip install -e '.[dev]'` if you're working with git main
+
+
+
+^C
+aistudio@jupyter-20103961-10660803:~$ cd ~/comfyui-ain && bash setup.sh
+============================================
+ ComfyUI 环境还原（百度 AI Studio）
+ 仓库: /home/aistudio/comfyui-ain
+ 家目录: /home/aistudio
+============================================
+==> [1/4] 校验 AI Studio 环境
+    Python 3.10  正确
+    Ubuntu 20.04  正确
+    GPU: Tesla V100-SXM2-32GB
+==> [2/4] 准备模型
+    /home/aistudio/models 已有内容，跳过拉取
+==> [3/4] 还原 Python 依赖与 ComfyUI
+    环境已存在，跳过解包
+    （要重装请先删掉 /home/aistudio/external-libraries 和 /home/aistudio/work）
+==> [4/4] 启动 ComfyUI
+    检测到 V100，启用 fp16 并禁用 xformers
+
+============================================
+ 启动地址: http://0.0.0.0:8188
+ 在 AI Studio 里把 8188 端口映射出去即可访问 Web UI
+============================================
+
+[INFO] setup plugin alembic.autogenerate.schemas
+[INFO] setup plugin alembic.autogenerate.tables
+[INFO] setup plugin alembic.autogenerate.types
+[INFO] setup plugin alembic.autogenerate.constraints
+[INFO] setup plugin alembic.autogenerate.defaults
+[INFO] setup plugin alembic.autogenerate.comments
+[INFO] setup plugin alembic.autogenerate.checkconstraint_byname
+[START] Security scan
+[DONE] Security scan
+## ComfyUI-Manager: installing dependencies done.
+** ComfyUI startup time: 2026-09-25 22:52:50.159
+** Platform: Linux
+** Python version: 3.10.10 (main, Mar 21 2023, 18:45:11) [GCC 11.2.0]
+** Python executable: /opt/conda/envs/python35-paddle120-env/bin/python3
+** ComfyUI Path: /home/aistudio/work/ComfyUI
+** ComfyUI Base Folder Path: /home/aistudio/work/ComfyUI
+** User directory: /home/aistudio/work/ComfyUI/user
+** ComfyUI-Manager config path: /home/aistudio/work/ComfyUI/user/__manager/config.ini
+** Log path: /home/aistudio/work/ComfyUI/user/comfyui.log
+[INFO] 
+Prestartup times for custom nodes:
+[INFO]    0.0 seconds: /home/aistudio/work/ComfyUI/custom_nodes/rgthree-comfy
+[INFO]    0.0 seconds: /home/aistudio/work/ComfyUI/custom_nodes/ComfyUI-Easy-Use
+[INFO]    2.9 seconds: /home/aistudio/work/ComfyUI/custom_nodes/ComfyUI-Manager
+[INFO] 
+/home/aistudio/external-libraries/lib/python3.10/site-packages/torch/cuda/__init__.py:61: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+[WARNING] WARNING: You need pytorch with cu130 or higher to use optimized CUDA operations.
+WARNING WARNING WARNING
+If you are on nvidia 20 series and above it is required that you update your pytorch to cu130 or higher.
+
+[INFO] Found comfy_kitchen backend triton: {'available': True, 'disabled': True, 'unavailable_reason': None, 'capabilities': ['adaln', 'apply_rope', 'apply_rope1', 'apply_rope1_', 'apply_rope_', 'apply_rope_split_half', 'apply_rope_split_half1', 'apply_rope_split_half1_', 'apply_rope_split_half_', 'dequantize_nvfp4', 'dequantize_per_tensor_fp8', 'int8_linear', 'na3d', 'quantize_and_rotate_rowwise', 'quantize_int8_rowwise', 'quantize_mxfp8', 'quantize_nvfp4', 'quantize_per_tensor_fp8', 'rms_adaln', 'rms_rope', 'rms_rope1', 'rms_rope1_', 'rms_rope_', 'rms_rope_split_half', 'rms_rope_split_half1', 'rms_rope_split_half1_', 'rms_rope_split_half_', 'w4a8_int8_linear']}
+[INFO] Found comfy_kitchen backend eager: {'available': True, 'disabled': False, 'unavailable_reason': None, 'capabilities': ['adaln', 'apply_rope', 'apply_rope1', 'apply_rope1_', 'apply_rope_', 'apply_rope_split_half', 'apply_rope_split_half1', 'apply_rope_split_half1_', 'apply_rope_split_half_', 'convrot_w4a4_linear', 'dequantize_convrot_w4a4_weight', 'dequantize_int8_convrot_weight', 'dequantize_int8_convrot_weight_dtype', 'dequantize_int8_embedding', 'dequantize_int8_simple', 'dequantize_int8_simple_dtype', 'dequantize_nvfp4', 'dequantize_per_tensor_fp8', 'dequantize_w4a8_int8_weight', 'gemv_awq_w4a16', 'int8_linear', 'na3d', 'prepare_int4_weight_for_int8_linear', 'quantize_and_rotate_rowwise', 'quantize_convrot_w4a4_weight', 'quantize_int8_convrot_weight', 'quantize_int8_rowwise', 'quantize_int8_tensorwise', 'quantize_nvfp4', 'quantize_per_tensor_fp8', 'quantize_svdquant_w4a4', 'quantize_w4a8_int8_weight', 'rms_adaln', 'rms_rope', 'rms_rope1', 'rms_rope1_', 'rms_rope_', 'rms_rope_split_half', 'rms_rope_split_half1', 'rms_rope_split_half1_', 'rms_rope_split_half_', 'rotate_int8_convrot_weight', 'scaled_mm_nvfp4', 'scaled_mm_svdquant_w4a4', 'stochastic_rounding_fp8', 'w4a8_int8_linear']}
+[INFO] Found comfy_kitchen backend cuda: {'available': True, 'disabled': True, 'unavailable_reason': None, 'capabilities': ['adaln', 'apply_rope', 'apply_rope1', 'apply_rope1_', 'apply_rope_', 'apply_rope_split_half', 'apply_rope_split_half1', 'apply_rope_split_half1_', 'apply_rope_split_half_', 'convrot_w4a4_linear', 'dequantize_convrot_w4a4_weight', 'dequantize_int8_convrot_weight', 'dequantize_int8_convrot_weight_dtype', 'dequantize_int8_simple', 'dequantize_int8_simple_dtype', 'dequantize_nvfp4', 'dequantize_per_tensor_fp8', 'dequantize_w4a8_int8_weight', 'gemv_awq_w4a16', 'int8_linear', 'na3d', 'prepare_int4_weight_for_int8_linear', 'quantize_and_rotate_rowwise', 'quantize_convrot_w4a4_weight', 'quantize_int8_convrot_weight', 'quantize_int8_rowwise', 'quantize_int8_tensorwise', 'quantize_mxfp8', 'quantize_nvfp4', 'quantize_per_tensor_fp8', 'quantize_svdquant_w4a4', 'quantize_w4a8_int8_weight', 'rms_adaln', 'rms_rope', 'rms_rope1', 'rms_rope1_', 'rms_rope_', 'rms_rope_split_half', 'rms_rope_split_half1', 'rms_rope_split_half1_', 'rms_rope_split_half_', 'rotate_int8_convrot_weight', 'scaled_mm_nvfp4', 'scaled_mm_svdquant_w4a4', 'stochastic_rounding_fp8', 'w4a8_int8_linear']}
+[INFO] Found comfy_kitchen backend hip: {'available': False, 'disabled': False, 'unavailable_reason': 'PyTorch ROCm/HIP runtime not available', 'capabilities': []}
+[INFO] Checkpoint files will always be loaded safely.
+[INFO] Total VRAM 32494 MB, total RAM 515974 MB
+[INFO] pytorch version: 2.5.1+cu121
+[INFO] Set vram state to: NORMAL_VRAM
+[INFO] Device: cuda:0 Tesla V100-SXM2-32GB : cudaMallocAsync
+[INFO] Using async weight offloading with 2 streams
+[INFO] Enabled pinned memory 464376.0
+[WARNING] Torch version too old to set sdpa backend priority.
+[INFO] Using pytorch attention
+Traceback (most recent call last):
+  File "/home/aistudio/work/ComfyUI/main.py", line 250, in <module>
+    import execution
+  File "/home/aistudio/work/ComfyUI/execution.py", line 19, in <module>
+    import comfy.model_patcher
+  File "/home/aistudio/work/ComfyUI/comfy/model_patcher.py", line 33, in <module>
+    import comfy.hooks
+  File "/home/aistudio/work/ComfyUI/comfy/hooks.py", line 14, in <module>
+    import comfy.lora
+  File "/home/aistudio/work/ComfyUI/comfy/lora.py", line 22, in <module>
+    import comfy.model_base
+  File "/home/aistudio/work/ComfyUI/comfy/model_base.py", line 77, in <module>
+    import comfy.ldm.hidream_o1.model
+  File "/home/aistudio/work/ComfyUI/comfy/ldm/hidream_o1/model.py", line 20, in <module>
+    from comfy.text_encoders.qwen35 import Qwen35VisionModel
+  File "/home/aistudio/work/ComfyUI/comfy/text_encoders/qwen35.py", line 9, in <module>
+    from comfy import sd1_clip
+  File "/home/aistudio/work/ComfyUI/comfy/sd1_clip.py", line 3, in <module>
+    from transformers import CLIPTokenizer
+  File "/home/aistudio/external-libraries/lib/python3.10/site-packages/transformers/__init__.py", line 30, in <module>
+    from . import dependency_versions_check
+  File "/home/aistudio/external-libraries/lib/python3.10/site-packages/transformers/dependency_versions_check.py", line 56, in <module>
+    require_version_core(deps[pkg])
+  File "/home/aistudio/external-libraries/lib/python3.10/site-packages/transformers/utils/versions.py", line 116, in require_version_core
+    return require_version(requirement, hint)
+  File "/home/aistudio/external-libraries/lib/python3.10/site-packages/transformers/utils/versions.py", line 110, in require_version
+    _compare_versions(op, got_ver, want_ver, requirement, pkg, hint)
+  File "/home/aistudio/external-libraries/lib/python3.10/site-packages/transformers/utils/versions.py", line 43, in _compare_versions
+    raise ImportError(
+ImportError: tokenizers>=0.22.0,<=0.23.0 is required for a normal functioning of this module, but found tokenizers==0.21.4.
+Try: `pip install transformers -U` or `pip install -e '.[dev]'` if you're working with git main

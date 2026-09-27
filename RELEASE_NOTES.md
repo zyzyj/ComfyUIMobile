@@ -1,3 +1,38 @@
+# v0.2.46 — 修图片导入与多账号切换的 10 个缺陷
+
+针对 v0.2.45 的代码审查报告（B-01 ~ B-10）逐条核实并修复。10 条全部对照源码确认属实。
+
+## 图片导入
+
+| 编号 | 问题 | 修复 |
+|------|------|------|
+| B-01 | 未连接时分享/导入必失败，内容不落盘 | 未连接强制走本地分支；快照改用 `@local` 作用域，未连接导入也能真正存到本机 |
+| B-02 | 没有 `singleTop`，分享会新建未连接 Activity | `MainActivity` 加 `android:launchMode="singleTop"` |
+| B-03 | 默认文件名 `shared-image.png`，WebP 被当 PNG 解析 | 兜底名按 MIME 生成；判格式改为 MIME > 扩展名 > 文件头 |
+| B-04 | 原生解析失败被吞，未连接最长卡 90 秒后报「前端桥接超时」 | 未连接时直接抛出真实原因（图里没工作流 / 格式不对），不再等隐藏 WebView |
+| B-05 | 已导出 Activity 在主线程裸查 URI，无权限即崩 | `getType` / `query` 全部包 `runCatching` |
+
+**B-01 细节**：`serverWorkflowStoreAvailable` 默认 `true`，未连接时仍会拿空 `baseUrl` 去请求 `/v2/userdata?...`，OkHttp 对无 scheme 的 URL 抛 `IllegalArgumentException`，而原代码只 catch 了 `IllegalStateException`——异常直接冒出去，一行都没存下。现在先判「已连接且地址非空」，并对 `IllegalArgumentException` 也做降级。落盘那一步原来用 `activeServer?.baseUrl.orEmpty()`（空串）当 key，被 `write` 开头的空值判断直接跳过，杀进程就什么都没了；现在统一走 `@local`。
+
+## 多账号
+
+| 编号 | 问题 | 修复 |
+|------|------|------|
+| B-06 | 切账号后 CookieJar / 终端仍是旧账号 | 切账号时断开终端 + 新增 `clearProjectCookies()` 清掉项目级 Cookie；停止 GPU 时也清（实例重建后旧 `ide-proxy` 已失效但名字还在） |
+| B-07 | DataStore 任意写入会把刚切好的账号打回去 | 加 `pendingAccountId`：落盘完成前不让磁盘旧快照覆盖内存 |
+| B-08 | 旧账号网络协程仍把积分/项目写进新面板 | 切账号取消旧 job；写回前用 `isActiveAiStudioAccount()` 核对身份 |
+
+## 其它
+
+| 编号 | 问题 | 修复 |
+|------|------|------|
+| B-09 | 任务成功结束 / 用户停止时不删 `authCookies` | 抽出 `forgetJob(promptId)`，6 条收尾路径统一清 |
+| B-10 | Comfy `onOpen` 不认自己关的连接，断开后状态被打回「已连接」 | `onOpen` 判断 `webSocket !== socket && !closedByUs`；上层再加一道 `activeServer == null` 判断 |
+
+**B-09 说明**：`authCookies` 里是完整的反代登录 Cookie（含 BDUSS / `ide-proxy`）。以前只有「任务从服务器消失」和「连续轮询失败」两条路径清理，前台服务常驻时每成功跑完一个任务就多留一份凭据在内存里。
+
+---
+
 # v0.2.45 — 导入带工作流的图片：支持分享/打开方式，WebP 不再依赖服务器
 
 **概览**：App 本来就能导带工作流的图片（PNG 原生读），这版把它做得更像原版 ComfyUI、并扩大了可用范围。

@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拼多多 · 规格批量编辑 生成器</title>
+<style>
+  :root{
+    --bg:#f2f3f5; --panel:#fff; --line:#e2e5e9; --line2:#eef0f3; --text:#1c2129; --muted:#828b99;
+    --brand:#e02e24; --brand-d:#bf2118; --accent:#2f6feb; --ok:#0e9f4e; --warn:#c77700;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{margin:0;font-family:-apple-system,"Segoe UI","Microsoft YaHei","PingFang SC",Roboto,sans-serif;
+       background:var(--bg);color:var(--text);font-size:13px;display:flex;flex-direction:column;height:100vh;overflow:hidden;}
+  header{background:#fff;border-bottom:1px solid var(--line);padding:10px 16px;display:flex;align-items:center;gap:12px;flex:0 0 auto;}
+  header .logo{width:30px;height:30px;border-radius:8px;background:var(--brand);color:#fff;display:flex;
+       align-items:center;justify-content:center;font-weight:700;font-size:16px;flex:0 0 auto;}
+  header h1{font-size:15px;margin:0;font-weight:700;white-space:nowrap;}
+  header .meta{color:var(--muted);font-size:12px;display:flex;gap:14px;margin-left:6px;flex-wrap:wrap;}
+  header .meta b{color:var(--text);}
+  header .spacer{flex:1;}
+  .btn{font-family:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:#fff;color:var(--text);
+       font-size:13px;padding:7px 12px;transition:.13s;white-space:nowrap;display:inline-flex;align-items:center;gap:6px;}
+  .btn:hover{background:#f4f5f7;}
+  .btn:disabled{opacity:.5;cursor:not-allowed;}
+  .btn.big{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700;padding:9px 18px;font-size:14px;}
+  .btn.big:hover{background:var(--brand-d);}
+  .btn.sm{padding:5px 9px;font-size:12px;border-radius:7px;}
+  .btn.ghost{border-style:dashed;color:var(--accent);border-color:#c2d4f6;background:#f7faff;}
+  .btn.ghost:hover{background:#eef4ff;}
+  kbd{background:#f0f1f3;border:1px solid #d8dbe0;border-bottom-width:2px;border-radius:5px;padding:0 5px;font-size:11px;font-family:inherit;color:#555;}
+  main{flex:1;display:grid;grid-template-columns:minmax(360px,440px) 1fr;gap:14px;padding:14px 16px;overflow:hidden;min-height:0;}
+  @media (max-width:920px){main{grid-template-columns:1fr;overflow:auto;} body{overflow:auto;height:auto;}}
+  .col{display:flex;flex-direction:column;gap:12px;min-height:0;overflow:auto;padding-right:2px;}
+  .col.right{overflow:hidden;}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;flex:0 0 auto;}
+  .card>.hd{padding:9px 13px;border-bottom:1px solid var(--line2);font-weight:700;font-size:12.5px;
+       display:flex;align-items:center;gap:8px;color:#333;}
+  .card>.hd .n{width:18px;height:18px;border-radius:50%;background:#eef1f5;color:#5a6472;font-size:11px;
+       display:flex;align-items:center;justify-content:center;font-weight:700;flex:0 0 auto;}
+  .card>.hd .right{margin-left:auto;display:flex;gap:6px;align-items:center;}
+  .card>.bd{padding:12px 13px;}
+  .hint{font-size:11.5px;color:var(--muted);line-height:1.55;}
+  label.lb{display:block;font-size:12px;color:#4b5566;margin-bottom:5px;font-weight:600;}
+  textarea,input[type=text],input[type=number]{width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:7px;
+       font-size:13px;font-family:inherit;background:#fbfbfc;outline:none;transition:.13s;color:var(--text);}
+  textarea{font-family:ui-monospace,Menlo,Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.7;resize:vertical;}
+  input:focus,textarea:focus{border-color:var(--accent);background:#fff;box-shadow:0 0 0 3px rgba(47,111,235,.12);}
+  .row{display:flex;gap:8px;align-items:center;}
+  .row>*{flex:1;min-width:0;}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+  .mini-label{font-size:11px;color:var(--muted);margin-bottom:3px;display:block;}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px;}
+  .chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:4px 11px;font-size:12px;cursor:pointer;color:#4b5566;transition:.13s;}
+  .chip:hover{border-color:var(--accent);color:var(--accent);background:#f6f9ff;}
+  .chip.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;}
+  .pcard{background:var(--panel);border:1px solid var(--line);border-radius:11px;display:flex;flex-direction:column;min-height:0;flex:1;overflow:hidden;}
+  .pcard .hd{padding:9px 13px;border-bottom:1px solid var(--line2);display:flex;align-items:center;gap:10px;flex:0 0 auto;}
+  .pcard .hd .t{font-weight:700;font-size:12.5px;}
+  .pcard .hd select{width:auto;min-width:180px;padding:5px 8px;font-size:12.5px;}
+  .badge{display:inline-block;background:#eef2f7;color:#4b5566;border-radius:999px;padding:2px 10px;font-size:11.5px;font-weight:600;}
+  .tblwrap{overflow:auto;flex:1;min-height:0;}
+  table{border-collapse:collapse;width:100%;font-size:12px;}
+  th,td{border:1px solid var(--line2);padding:5px 9px;text-align:left;white-space:nowrap;}
+  thead th{background:#f7f8fa;font-weight:700;position:sticky;top:0;z-index:2;color:#4b5566;}
+  tbody tr:nth-child(even){background:#fafbfc;}
+  .lowprice{color:var(--ok);font-weight:700;background:#f4fcf7;}
+  .empty{color:var(--muted);padding:48px 20px;text-align:center;line-height:1.8;}
+  .errbox{background:#fff6f5;border:1px solid #f3c9c5;color:#a82c22;border-radius:8px;padding:8px 11px;font-size:12px;line-height:1.7;margin-top:9px;}
+  .errbox b{display:block;margin-bottom:3px;}
+  .okbox{background:#f2fbf5;border:1px solid #c3ecd1;color:#0f7a3d;border-radius:8px;padding:8px 11px;font-size:12px;line-height:1.7;margin-top:9px;}
+  code.k{background:#f1f3f6;padding:1px 6px;border-radius:5px;font-size:11.5px;font-family:ui-monospace,Consolas,monospace;}
+  .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(20px);background:#232a33;color:#fff;
+       padding:10px 18px;border-radius:9px;font-size:13px;opacity:0;pointer-events:none;transition:.25s;z-index:99;box-shadow:0 6px 24px rgba(0,0,0,.22);}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  .rowcount{font-size:11.5px;color:var(--muted);}
+  .stat{font-size:12px;color:#4b5566;background:#f7f8fa;border:1px solid var(--line2);border-radius:8px;padding:7px 11px;line-height:1.7;}
+  .stat b{color:var(--accent);}
+  .sep2{height:1px;background:var(--line2);margin:13px 0;}
+  .sec{font-size:11.5px;color:var(--muted);font-weight:700;letter-spacing:.4px;margin:0 0 9px;}
+  .dot{width:8px;height:8px;border-radius:50%;background:#c9ced6;display:inline-block;flex:0 0 auto;}
+  .dot.on{background:var(--ok);}
+  .dot.off{background:#d9534f;}
+  .modal{position:fixed;inset:0;background:rgba(20,24,30,.55);display:none;align-items:center;justify-content:center;z-index:200;padding:20px;}
+  .modal.show{display:flex;}
+  .modal .box{background:#fff;border-radius:14px;padding:22px;max-width:380px;width:100%;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,.25);}
+  .modal .box h3{margin:0 0 6px;font-size:16px;}
+  .modal .box p{margin:0 0 14px;font-size:12.5px;color:var(--muted);line-height:1.7;}
+  .modal .qrimg{width:220px;height:220px;border:1px solid var(--line);border-radius:10px;background:#fff;object-fit:contain;}
+  .modal .box .btn{margin-top:14px;}
+  .spin{width:34px;height:34px;border:3px solid #e5e8ec;border-top-color:var(--accent);border-radius:50%;
+       animation:sp .8s linear infinite;margin:24px auto;}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .steps{margin:0;padding-left:18px;font-size:12px;color:#4b5566;line-height:1.85;}
+  a.link{color:var(--accent);text-decoration:none;cursor:pointer;}
+  a.link:hover{text-decoration:underline;}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">拼</div>
+  <h1>规格表格生成器</h1>
+  <div class="meta" id="hmeta"></div>
+  <div class="spacer"></div>
+  <button class="btn sm" id="loginBtn" type="button"><span class="dot" id="loginDot"></span><span id="loginTxt">检测登录…</span></button>
+  <button class="btn sm" id="logBtn" type="button">日志</button>
+  <button class="btn big" id="exportBtn" type="button">导出</button>
+</header>
+
+<main>
+  <div class="col">
+    <section class="card">
+      <div class="hd"><span class="n">1</span>导出格式
+        <span class="right"><label style="font-weight:400;font-size:12px;color:#6b7280;display:flex;align-items:center;gap:5px;"><input type="checkbox" id="asDefault" style="width:auto;">设为默认</label></span>
+      </div>
+      <div class="bd">
+        <div class="chips" id="fmtChips">
+          <button type="button" class="chip on" data-fmt="pdd">拼多多</button>
+          <button type="button" class="chip" data-fmt="1688goods">1688 商品表</button>
+          <button type="button" class="chip" data-fmt="1688sku">1688 SKU表</button>
+        </div>
+        <div id="fmtHint" class="hint" style="margin-top:8px;"></div>
+
+        <div id="extraFields" style="margin-top:10px;display:none;">
+          <div class="grid2">
+            <div><span class="mini-label">商品标题</span><input type="text" id="gTitle" placeholder="抓取后自动填入"></div>
+            <div><span class="mini-label">货号/型号</span><input type="text" id="gArtNo" placeholder="默认：编号+#"></div>
+          </div>
+          <details style="margin-top:9px;">
+            <summary style="cursor:pointer;font-size:12.5px;color:var(--accent);">高级选项（属性名 / 区间报价 / 价格写法）</summary>
+            <div style="margin-top:9px;">
+              <div class="grid2">
+                <div><span class="mini-label">SKU属性1名称</span><input type="text" id="gAttr1" value="颜色"></div>
+                <div><span class="mini-label">SKU属性2名称</span><input type="text" id="gAttr2" value="适合身高"></div>
+              </div>
+              <div class="grid3" style="margin-top:8px;">
+                <div><span class="mini-label">档1数量</span><input type="text" id="q1" value="1"></div>
+                <div><span class="mini-label">档2数量</span><input type="text" id="q2" value="70"></div>
+                <div><span class="mini-label">档3数量</span><input type="text" id="q3" value="150"></div>
+              </div>
+              <div style="margin-top:8px;"><span class="mini-label">价格写法</span>
+                <select id="priceStyle">
+                  <option value="single">只用首档价（单值）</option>
+                  <option value="newline" selected>分段写法</option>
+                  <option value="abbrev">简写 A（1:18.95;70:17.95）</option>
+                  <option value="arrow">简写 B（1件18.95 70件17.95）</option>
+                </select>
+              </div>
+              <label style="display:flex;align-items:center;gap:6px;margin-top:9px;font-size:12.5px;color:#4b5566;">
+                <input type="checkbox" id="embedImg" checked style="width:auto;"> 把 SKU 图嵌入表格
+              </label>
+            </div>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="hd"><span class="n">2</span>商品
+        <span class="right"><span class="rowcount" id="plistCount"></span></span>
+      </div>
+      <div class="bd">
+        <div class="row">
+          <input type="text" id="goodsUrl" placeholder="粘贴拼多多商品链接 / 编号，点右侧抓取">
+          <button class="btn" id="fetchBtn" type="button" style="flex:0 0 auto;">抓取</button>
+        </div>
+        <div id="fetchMsg"></div>
+
+        <details style="margin-top:10px;" open>
+          <summary style="cursor:pointer;font-size:12.5px;color:var(--accent);">手动录入 / 商品清单</summary>
+          <div style="margin-top:9px;">
+            <div class="grid2">
+              <div><span class="mini-label">商品编号</span><input type="text" id="qNo" placeholder="如 583"></div>
+              <div><span class="mini-label">拼单价</span><input type="text" id="qPrice" placeholder="如 15.98"></div>
+            </div>
+            <div style="margin-top:8px;"><span class="mini-label">颜色（多个用 / ）</span>
+              <input type="text" id="qColors" placeholder="抓取后自动填入，或手输：红色/黄色"></div>
+            <button class="btn" id="quickAddBtn" type="button" style="width:100%;justify-content:center;margin-top:9px;">+ 加入清单</button>
+            <p class="sec" style="margin-top:12px;">清单（每行：编号|颜色|拼单价|标题）</p>
+            <textarea id="products" rows="5" spellcheck="false"
+              placeholder="583|波点上衣|15.98&#10;471|红色/黄色|28.95"></textarea>
+            <div id="parseErr"></div>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="hd"><span class="n">3</span>尺码与价格</div>
+      <div class="bd">
+        <div class="grid3">
+          <div><span class="mini-label">尺码起</span><input type="number" id="sizeStart" value="80"></div>
+          <div><span class="mini-label">尺码止</span><input type="number" id="sizeEnd" value="130"></div>
+          <div><span class="mini-label">间隔</span><input type="number" id="sizeStep" value="10"></div>
+        </div>
+        <div class="chips" id="sizePresets"></div>
+        <div class="grid3" style="margin-top:10px;">
+          <div><span class="mini-label">加价 x</span><input type="number" id="addPrice" value="2" step="0.01"></div>
+          <div><span class="mini-label">库存</span><input type="text" id="stock" value="5000"></div>
+          <div><span class="mini-label">启用</span><input type="text" id="enable" value="1"></div>
+        </div>
+        <div style="margin-top:8px;"><span class="mini-label">默认拼单价（清单省略价格时用）</span>
+          <input type="text" id="defPrice" placeholder="例如 15.98"></div>
+        <div class="hint" style="margin-top:8px;">拼多多：单买价=拼单价+x，最小尺码/正码正拍少 2 元。</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="hd"><span class="n">4</span>文件名</div>
+      <div class="bd">
+        <input type="text" id="filePattern" value="规格批量编辑_{no}.xlsx">
+        <div class="hint" style="margin-top:6px;"><code class="k">{no}</code> 替换成商品编号。</div>
+      </div>
+    </section>
+  </div>
+
+  <div class="col right">
+    <div class="stat" id="summary"></div>
+    <div class="pcard">
+      <div class="hd">
+        <span class="t">预览</span>
+        <select id="previewSel"></select>
+        <span class="badge" id="stat">—</span>
+      </div>
+      <div class="tblwrap" id="previewWrap">
+        <div class="empty">在左侧录入商品，这里会实时显示将要生成的表格。</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div class="modal" id="loginModal">
+  <div class="box">
+    <h3 id="loginTitle">扫码登录拼多多</h3>
+    <p id="loginTip">用手机拼多多 App 扫下面的二维码。登录态保存在本机，下次不用再扫。</p>
+    <div id="qrArea"><div class="spin"></div></div>
+    <div style="display:flex;gap:8px;margin-top:12px;">
+      <button class="btn" id="loginCancel" type="button" style="flex:1;">取消</button>
+      <button class="btn" id="qrRefresh" type="button" style="flex:1;">刷新二维码</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="logModal">
+  <div class="box" style="max-width:720px;text-align:left;">
+    <h3 style="display:flex;align-items:center;">运行日志
+      <span style="margin-left:auto;display:flex;gap:8px;">
+        <button class="btn sm" id="logRefresh" type="button">刷新</button>
+        <button class="btn sm" id="logDownload" type="button">下载</button>
+        <button class="btn sm" id="logClear" type="button">清空</button>
+      </span>
+    </h3>
+    <p style="margin:6px 0 10px;">出问题时点「下载」把日志发给我，或在 logs 文件夹里取 app.log 和 login-fail.png。</p>
+    <pre id="logText" style="background:#0f1419;color:#d6e2ea;border-radius:8px;padding:12px;font-size:11.5px;line-height:1.55;max-height:52vh;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0;">加载中…</pre>
+    <button class="btn" id="logClose" type="button" style="margin-top:12px;width:100%;justify-content:center;">关闭</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const HEADERS = ['颜色分类','参考分类','库存','拼单价(元)','单买价(元)','规格编码','启用状态'];
+const LS_KEY = 'pdd_spec_gen_v3';
+const enc = new TextEncoder();
+const $ = id => document.getElementById(id);
+let TPL = {}, ORDER = [], PROMPT = '', ALI = null;
+let FMT = 'pdd';
+let SKU_IMG = {};          // 颜色 → 图片 data URI（抓取后填入）
+let DEFAULT_FMT = 'pdd';   // 用户设定的默认导出格式
+function gStartRow(){ return (ALI && ALI.goods && ALI.goods.startRow) || 6; }
+
+function xmlEsc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+/* ============ 1688 生成器 ============ */
+// 从模板的 sharedStrings 里取出已有条目原文（保留实体）
+function parseShared(xml){
+  const items = [...String(xml).matchAll(/<si>([\s\S]*?)<\/si>/g)].map(m => m[1]);
+  return items;
+}
+// 按 1688 模板生成 xlsx 字节：保留表头，数据从 startRow 行起追加；可选嵌入图片
+// opts.images: [{row, col, dataUri}]  row 为 1-based 行号，col 为 0-based 列号
+function build1688(fmt, rows, opts){
+  opts = opts || {};
+  const spec = fmt === '1688goods' ? ALI.goods : ALI.sku;
+  const items = parseShared(spec.sharedXml);           // 已有 si 原文
+  const idx = new Map();
+  items.forEach((it, i) => idx.set(it, i));
+  const sst = items.slice();
+  const sid = (val) => {
+    const raw = xmlEsc(val);
+    if (idx.has(raw)) return idx.get(raw);
+    const i = sst.length; sst.push(raw); idx.set(raw, i); return i;
+  };
+
+  // sheet：截断到表头结束，再追加数据行
+  let sheet = spec.sheetXml;
+  const sdIdx = sheet.lastIndexOf('</sheetData>');
+  if (sdIdx < 0) throw new Error('1688 模板定位失败');
+  const before = sheet.slice(0, sdIdx);
+  const after = sheet.slice(sdIdx);
+
+  const n = rows.length, ncols = spec.ncols;
+  const body = [];
+  for (let i = 0; i < n; i++) {
+    const r = spec.startRow + i;
+    const cells = rows[i].map((v, c) => '<c r="' + colref(c) + r + '" s="' + (v === '' ? '0' : '2') + '" t="s"><v>' + sid(v) + '</v></c>').join('');
+    body.push('<row r="' + r + '">' + cells + '</row>');
+  }
+  const endRow = spec.startRow + Math.max(n - 1, 0);
+  sheet = before.replace(/<dimension ref="[^"]*"\/>/, '<dimension ref="A1:' + colref(ncols - 1) + Math.max(endRow, 5) + '"/>') + body.join('') + after;
+
+  // sharedStrings
+  let shared = String(spec.sharedXml);
+  const oldHead = shared.match(/<sst[^>]*>/)[0];
+  const head = oldHead.replace(/count="\d+"/, 'count="' + (Number(oldHead.match(/count="(\d+)"/)[1]) + n * ncols) + '"')
+                      .replace(/uniqueCount="\d+"/, 'uniqueCount="' + sst.length + '"');
+  shared = shared.replace(oldHead, head);
+  const lastSi = shared.lastIndexOf('</si>') + 5;
+  shared = shared.slice(0, lastSi) + sst.slice(items.length).map(v => '<si><t>' + v + '</t></si>').join('') + shared.slice(lastSi);
+
+  const files = [];
+  for (const name of spec.order) files.push({name, data: b64bytes(spec.statics[name])});
+  files.push({name: 'xl/worksheets/sheet1.xml', data: enc.encode(sheet)});
+  files.push({name: 'xl/sharedStrings.xml', data: enc.encode(shared)});
+
+  // ---- 图片嵌入 ----
+  const imgs = (opts.images || []).filter(x => x && x.dataUri);
+  if (imgs.length) {
+    const media = [];
+    const rels = [];
+    const anchors = [];
+    imgs.forEach((it, i) => {
+      const m = /^data:([^;,]+);base64,(.+)$/.exec(it.dataUri);
+      if (!m) return;
+      const mime = m[1];
+      const data = b64bytes(m[2]);
+      const ext = mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpeg';
+      const name = 'image' + (i + 1) + '.' + ext;
+      media.push({ name: 'xl/media/' + name, data });
+      const rId = 'rId' + (i + 1);
+      rels.push('<Relationship Id="' + rId + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/' + name + '"/>');
+      // 每行约占 90px，列宽估算
+      const widthPx = 80, heightPx = 80, colWidthPx = 100;
+      const fromCol = it.col, fromRow = it.row - 1;
+      const a = 'A' + (i + 1);
+      anchors.push('<xdr:twoCellAnchor editAs="oneCell">' +
+        '<xdr:from><xdr:col>' + fromCol + '</xdr:col><xdr:colOff>9525</xdr:colOff><xdr:row>' + fromRow + '</xdr:row><xdr:rowOff>9525</xdr:rowOff></xdr:from>' +
+        '<xdr:to><xdr:col>' + fromCol + '</xdr:col><xdr:colOff>' + (9525 + widthPx * 9525) + '</xdr:colOff><xdr:row>' + fromRow + '</xdr:row><xdr:rowOff>' + (9525 + heightPx * 9525) + '</xdr:rowOff></xdr:to>' +
+        '<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="' + (i + 1) + '" name="Picture ' + (i + 1) + '"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>' +
+        '<xdr:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="' + rId + '"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>' +
+        '<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + (widthPx * 9525) + '" cy="' + (heightPx * 9525) + '"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>' +
+        '</xdr:pic><xdr:clientData/></xdr:twoCellAnchor>');
+    });
+    if (media.length) {
+      const drawingXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
+        '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
+        anchors.join('') + '</xdr:wsDr>';
+      const drawingRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + rels.join('') + '</Relationships>';
+      // sheet 上挂 drawing 引用（需补 r 命名空间）
+      let sheetOut = u8str(files.find(f => f.name === 'xl/worksheets/sheet1.xml').data);
+      if (!/xmlns:r=/.test(sheetOut)) {
+        sheetOut = sheetOut.replace('<worksheet ', '<worksheet xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ');
+      }
+      sheetOut = sheetOut.replace('</worksheet>', '<drawing r:id="rId1"/></worksheet>');
+      const f1 = files.find(f => f.name === 'xl/worksheets/sheet1.xml'); f1.data = enc.encode(sheetOut);
+
+      // content-types 补充
+      const ct = files.find(f => f.name === '[Content_Types].xml');
+      let ctXml = u8str(ct.data);
+      for (const e of ['png', 'jpeg', 'webp']) {
+        if (!ctXml.includes('Extension="' + e + '"')) {
+          ctXml = ctXml.replace('</Types>', '<Default ContentType="image/' + (e === 'jpeg' ? 'jpeg' : e) + '" Extension="' + e + '"/></Types>');
+        }
+      }
+      if (!ctXml.includes('drawing+xml')) {
+        ctXml = ctXml.replace('</Types>', '<Override ContentType="application/vnd.openxmlformats-officedocument.drawing+xml" PartName="/xl/drawings/drawing1.xml"/></Types>');
+      }
+      ct.data = enc.encode(ctXml);
+
+      files.push({ name: 'xl/drawings/drawing1.xml', data: enc.encode(drawingXml) });
+      files.push({ name: 'xl/drawings/_rels/drawing1.xml.rels', data: enc.encode(drawingRels) });
+      files.push({ name: 'xl/worksheets/_rels/sheet1.xml.rels', data: enc.encode(
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>') });
+      for (const md of media) files.push(md);
+    }
+  }
+  return makeZip(files);
+}
+
+function b64bytes(b64){const bin=atob(b64);const a=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i);return a;}
+function u8str(u8){return new TextDecoder().decode(u8);}
+function colref(i){let s='';i+=1;while(i>0){const r=(i-1)%26;i=Math.floor((i-1)/26);s=String.fromCharCode(65+r)+s;}return s;}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+/* ============ 模板加载 ============ */
+async function loadTemplate(){
+  const r = await fetch('template.json', {cache:'no-store'});
+  const j = await r.json();
+  TPL = j.tpl; ORDER = j.order; PROMPT = j.prompt;
+  const r2 = await fetch('template_1688.json', {cache:'no-store'});
+  ALI = await r2.json();
+}
+
+/* ============ 解析商品清单 ============ */
+function parseProducts(text, defPrice){
+  const products=[], errors=[];
+  text.split(/\r?\n/).forEach((line,i)=>{
+    const raw=line.trim(); if(!raw) return;
+    const fields = raw.replace(/\t/g,'|').split(/[|｜,，]/);
+    const f = fields.map(s=>s.trim());
+    const no=f[0];
+    if(!no){ errors.push('第'+(i+1)+'行：缺少商品编号'); return; }
+    const colors=(f[1]||'').split(/[\/|、]/).map(s=>s.trim()).filter(Boolean);
+    if(!colors.length){ errors.push('第'+(i+1)+'行：缺少颜色分类'); return; }
+    let price=(f[2]!==undefined&&f[2]!=='')?parseFloat(f[2]):parseFloat(defPrice);
+    if(isNaN(price)){ errors.push('第'+(i+1)+'行：缺少拼单价'); return; }
+    // 可选第4字段：商品标题（1688 用）
+    const title=(f[3]||'').trim();
+    products.push({no,colors,price,title});
+  });
+  return {products,errors};
+}
+function computeSizes(){
+  let a=parseInt($('sizeStart').value,10),b=parseInt($('sizeEnd').value,10),s=parseInt($('sizeStep').value,10);
+  if(isNaN(a)||isNaN(b)||isNaN(s)||s<=0) return null;
+  if(a>b){const t=a;a=b;b=t;}
+  const arr=[]; for(let v=a;v<=b;v+=s) arr.push(v);
+  if(!arr.length) arr.push(a);
+  return arr;
+}
+function buildRowsFor(p,sizes,x,stock,enable){
+  const minNum=Math.min.apply(null,sizes);
+  const seq=sizes.map(String).concat(['正码正拍']);
+  const rows=[];
+  for(const c of p.colors) for(const sz of seq){
+    const low = sz==='正码正拍'||Number(sz)===minNum;
+    const pr = low ? p.price-2 : p.price;
+    rows.push([c,sz,stock,pr.toFixed(2),(pr+x).toFixed(2),p.no+'#'+c+'-'+sz,enable]);
+  }
+  return rows;
+}
+
+/* ============ xlsx 生成 ============ */
+function buildSheetXml(rows){
+  const ss=['',PROMPT].concat(HEADERS);
+  const idx={'':0}; idx[PROMPT]=1; HEADERS.forEach((h,i)=>idx[h]=2+i);
+  const sid=v=>{ if(!(v in idx)){idx[v]=ss.length;ss.push(v);} return idx[v]; };
+  const cell=(ref,v,s)=>'<c r="'+ref+'" s="'+s+'" t="s"><v>'+sid(v)+'</v></c>';
+  const n=rows.length, L=[];
+  L.push('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n');
+  L.push('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:etc="http://www.wps.cn/officeDocument/2017/etCustomData">');
+  L.push('<sheetPr/><dimension ref="A1:R'+(5+n)+'"/>');
+  L.push('<sheetViews><sheetView tabSelected="1" workbookViewId="0"><selection activeCell="F'+(6+n)+'" sqref="F'+(6+n)+'"/></sheetView></sheetViews>');
+  L.push('<sheetFormatPr defaultColWidth="9" defaultRowHeight="13.5"/><sheetData>');
+  L.push('<row r="1" ht="30" customHeight="1" spans="1:7">'+cell('A1','',1)+'</row>');
+  L.push('<row r="2" spans="1:7">'+cell('A2',PROMPT,2)+'</row>');
+  L.push('<row r="3" spans="1:7">'+cell('A3','',2)+'</row>');
+  L.push('<row r="4" spans="1:7">'+cell('A4','',2)+'</row>');
+  L.push('<row r="5" ht="27" spans="1:7">'+HEADERS.map((h,i)=>cell(colref(i)+'5',h,2)).join('')+'</row>');
+  for(let i=0;i<n;i++){
+    const r=6+i, ht=(i===n-1)?'40.5':'27';
+    L.push('<row r="'+r+'" ht="'+ht+'" spans="1:7">'+rows[i].map((v,c)=>cell(colref(c)+r,v,2)).join('')+'</row>');
+  }
+  L.push('</sheetData>');
+  L.push('<mergeCells count="2"><mergeCell ref="A1:R1"/><mergeCell ref="A2:R4"/></mergeCells>');
+  L.push('<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/><headerFooter/></worksheet>');
+  const sheetXml=L.join('');
+  const totalRefs=4+7+n*7;
+  let ssXml='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n';
+  ssXml+='<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="'+totalRefs+'" uniqueCount="'+ss.length+'">';
+  for(const v of ss){ ssXml += (v===PROMPT)?('<si><t>'+v+'</t></si>'):('<si><t>'+esc(v)+'</t></si>'); }
+  ssXml+='</sst>';
+  return {sheetXml,ssXml};
+}
+function crc32(buf){let crc=0xFFFFFFFF;for(let i=0;i<buf.length;i++){crc^=buf[i];for(let k=0;k<8;k++)crc=(crc>>>1)^(0xEDB88320&-(crc&1));}return (crc^0xFFFFFFFF)>>>0;}
+function makeZip(files){
+  const parts=[],central=[]; let offset=0;
+  for(const f of files){
+    const name=enc.encode(f.name),data=f.data,crc=crc32(data);
+    const lh=new Uint8Array(30+name.length),dv=new DataView(lh.buffer);
+    dv.setUint32(0,0x04034b50,true);dv.setUint16(4,20,true);dv.setUint16(6,0x0800,true);
+    dv.setUint16(8,0,true);dv.setUint16(10,0,true);dv.setUint16(12,0,true);
+    dv.setUint32(14,crc,true);dv.setUint32(18,data.length,true);dv.setUint32(22,data.length,true);
+    dv.setUint16(26,name.length,true);dv.setUint16(28,0,true);
+    lh.set(name,30);parts.push(lh,data);
+    const cd=new Uint8Array(46+name.length),dv2=new DataView(cd.buffer);
+    dv2.setUint32(0,0x02014b50,true);dv2.setUint16(4,20,true);dv2.setUint16(6,20,true);
+    dv2.setUint16(8,0x0800,true);dv2.setUint16(10,0,true);dv2.setUint16(12,0,true);dv2.setUint16(14,0,true);
+    dv2.setUint32(16,crc,true);dv2.setUint32(20,data.length,true);dv2.setUint32(24,data.length,true);
+    dv2.setUint16(28,name.length,true);dv2.setUint16(30,0,true);dv2.setUint16(32,0,true);
+    dv2.setUint16(34,0,true);dv2.setUint16(36,0,true);dv2.setUint32(38,0,true);
+    dv2.setUint32(42,offset,true);
+    cd.set(name,46);central.push(cd);
+    offset+=lh.length+data.length;
+  }
+  const cdSize=central.reduce((s,c)=>s+c.length,0);
+  const end=new Uint8Array(22),dve=new DataView(end.buffer);
+  dve.setUint32(0,0x06054b50,true);dve.setUint16(4,0,true);dve.setUint16(6,0,true);
+  dve.setUint16(8,files.length,true);dve.setUint16(10,files.length,true);
+  dve.setUint32(12,cdSize,true);dve.setUint32(16,offset,true);dve.setUint16(20,0,true);
+  const all=parts.concat(central,[end]);
+  const total=all.reduce((s,p)=>s+p.length,0);
+  const out=new Uint8Array(total); let o=0;
+  for(const p of all){ out.set(p,o); o+=p.length; }
+  return out;
+}
+function buildXlsxBytes(rows){
+  const {sheetXml,ssXml}=buildSheetXml(rows);
+  const files=[];
+  for(const name of ORDER){
+    if(name==='xl/sharedStrings.xml') files.push({name,data:enc.encode(ssXml)});
+    else if(name==='xl/worksheets/sheet1.xml') files.push({name,data:enc.encode(sheetXml)});
+    else files.push({name,data:b64bytes(TPL[name])});
+  }
+  return makeZip(files);
+}
+function download(data,filename){
+  const blob=new Blob([data],{type:'application/octet-stream'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),4000);
+}
+
+/* ============ 状态与渲染 ============ */
+function readAll(){
+  const defPrice=$('defPrice').value.trim();
+  const {products,errors}=parseProducts($('products').value,defPrice);
+  return {products,errors,sizes:computeSizes(),
+    x:parseFloat($('addPrice').value)||0,
+    stock:$('stock').value.trim()||'5000',
+    enable:$('enable').value.trim()||'1',
+    pattern:$('filePattern').value.trim()||'规格批量编辑_{no}.xlsx'};
+}
+function fileNameFor(no,pattern){ let n=pattern.replace(/\{no\}/g,no); if(!/\.xlsx$/i.test(n)) n+='.xlsx'; return n; }
+
+function render(){
+  const s=readAll();
+  $('parseErr').innerHTML = s.errors.length
+    ? '<div class="errbox"><b>有 '+s.errors.length+' 行无法解析：</b>'+s.errors.map(esc).join('<br>')+'</div>' : '';
+  if(!s.sizes){
+    $('previewWrap').innerHTML='<div class="empty">尺码参数不完整（起始/结束/间隔需为整数，间隔大于 0）。</div>';
+    $('stat').textContent='—'; $('summary').innerHTML=''; $('previewSel').innerHTML='';
+    $('hmeta').innerHTML=''; $('plistCount').textContent=''; return;
+  }
+  const seq=s.sizes.map(String).concat(FMT==='pdd'?['正码正拍']:[]);
+  const totalRows=s.products.reduce((n,p)=>n+p.colors.length*seq.length,0);
+  $('plistCount').textContent = s.products.length ? s.products.length+' 个商品' : '';
+  $('hmeta').innerHTML='<span>商品 <b>'+s.products.length+'</b></span><span>规格 <b>'+seq.length+'</b> 个/颜色</span><span>总行数 <b>'+totalRows+'</b></span>';
+  const sel=$('previewSel'); const prev=sel.value;
+  sel.innerHTML=s.products.map((p,i)=>'<option value="'+i+'">'+(esc(p.no)+' · '+esc(p.colors.join('/'))+' · ￥'+p.price)+'</option>').join('');
+  if(s.products.length){
+    let idx=parseInt(prev,10); if(isNaN(idx)||idx>=s.products.length) idx=0;
+    sel.value=String(idx); renderPreview(s.products[idx],s,idx);
+  } else {
+    $('previewWrap').innerHTML='<div class="empty">还没有商品。在上方「商品链接」抓取，或手动录入。</div>';
+    $('stat').textContent='—';
+    $('summary').innerHTML='<b>提示</b>：先登录，再粘贴商品链接点「抓取」，即可自动填入编号和颜色。';
+  }
+}
+function renderPreview(p,s,idx){
+  if(FMT==='1688goods') { renderPreview1688Goods(s,idx); return; }
+  if(FMT==='1688sku') { renderPreview1688Sku(s); return; }
+  const rows=buildRowsFor(p,s.sizes,s.x,s.stock,s.enable);
+  const lowP=(p.price-2).toFixed(2);
+  $('stat').textContent=rows.length+' 行';
+  $('summary').innerHTML='正在预览 <b>'+esc(p.no)+'</b> · 颜色 '+esc(p.colors.join('、'))+' · 拼单价 ￥'+p.price+' · 共 <b>'+rows.length+'</b> 行'
+    +(s.products.length>1?'（第 '+(idx+1)+' / '+s.products.length+' 个商品）':'');
+  let h='<table><thead><tr>'+HEADERS.map(x=>'<th>'+esc(x)+'</th>').join('')+'</tr></thead><tbody>';
+  for(const row of rows){
+    h+='<tr>'+row.map((v,i)=>{const cls=(i===3||i===4)&&v===lowP?' class="lowprice"':'';return '<td'+cls+'>'+esc(v)+'</td>';}).join('')+'</tr>';
+  }
+  h+='</tbody></table>';
+  $('previewWrap').innerHTML=h;
+}
+const HEADERS_1688G=['序号','商品标题','货号/型号','图片1','图片2','图片3','图片4','图片5','更多信息','SKU图片','属性1名称','属性1值','属性2名称','属性2值','SKU价格','SKU库存'];
+const HEADERS_1688S=['属性1名称','属性1值','属性2名称','属性2值'];
+function renderPreview1688Goods(s,idx){
+  const rows=build1688GoodsRows(s).rows;
+  $('stat').textContent=rows.length+' 行';
+  const imgN=Object.keys(SKU_IMG).length;
+  $('summary').innerHTML='1688《商品批量导入》预览 · 共 <b>'+rows.length+'</b> 行（每个 SKU 一行）'+(imgN?'· 已抓到 <b>'+imgN+'</b> 张 SKU 图':'· 无 SKU 图（未抓取）');
+  let h='<table><thead><tr>'+HEADERS_1688G.map(x=>'<th>'+esc(x)+'</th>').join('')+'</tr></thead><tbody>';
+  for(const row of rows) h+='<tr>'+row.map((v,i)=>'<td'+(i===15?' class="lowprice"':'')+'>'+esc(v).replace(/\n/g,'<br>')+'</td>').join('')+'</tr>';
+  $('previewWrap').innerHTML=h+'</tbody></table>';
+}
+function renderPreview1688Sku(s){
+  const rows=build1688SkuRows(s);
+  $('stat').textContent=rows.length+' 行';
+  $('summary').innerHTML='1688《SKU规格导入》预览 · 共 <b>'+rows.length+'</b> 行';
+  let h='<table><thead><tr>'+HEADERS_1688S.map(x=>'<th>'+esc(x)+'</th>').join('')+'</tr></thead><tbody>';
+  for(const row of rows) h+='<tr>'+row.map(v=>'<td>'+esc(v)+'</td>').join('')+'</tr>';
+  $('previewWrap').innerHTML=h+'</tbody></table>';
+}
+
+/* ============ 格式切换 ============ */
+function setFmt(fmt){
+  FMT=fmt;
+  [...$('fmtChips').children].forEach(c=>c.classList.toggle('on', c.dataset.fmt===fmt));
+  $('asDefault').checked = (DEFAULT_FMT===fmt);
+  const is1688 = fmt!=='pdd';
+  $('extraFields').style.display = is1688 ? 'block' : 'none';
+  $('fmtHint').textContent = fmt==='pdd'
+    ? '输出拼多多《规格批量编辑》表，可直接导入。价格含最小尺码/正码正拍减 2 元规则。'
+    : (fmt==='1688goods'
+      ? '输出 1688《商品批量导入》表（16列）。每个 SKU 一行，同一商品序号一致；图片列需你手工补图片。价格统一用拼单价，尺码带 cm，不含正码正拍。'
+      : '输出 1688《SKU规格导入》表（4列），仅含 SKU 属性名称与值。');
+  render();
+}
+
+/* ============ 导出 ============ */
+function toast(msg){const t=$('toast');t.textContent=msg;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),1900);}
+
+// 拼多多：一个商品一个文件
+function exportPdd(s){
+  const files=s.products.map(p=>({name:fileNameFor(p.no,s.pattern),data:buildXlsxBytes(buildRowsFor(p,s.sizes,s.x,s.stock,s.enable))}));
+  if(files.length===1){ download(files[0].data,files[0].name); toast('已导出 '+files[0].name); }
+  else { download(makeZip(files),'规格批量编辑_批量'+files.length+'个.zip'); toast('已导出 '+files.length+' 个文件（zip）'); }
+}
+
+// 价格写法：根据 priceStyle 生成 SKU价格单元格文本
+function priceText(base){
+  const style=$('priceStyle').value;
+  const p1=Number(base);
+  const p2=Math.round((p1-1)*100)/100;
+  const p3=Math.round((p1-2)*100)/100;
+  const q1=$('q1').value.trim()||'1', q2=$('q2').value.trim()||'70', q3=$('q3').value.trim()||'150';
+  if(style==='single') return p1.toFixed(2);
+  if(style==='abbrev') return q1+':'+p1.toFixed(2)+';'+q2+':'+p2.toFixed(2)+';'+q3+':'+p3.toFixed(2);
+  if(style==='arrow') return q1+'件'+p1.toFixed(2)+' '+q2+'件'+p2.toFixed(2)+' '+q3+'件'+p3.toFixed(2);
+  // newline
+  return q1+' -> '+p1.toFixed(2)+'\n'+q2+' -> '+p2.toFixed(2)+'\n'+q3+' -> '+p3.toFixed(2);
+}
+
+// 1688 商品批量导入：表头保留，每个 SKU 一行；同一商品序号一致
+// 返回 { rows, images }，images 里带图片应嵌在第几行第几列
+function build1688GoodsRows(s){
+  const title=$('gTitle').value.trim();
+  const artNo=$('gArtNo').value.trim();
+  const a1=$('gAttr1').value.trim()||'颜色';
+  const a2=$('gAttr2').value.trim()||'适合身高';
+  const embed=$('embedImg').checked && SKU_IMG;
+  const rows=[], images=[];
+  s.products.forEach((p,pi)=>{
+    const seq=String(pi+1);
+    const ano=artNo||(p.no+'#');
+    const t=(p.title||title||'').slice(0,128);
+    for(const c of p.colors){
+      for(const sz of s.sizes){
+        const r=rows.length+gStartRow();
+        rows.push([seq,t,ano,'','','','','','',
+          '', a1,c,a2,sz+'cm',priceText(p.price),s.stock]);
+        // SKU图片：列索引 0-based = 9
+        if(embed && SKU_IMG[c]) images.push({row:r, col:9, dataUri:SKU_IMG[c]});
+      }
+    }
+  });
+  return {rows, images};
+}
+
+// 1688 SKU规格导入：每个颜色×尺码一行
+function build1688SkuRows(s){
+  const a1=$('gAttr1').value.trim()||'颜色';
+  const a2=$('gAttr2').value.trim()||'适合身高';
+  const rows=[];
+  for(const p of s.products){
+    for(const c of p.colors){
+      for(const sz of s.sizes) rows.push([a1,c,a2,sz+'cm']);
+    }
+  }
+  return rows;
+}
+function exportAll(){
+  const s=readAll();
+  if(!s.sizes){ toast('尺码参数不完整'); return; }
+  if(!s.products.length){ toast('请先录入至少一个商品'); return; }
+  if(FMT==='pdd'){ exportPdd(s); return; }
+
+  if(FMT==='1688goods'){
+    const {rows, images}=build1688GoodsRows(s);
+    const bytes=build1688('1688goods', rows, {images});
+    download(bytes, '商品批量导入.xlsx');
+    toast('已导出 商品批量导入.xlsx'+(images.length?'（含 '+images.length+' 张图）':''));
+  } else {
+    const bytes=build1688('1688sku', build1688SkuRows(s));
+    download(bytes, 'SKU规格导入.xlsx'); toast('已导出 SKU规格导入.xlsx');
+  }
+}
+
+/* ============ 持久化 ============ */
+const FIELDS=['products','sizeStart','sizeEnd','sizeStep','addPrice','stock','enable','defPrice','filePattern','qNo','qPrice','qColors','gTitle','gArtNo','gAttr1','gAttr2','q1','q2','q3','priceStyle'];
+function save(){
+  const o={};FIELDS.forEach(id=>o[id]=$(id).value);
+  o.__defaultFmt=DEFAULT_FMT;
+  try{localStorage.setItem(LS_KEY,JSON.stringify(o));}catch(e){}
+}
+function load(){
+  let o=null;try{o=JSON.parse(localStorage.getItem(LS_KEY)||'null');}catch(e){}
+  if(!o) return;
+  FIELDS.forEach(id=>{if(o[id]!==undefined)$(id).value=o[id];});
+  if(o.__defaultFmt) DEFAULT_FMT=o.__defaultFmt;
+}
+
+/* ============ 尺码预设 ============ */
+const PRESETS=[[80,130],[90,140],[100,150],[70,120],[110,160]];
+function renderPresets(){
+  const w=$('sizePresets'); w.innerHTML='';
+  PRESETS.forEach(([a,b])=>{
+    const c=document.createElement('button'); c.type='button'; c.className='chip'; c.textContent=a+'–'+b;
+    c.onclick=()=>{$('sizeStart').value=a;$('sizeEnd').value=b;$('sizeStep').value=10;syncPresets();render();save();};
+    w.appendChild(c);
+  });
+  syncPresets();
+}
+function syncPresets(){
+  const a=$('sizeStart').value,b=$('sizeEnd').value,st=$('sizeStep').value;
+  [...$('sizePresets').children].forEach(c=>{const [x,y]=c.textContent.split('–');c.classList.toggle('on',x===a&&y===b&&st==='10');});
+}
+
+/* ============ 快速录入 ============ */
+function splitColors(v){return (v||'').split(/[\/|、]/).map(s=>s.trim()).filter(Boolean);}
+function quickAdd(){
+  const no=$('qNo').value.trim(), colors=splitColors($('qColors').value), price=$('qPrice').value.trim();
+  if(!no){ toast('请填商品编号'); $('qNo').focus(); return; }
+  if(!colors.length){ toast('请填颜色分类'); $('qColors').focus(); return; }
+  const title=$('gTitle').value.trim();
+  const line=no+'|'+colors.join('/')+'|'+price+(title?'|'+title:'');
+  const ta=$('products');
+  ta.value=(ta.value.trim()? ta.value.replace(/\s*$/,'')+'\n':'')+line;
+  $('qNo').value='';$('qColors').value='';$('qPrice').value='';
+  render(); save(); $('qNo').focus(); toast('已加入：'+no);
+}
+
+/* ============ 抓取 & 登录 ============ */
+async function api(pathname, body){
+  const r = await fetch(pathname, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+  return await r.json();
+}
+function setLogin(state, text){
+  const dot=$('loginDot');
+  dot.className='dot '+(state==='on'?'on':state==='off'?'off':'');
+  $('loginTxt').textContent=text;
+}
+async function refreshLogin(){
+  try{
+    const r = await (await fetch('/api/status',{cache:'no-store'})).json();
+    setLogin(r.loggedIn?'on':'', r.loggedIn?'已登录':'未登录');
+  }catch(e){ setLogin('off','服务未启动'); }
+}
+async function doFetch(){
+  const input=$('goodsUrl').value.trim();
+  if(!input){ toast('请粘贴商品链接或填编号'); return; }
+  const btn=$('fetchBtn');
+  if(btn.disabled) return;
+  btn.disabled=true; btn.textContent='抓取中…';
+  $('fetchMsg').innerHTML='';
+  try{
+    const r = await api('/api/fetch',{url:input});
+    if(r.ok){
+      $('qNo').value = r.goodsId || '';
+      $('qColors').value = (r.colors||[]).join('/');
+      SKU_IMG = r.skuImages || {};
+      const parts=[];
+      if(r.goodsName && $('gTitle')) { $('gTitle').value = r.goodsName; parts.push('标题'); }
+      if(r.minGroupPrice) { $('qPrice').value = Number(r.minGroupPrice).toFixed(2); parts.push('拼单价'); }
+      const imgN=Object.keys(SKU_IMG).length;
+      if(imgN) parts.push('SKU图×'+imgN);
+      $('fetchMsg').innerHTML='<div class="okbox">✓ 抓取成功'+(r.goodsName?'：'+esc(r.goodsName):'')+'<br>颜色 '+r.colors.length+' 个'+(parts.length?'，已填入：'+parts.join('、'):'')+'。点「+ 加入清单」即可。</div>';
+      render(); save();
+    } else {
+      $('fetchMsg').innerHTML='<div class="errbox"><b>抓取失败</b>'+esc(r.error||'未知错误')+'</div>';
+      if(/登录/.test(r.error||'')) refreshLogin();
+    }
+  }catch(e){
+    $('fetchMsg').innerHTML='<div class="errbox"><b>请求失败</b>'+esc(e.message)+'</div>';
+  }finally{
+    btn.disabled=false; btn.textContent='抓取';
+  }
+}
+
+let pollTimer=null;
+let loginBusy=false;
+async function openLogin(){
+  if(loginBusy) return;
+  loginBusy=true;
+  $('loginModal').classList.add('show');
+  $('loginTitle').textContent='登录拼多多';
+  $('loginTip').textContent='正在准备…';
+  $('qrArea').innerHTML='<div class="spin"></div>';
+  try{
+    const r = await api('/api/login/start');
+    if(!r.ok){
+      $('qrArea').innerHTML='<div class="errbox">'+esc(r.error||'登录启动失败').replace(/\n/g,'<br>')+'</div>';
+      return;
+    }
+    if(r.mode==='window'){
+      // 窗口模式：浏览器窗口已弹出，用户自己在里面登录
+      $('loginTitle').textContent='请在浏览器窗口中登录';
+      $('loginTip').textContent='已打开一个浏览器窗口，请在里面登录拼多多。首次打开需要加载页面（可能要几十秒），请稍等。';
+      $('qrRefresh').style.display='none';
+      $('qrArea').innerHTML='<div id="winHint" style="font-size:13px;color:#374151;line-height:1.7;text-align:left;background:#f9fafb;border:1px solid var(--line);border-radius:10px;padding:12px;">'+
+        '1. 在弹出的浏览器窗口里登录拼多多（扫码或手机验证码都行）<br>'+
+        '2. 登录成功后本页面会自动识别，不用手动点<br>'+
+        '3. 窗口没弹出来？看下任务栏，可能被其他窗口挡住了'+
+        '</div>';
+      clearInterval(pollTimer);
+      pollTimer=setInterval(async()=>{
+        const c = await api('/api/login/check');
+        if(c.loggedIn){ clearInterval(pollTimer); closeLogin(); setLogin('on','已登录'); toast('登录成功'); return; }
+        const h=$('winHint');
+        if(h && c.state){
+          if(c.state.rendered) h.dataset.st='ready';
+          else h.dataset.st='loading';
+        }
+      },2000);
+      return;
+    }
+    $('loginTitle').textContent='扫码登录拼多多';
+    $('loginTip').textContent='用手机拼多多 App 扫下面的二维码。登录态保存在本机，下次不用再扫。';
+    $('qrRefresh').style.display='';
+    $('qrArea').innerHTML='<img class="qrimg" src="'+r.qr+'" alt="登录二维码">'+
+      '<div style="font-size:12px;color:#6b7280;margin-top:8px;">扫完自动登录。二维码几分钟内有效，过期请点「刷新二维码」。</div>';
+    clearInterval(pollTimer);
+    pollTimer=setInterval(async()=>{
+      const c = await api('/api/login/check');
+      if(c.loggedIn){ clearInterval(pollTimer); closeLogin(); setLogin('on','已登录'); toast('登录成功'); }
+    },2000);
+  }catch(e){ $('qrArea').innerHTML='<div class="errbox">'+esc(e.message)+'</div>'; }
+  finally{ loginBusy=false; }
+}
+function closeLogin(){ $('loginModal').classList.remove('show'); clearInterval(pollTimer); }
+
+/* ============ 日志面板 ============ */
+async function openLogs(){
+  $('logModal').classList.add('show');
+  await refreshLogs();
+}
+async function refreshLogs(){
+  try{
+    const r = await (await fetch('/api/logs',{cache:'no-store'})).json();
+    const t=$('logText');
+    t.textContent = (r.text && r.text.trim()) ? r.text : '（暂无日志）';
+    t.scrollTop = t.scrollHeight;
+  }catch(e){ $('logText').textContent = '读取日志失败：'+e.message; }
+}
+
+/* ============ 事件 ============ */
+FIELDS.forEach(id=>$(id).addEventListener('input',()=>{render();save();if(['sizeStart','sizeEnd','sizeStep'].includes(id))syncPresets();}));
+$('previewSel').addEventListener('change',()=>{const s=readAll();const idx=parseInt($('previewSel').value,10)||0;if(s.products[idx])renderPreview(s.products[idx],s,idx);});
+$('exportBtn').onclick=exportAll;
+[...$('fmtChips').children].forEach(c=>c.onclick=()=>{ setFmt(c.dataset.fmt); save(); });
+$('asDefault').addEventListener('change',()=>{ DEFAULT_FMT=FMT; save(); toast('已设为默认导出格式'); });
+$('quickAddBtn').onclick=quickAdd;
+$('fetchBtn').onclick=doFetch;
+$('goodsUrl').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();doFetch();}});
+$('qColors').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();quickAdd();}});
+$('qPrice').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('qColors').focus();}});
+$('qNo').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('qColors').focus();}});
+$('logBtn').onclick=openLogs;
+$('logClose').onclick=()=>$('logModal').classList.remove('show');
+$('logRefresh').onclick=refreshLogs;
+$('logDownload').onclick=()=>{ location.href='/api/logs/download'; };
+$('logClear').onclick=async()=>{ if(confirm('确定清空日志？')){ await api('/api/logs/clear'); refreshLogs(); } };
+$('logModal').onclick=e=>{ if(e.target.id==='logModal') $('logModal').classList.remove('show'); };
+$('loginBtn').onclick=async()=>{ const r=await (await fetch('/api/status')).json(); if(r.loggedIn){ if(confirm('已登录。要退出登录吗？')){ await api('/api/logout'); setLogin('','未登录'); toast('已退出登录'); } } else openLogin(); };
+$('loginCancel').onclick=closeLogin;
+$('qrRefresh').onclick=()=>{ clearInterval(pollTimer); openLogin(); };
+$('loginModal').onclick=e=>{ if(e.target.id==='loginModal') closeLogin(); };
+document.addEventListener('keydown',e=>{ if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();exportAll();} });
+
+/* ============ 启动 ============ */
+(async()=>{
+  await loadTemplate();
+  load();
+  FMT = DEFAULT_FMT || 'pdd';
+  renderPresets(); setFmt(FMT); render(); refreshLogin(); $('goodsUrl').focus();
+})();
+</script>
+</body>
+</html>
