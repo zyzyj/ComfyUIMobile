@@ -221,9 +221,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var aiStudioResourceJob: Job? = null
     private var aiStudioProjectJob: Job? = null
     private var aiStudioActionJob: Job? = null
+    /**
+     * 算力档位（可用 GPU 列表）加载（v0.2.47）。
+     *
+     * 以前它复用 `aiStudioProjectJob`，导致两个不同功能互相排斥：档位弹窗加载时
+     * 项目列表刷新会被防重入挡掉；反过来启动/停止成功后的 `aiStudioLoadProjects(silent)`
+     * 又会 cancel 掉正在加载的档位协程，弹窗拿不到可用档位、只显示一条报错。
+     */
+    private var aiStudioScheduleJob: Job? = null
     /** 启动后的状态轮询任务。用户点「停止」时要把它取消——否则它会把“平台把
      * running 退回 false”误判成“分配失败”（那其实是用户自己停的）。 */
     private var aiStudioStartPollJob: Job? = null
+    /** 停止后的状态轮询任务（v0.2.47）。与启动方向一样需要可取消，否则切账号后
+     * 它会继续用旧账号凭据打平台。 */
+    private var aiStudioStopPollJob: Job? = null
     /**
      * 刚在内存里切好、还没落盘的账号 id（v0.2.46）。
      *
@@ -691,7 +702,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val accounts = _state.value.aiStudio.accounts.map {
                         if (it.id == account.id) it.copy(lastSignInAt = at) else it
                     }
-                    persistAiStudio(accounts, account.id)
+                    // v0.2.47：落盘时用「当前内存选中」的账号，而不是发起签到时的那个。
+                    // 签到请求飞行期间用户可能已经切到别的账号，用 account.id 会把磁盘上的
+                    // activeId 写回旧账号，触发 collect 把界面弹回去（B-13）。
+                    persistAiStudio(accounts, _state.value.aiStudio.activeAccountId)
                     AppLogger.info("AI Studio 签到成功：${account.displayName()}")
                     _state.update {
                         it.copy(
@@ -784,9 +798,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         aiStudioActionJob?.cancel()
         aiStudioProjectJob?.cancel()
         aiStudioStartPollJob?.cancel()
+        aiStudioStopPollJob?.cancel()
+        aiStudioScheduleJob?.cancel()
         aiStudioActionJob = null
         aiStudioProjectJob = null
         aiStudioStartPollJob = null
+        aiStudioStopPollJob = null
+        aiStudioScheduleJob = null
         aiStudioDisconnectConsole()
         kernelClient.clearProjectCookies()
     }
@@ -1482,17 +1500,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 用户接着点连接就撞上"平台没有返回环境地址"。
      */
     private fun pollProjectState(projectId: String, wantRunning: Boolean) {
+        // v0.2.47：轮询开始时就锁定发起时的账号快照，贯穿全程。
+        // 以前每轮重读 activeAccount()，切账号后旧轮询会改用新账号的凭据去打平台、
+        // 拿旧账号的 projectId 在新账号的项目里找不到，一路空转到 40 轮超时。
+        val account = _state.value.aiStudio.activeAccount() ?: return
         if (wantRunning) {
             aiStudioStartPollJob?.cancel()
             aiStudioStartPollJob = viewModelScope.launch {
-                runPollProjectState(projectId, wantRunning = true)
+                runPollProjectState(account, projectId, wantRunning = true)
             }
         } else {
-            viewModelScope.launch { runPollProjectState(projectId, wantRunning = false) }
+            // v0.2.47：停止方向也用可取消的 Job（以前是裸 launch，切账号时无法取消）。
+            aiStudioStopPollJob?.cancel()
+            aiStudioStopPollJob = viewModelScope.launch {
+                runPollProjectState(account, projectId, wantRunning = false)
+            }
         }
     }
 
-    private suspend fun runPollProjectState(projectId: String, wantRunning: Boolean) {
+    private suspend fun runPollProjectState(account: AiStudioAccount, projectId: String, wantRunning: Boolean) {
         // 累计实际等待时长：前 5 轮 4 秒、之后 8 秒，文案必须跟真实退避一致
         // （以前固定按每轮 4 秒算，等了 60 秒却显示 24 秒）。
         var waitedSeconds = 0
@@ -1502,7 +1528,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val step = if (attempt < 5) 4 else 8
             delay(step * 1_000L)
             waitedSeconds += step
-            val account = _state.value.aiStudio.activeAccount() ?: return
+            // 账号用入参快照：中途切账号时这个协程会被取消，不会跑到这里。
             val page = runCatching { aiStudio.listProjects(account) }.getOrNull() ?: return@repeat
             val project = page.projects.firstOrNull { it.projectId == projectId } ?: return@repeat
             _state.update { it.copy(aiStudio = it.aiStudio.copy(projects = page.projects)) }
@@ -1607,9 +1633,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val account = _state.value.aiStudio.activeAccount() ?: return
         // 重置为「未加载」，让界面显示读取中（旧数据不要留着假装是新项目的）。
         _state.update { it.copy(aiStudio = it.aiStudio.copy(schedules = emptyList(), schedulesLoaded = false)) }
-        aiStudioProjectJob = viewModelScope.launch {
+        aiStudioScheduleJob = viewModelScope.launch {
             runCatching { aiStudio.listSchedules(account, projectId) }
                 .onSuccess { schedules ->
+                    // v0.2.47：加载期间可能已切账号，别把旧账号的档位写进新面板。
+                    if (!isActiveAiStudioAccount(account.id)) return@launch
                     AppLogger.info("AI Studio 可用算力：${schedules.joinToString { it.displayName() }}")
                     _state.update {
                         it.copy(
@@ -2109,14 +2137,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 服务器读成功时两边一起刷新，直连 ComfyUI 的行为跟以前完全一样。
      */
     private suspend fun readWorkflowWithFallback(serverUrl: String, path: String): String {
-        // v0.2.46：未连接导入的工作流存在本机作用域下，读的时候要走同一个 key。
+        // v0.2.47：读工作流正文时，服务器域未命中再查本机域，走 readSnapshotWithFallback。
         val scope = snapshotScopeFor(serverUrl)
         // v0.1.85：进程内缓存命中就直接返回。工作流正文在一次会话里不会自己变
         // （重新导入时走 put 覆盖），以前命中了还照发一次 HTTP，等于每次点开工作流都
         // 要多付一个往返——在 AI Studio 上还会因为中文路径被网关 400 打回、再双重编码
         // 重试一次，白白多花时间。
-        WorkflowContentCache[scope, path]?.let { return it }
-        val cached = runCatching { workflowSnapshots.read(scope, path) }.getOrNull()
+        val cached = readSnapshotWithFallback(scope, path)
         // v0.1.85：已经确认这台服务器不提供云端工作流存储（AI Studio 这类反代对
         // /userdata 永远 404/400，日志里"服务器上读不到 xxx"反复出现就是这么来的），
         // 就别再发一次注定失败的请求了，直接用本机快照。
@@ -2161,6 +2188,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun snapshotScopeFor(serverUrl: String?): String =
         serverUrl.orEmpty().ifBlank { WorkflowSnapshotStore.LOCAL_SCOPE }
+
+    /**
+     * 读本地快照正文：先查传入域，未命中的再查本机域（v0.2.47）。
+     *
+     * 未连接时导入的工作流存在 `@local` 下，之后连上服务器，查询域变成服务器 URL——
+     * 如果只查这一个域，那些工作流就会"正文读不到"。两边都查一次，服务器域优先
+     * （它代表最新内容），本机域用来兜底。
+     */
+    private suspend fun readSnapshotWithFallback(scope: String, path: String): String? {
+        WorkflowContentCache[scope, path]?.let { return it }
+        runCatching { workflowSnapshots.read(scope, path) }.getOrNull()?.let { return it }
+        if (scope != WorkflowSnapshotStore.LOCAL_SCOPE) {
+            WorkflowContentCache[WorkflowSnapshotStore.LOCAL_SCOPE, path]?.let { return it }
+            return runCatching { workflowSnapshots.read(WorkflowSnapshotStore.LOCAL_SCOPE, path) }.getOrNull()
+        }
+        return null
+    }
 
     /**
      * 读工作流正文；读不到且本机也没存过内容时，报一条"该怎么办"的指引。
@@ -3685,9 +3729,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // 不是这个格式）被吞掉了。未连接就直接把原生解析的错误抛出来。
                     val frontendUsable = bridge != null && _state.value.status == ConnectionStatus.CONNECTED
                     when {
-                        native == null -> error(
+                        // v0.2.47：native == null（AVIF / 认不出的格式）必须先看连接状态。
+                        // 上一版把它单独放第一条，导致已连接时也报「未连接服务器无法解析」，
+                        // 前端回退分支对 AVIF 永远不可达。
+                        native == null && !frontendUsable -> error(
                             "未连接服务器时无法解析这种图片（AVIF 需要先连接服务器）"
                         )
+                        native == null -> (bridge ?: error("前端桥接不可用")).extractWorkflowFromImage(uri, mimeType, filename)
                         native.isSuccess -> native.getOrThrow()
                         !frontendUsable -> error(native.exceptionOrNull()?.message ?: "无法读取所选图片里的工作流")
                         else -> (bridge ?: error("前端桥接不可用")).extractWorkflowFromImage(uri, mimeType, filename)
@@ -4786,8 +4834,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 会当场消失——用户看到的就是"导入两个，第一个不见了"。
                 // 现在服务器条目优先，本机快照里同路径的跳过、多出来的补上。
                 val serverPaths = entries.mapTo(mutableSetOf()) { it.path }
-                val localExtras = runCatching { workflowSnapshots.list(snapshotScopeFor(ui.activeServer?.baseUrl)) }
-                    .getOrElse { emptyList() }
+                // v0.2.47：除了当前服务器域，还要合并「未连接时导入」存在 @local 的条目，
+                // 否则连上服务器后它们会从列表里消失。
+                val localExtras = runCatching {
+                    (workflowSnapshots.list(snapshotScopeFor(ui.activeServer?.baseUrl)) +
+                        workflowSnapshots.list(WorkflowSnapshotStore.LOCAL_SCOPE))
+                        .distinctBy { it.path }
+                }.getOrElse { emptyList() }
                     .filterNot { it.path in serverPaths }
                 ui.copy(
                     workflows = entries + localExtras,
@@ -4823,7 +4876,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // v0.1.70：优先展示本机保存过正文的工作流——列表里的每一条都真正打得开。
                 // 以前只有"最近浏览过的路径"占位，那种条目只有路径没有内容，用户点了
                 // 必然报"该服务器不支持此接口"（日志里连点 15 次失败全是它），看起来就像 App 坏了。
-                val snapshots = runCatching { workflowSnapshots.list(serverKey) }.getOrElse { emptyList() }
+                val snapshots = runCatching {
+                    (workflowSnapshots.list(serverKey) +
+                        workflowSnapshots.list(WorkflowSnapshotStore.LOCAL_SCOPE))
+                        .distinctBy { it.path }
+                }.getOrElse { emptyList() }
                 val placeholders = RecentWorkflows.resolveEntries(ui.recentWorkflowPaths, ui.workflows)
                 // 快照优先，占位里和快照重复的（同路径）去掉，避免一行出现两次。
                 val entries = snapshots +
