@@ -2289,7 +2289,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         fields = if (recordAsOpened) emptyList() else it.fields,
                     )
                 }
-                val serverUrl = _state.value.activeServer?.baseUrl ?: error("尚未连接 ComfyUI 服务器")
+                // v0.2.48：未连接时打开工作流会走到这里。工作流参数是前端（由服务器
+                // 托管的 ComfyUI 页面）解析出来的，未连接时前端根本没加载，所以"未连接
+                // 也能导入并保存"成立，但"未连接就能打开"做不到。给一句可操作的提示，
+                // 别只抛一句冷冰冰的"尚未连接 ComfyUI 服务器"。
+                val serverUrl = _state.value.activeServer?.baseUrl ?: error(
+                    "打开工作流需要先连接服务器。${entry.name} 已保存在本机，连上后即可打开",
+                )
                 val draft = if (_state.value.localDraftsEnabled) {
                     workflowDrafts.load(serverUrl, entry.path)
                 } else {
