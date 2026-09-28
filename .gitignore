@@ -15,3 +15,7 @@ captures/
 .playwright-mcp/
 # AI 自动记忆（本地知识，不入库）
 .aicode/memory/
+
+# 与本仓库无关的本地目录（不随代码走）
+其他项目（这与项目六无关）/
+图片文件夹/
