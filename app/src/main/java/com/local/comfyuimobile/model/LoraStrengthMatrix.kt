@@ -45,7 +45,7 @@ data class LoraMatrixTask(
             LoraStrengthTarget.CLIP -> "clip"
             LoraStrengthTarget.BOTH -> "model+clip"
         }
-        return "${shortName(slot.displayName)} · $scope ${formatStrength(strength)}"
+        return "${shortName(slot.displayName)} · $scope ${LoraStrengthMatrix.formatStrength(strength)}"
     }
 
     private fun shortName(name: String): String =
