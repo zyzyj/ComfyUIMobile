@@ -1,3 +1,35 @@
+# v0.2.51 — 加固异步生命周期：账号资源刷新 / 控制台连接 / 终端 WebSocket / 结果 URL
+
+复审多账号与终端异步链路，把“只比账号 ID”换成“账号 + 连接代次”的判定，避免旧请求/旧回调污染新状态。
+
+## 账号资源刷新（积分 / 算力卡 / A币）
+
+- 新增 `aiStudioRefreshJob` 与 `aiStudioRefreshGeneration`。
+- 写回前同时校验代次与账号：以前只比对 `accountId`，“切到 B 再切回 A”时旧请求的 accountId 又会相等，能把旧积分盖回面板；现在旧代次一律丢弃。
+- 切账号 / 删除当前账号 / 新登录统一取消并作废在飞刷新。
+
+## 控制台连接与控制台终端
+
+- `aiStudioConnectConsole` 记录发起时的账号 + 项目，写回 `kernelEndpoint` 前再次校验；账号或项目变了就丢弃这次结果，不再把旧 endpoint 写进当前状态。
+- 新增 `terminalConnectGeneration`：`onOutput` / `onOpen` / `onClosed` 与自动重连任务都绑定代次，旧连接的迟到回调不再把新终端报成断开或把旧机器输出混进日志。
+- 自动重连额外校验“账号未变”：切账号后不再拿旧凭据反复重连。
+
+## 终端 WebSocket（AiStudioKernelClient）
+
+- `openTerminal` 为每次连接生成 `connectionId`；`onOpen` / `onMessage` / `onFailure` / `onClosed` 四个回调统一用 `terminalSocket` + `connectionId` 双重校验。
+- `closeTerminal` 先作废 connectionId 再关 socket，旧 socket 的迟到回调一律忽略。
+
+## 结果页缩略图 URL
+
+- 新增纯 Kotlin `UrlQuery.append`：按 URL 是否已有 `?` 选择 `?` / `&`。
+- 修复 `previewUrl` 以前写死 `&` 的问题——URL 无查询参数时会拼出 `.../view&preview=...` 这种非法地址，导致缩略图取不到。
+
+## 测试
+
+- 新增 `UrlQueryTest`：无 query / 已有 query / 保留原参数 / 空串四种输入。
+
+---
+
 # v0.2.50 — 快捷出图全面优化：工作流选择、参数持久化与删除
 
 ## 快捷出图
