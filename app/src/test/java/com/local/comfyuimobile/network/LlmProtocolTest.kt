@@ -1,7 +1,8 @@
 package com.local.comfyuimobile.network
 
 import com.local.comfyuimobile.model.LlmConfig
-import com.local.comfyuimobile.model.LlmPreset
+import com.local.comfyuimobile.model.PromptPreset
+import com.local.comfyuimobile.model.PromptPresets
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -193,23 +194,89 @@ class LlmProtocolTest {
     }
 
     @Test
-    fun `未知 preset id 回落到通用`() {
-        assertEquals(LlmPreset.GENERAL, LlmPreset.fromId("不存在的"))
-        assertEquals(LlmPreset.GENERAL, LlmPreset.fromId(null))
-        assertEquals(LlmPreset.ANIMA, LlmPreset.fromId("anima"))
+    fun `未知 preset id 回落到内置默认`() {
+        assertEquals(
+            PromptPresets.DEFAULT_PRESET_ID,
+            PromptPresets.find("不存在的", emptyList()).id,
+        )
+        assertEquals(
+            PromptPresets.DEFAULT_PRESET_ID,
+            PromptPresets.find(null, emptyList()).id,
+        )
+        assertEquals("anima", PromptPresets.find("anima", emptyList()).id)
+    }
+
+    @Test
+    fun `自定义预设可被选中且优先于内置兜底`() {
+        val custom = PromptPreset(
+            id = "custom-1",
+            label = "我的预设",
+            hint = "自定义",
+            systemPrompt = "CUSTOM RULES",
+            builtin = false,
+        )
+        val found = PromptPresets.find("custom-1", listOf(custom))
+        assertEquals("我的预设", found.label)
+        assertEquals("CUSTOM RULES", found.systemPrompt)
+        // 内置与自定义合并后的完整列表
+        assertEquals(3, PromptPresets.all(listOf(custom)).size)
     }
 
     @Test
     fun `Anima 预设的 system prompt 含固定质量前缀且默认 safe`() {
-        val prompt = LlmPrompts.systemPrompt(LlmPreset.ANIMA, isNegative = false)
+        val anima = PromptPresets.find("anima", emptyList())
+        val prompt = LlmPrompts.systemPrompt(anima, isNegative = false)
         assertTrue(prompt.contains("masterpiece, very aesthetic"))
         assertTrue(prompt.contains("year 2025"))
         assertTrue(prompt.contains("safe"))
     }
 
     @Test
+    fun `自定义预设正文被原样使用`() {
+        val custom = PromptPreset(
+            id = "custom-2",
+            label = "X",
+            hint = "",
+            systemPrompt = "ONLY MY RULES",
+            builtin = false,
+        )
+        val prompt = LlmPrompts.systemPrompt(custom, isNegative = false)
+        assertTrue(prompt.contains("ONLY MY RULES"))
+        // 不能把内置规则也塞进去，否则自定义形同虚设
+        assertTrue(!prompt.contains("comma-separated short phrases"))
+    }
+
+    @Test
+    fun `工作流上下文会被写进 system prompt`() {
+        val prompt = LlmPrompts.systemPrompt(
+            PromptPresets.find("general", emptyList()),
+            isNegative = false,
+            context = LlmPrompts.WorkflowContext(
+                checkpoint = "anima_base_v1.safetensors",
+                loras = listOf("loras/角色A.safetensors", "ANIMA-风格.sft"),
+            ),
+        )
+        // 模型名去掉了目录与权重后缀，便于模型理解
+        assertTrue(prompt.contains("anima_base_v1"))
+        assertTrue(prompt.contains("角色A"))
+        assertTrue(prompt.contains("ANIMA-风格"))
+        assertTrue(prompt.contains("Base model"))
+    }
+
+    @Test
+    fun `空工作流上下文不污染 system prompt`() {
+        val base = LlmPrompts.systemPrompt(PromptPresets.find("general", emptyList()), isNegative = false)
+        val withEmpty = LlmPrompts.systemPrompt(
+            PromptPresets.find("general", emptyList()),
+            isNegative = false,
+            context = LlmPrompts.WorkflowContext(),
+        )
+        assertEquals(base, withEmpty)
+    }
+
+    @Test
     fun `负向字段会改写 system prompt 而不是沿用正向规则`() {
-        val negative = LlmPrompts.systemPrompt(LlmPreset.GENERAL, isNegative = true)
+        val negative = LlmPrompts.systemPrompt(PromptPresets.find("general", emptyList()), isNegative = true)
         assertTrue(negative.contains("NEGATIVE"))
         assertTrue(negative.contains("watermark"))
     }

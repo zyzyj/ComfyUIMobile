@@ -10,7 +10,9 @@ import com.local.comfyuimobile.model.ServerProfile
 import com.local.comfyuimobile.model.CacheOutputRule
 import com.local.comfyuimobile.model.AiStudioAccount
 import com.local.comfyuimobile.model.LlmConfig
-import com.local.comfyuimobile.model.LlmPreset
+import com.local.comfyuimobile.model.PromptPresets
+import com.local.comfyuimobile.model.PromptPreset
+import com.local.comfyuimobile.model.PromptPreset
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import org.json.JSONArray
@@ -69,6 +71,8 @@ data class StoredSettings(
     val quickBatchCountByWorkflow: Map<String, Int> = emptyMap(),
     val quickSeedModeByWorkflow: Map<String, String> = emptyMap(),
     val quickWorkflowPath: String = "",
+    /** 用户自建的提示词预设（v0.2.54）。内置预设不入库，由代码内置。 */
+    val customPresets: List<PromptPreset> = emptyList(),
     // v0.1.88：AI 提示词助手所用的外部大模型配置。
     val llmConfig: LlmConfig = LlmConfig(),
     // v0.1.90：AI Studio 平台账号（Cookie 即凭证）。
@@ -98,6 +102,7 @@ class AppPreferences(private val context: Context) {
         val quickFieldValues = stringPreferencesKey("quick_field_values")
         val quickBatchSettings = stringPreferencesKey("quick_batch_settings")
         val quickWorkflowPath = stringPreferencesKey("quick_workflow_path")
+        val customPresets = stringPreferencesKey("custom_prompt_presets")
         val llmConfig = stringPreferencesKey("llm_config")
         val aiStudioAccounts = stringPreferencesKey("ai_studio_accounts")
         val aiStudioActiveId = stringPreferencesKey("ai_studio_active_id")
@@ -129,6 +134,7 @@ class AppPreferences(private val context: Context) {
             quickBatchCountByWorkflow = decodeQuickBatchSettings(preferences[Keys.quickBatchSettings].orEmpty()).first,
             quickSeedModeByWorkflow = decodeQuickBatchSettings(preferences[Keys.quickBatchSettings].orEmpty()).second,
             quickWorkflowPath = preferences[Keys.quickWorkflowPath].orEmpty(),
+            customPresets = decodeCustomPresets(preferences[Keys.customPresets].orEmpty()),
             llmConfig = decodeLlmConfig(preferences[Keys.llmConfig].orEmpty()),
             aiStudioAccounts = decodeAiStudioAccounts(preferences[Keys.aiStudioAccounts].orEmpty()),
             aiStudioActiveId = preferences[Keys.aiStudioActiveId].orEmpty(),
@@ -271,13 +277,51 @@ class AppPreferences(private val context: Context) {
         }
     }
 
+    suspend fun saveCustomPresets(presets: List<PromptPreset>) {
+        context.dataStore.edit { preferences ->
+            preferences[Keys.customPresets] = JSONArray().apply {
+                presets.forEach { preset ->
+                    put(
+                        JSONObject()
+                            .put("id", preset.id)
+                            .put("label", preset.label)
+                            .put("hint", preset.hint)
+                            .put("systemPrompt", preset.systemPrompt),
+                    )
+                }
+            }.toString()
+        }
+    }
+
+    private fun decodeCustomPresets(raw: String): List<PromptPreset> = runCatching {
+        val array = JSONArray(raw.ifBlank { "[]" })
+        buildList {
+            repeat(array.length()) { index ->
+                val item = array.optJSONObject(index) ?: return@repeat
+                val id = item.optString("id")
+                val prompt = item.optString("systemPrompt")
+                // id 与正文缺一不可：没有正文的预设选中后 AI 会退回内置规则，容易让用户困惑。
+                if (id.isBlank() || prompt.isBlank()) return@repeat
+                add(
+                    PromptPreset(
+                        id = id,
+                        label = item.optString("label").ifBlank { "自定义" },
+                        hint = item.optString("hint"),
+                        systemPrompt = prompt,
+                        builtin = false,
+                    ),
+                )
+            }
+        }
+    }.getOrDefault(emptyList())
+
     suspend fun saveLlmConfig(config: LlmConfig) {
         context.dataStore.edit { preferences ->
             preferences[Keys.llmConfig] = JSONObject()
                 .put("baseUrl", config.baseUrl.trim())
                 .put("apiKey", config.apiKey.trim())
                 .put("model", config.model.trim())
-                .put("preset", config.preset.id)
+                .put("preset", config.presetId)
                 .put("temperature", config.temperature.toDouble())
                 .toString()
         }
@@ -290,7 +334,7 @@ class AppPreferences(private val context: Context) {
             baseUrl = item.optString("baseUrl"),
             apiKey = item.optString("apiKey"),
             model = item.optString("model"),
-            preset = LlmPreset.fromId(item.optString("preset")),
+            presetId = item.optString("preset").ifBlank { PromptPresets.DEFAULT_PRESET_ID },
             temperature = LlmConfig.normalizeTemperature(item.optDouble("temperature", LlmConfig.DEFAULT_TEMPERATURE.toDouble()).toFloat()),
         )
     }.getOrDefault(LlmConfig())
