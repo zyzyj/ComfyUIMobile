@@ -59,12 +59,18 @@ import com.local.comfyuimobile.model.ConnectionStatus
 import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.JobSummary
 import com.local.comfyuimobile.model.LlmConfig
+import com.local.comfyuimobile.model.PromptPreset
+import com.local.comfyuimobile.model.PromptPresets
 import com.local.comfyuimobile.model.LoraMatrixTask
 import com.local.comfyuimobile.model.LoraStrengthMatrix
 import com.local.comfyuimobile.model.LoraStrengthRun
 import com.local.comfyuimobile.model.LoraStrengthSlot
 import com.local.comfyuimobile.model.LoraStrengthTarget
 import com.local.comfyuimobile.model.StrengthItemResult
+import com.local.comfyuimobile.model.TerminalChatMessage
+import com.local.comfyuimobile.model.TerminalCommandResult
+import com.local.comfyuimobile.model.TerminalCommandSafety
+import com.local.comfyuimobile.model.TerminalMessageRole
 import com.local.comfyuimobile.model.StrengthPhase
 import com.local.comfyuimobile.model.MediaKind
 import com.local.comfyuimobile.model.ParameterField
@@ -317,6 +323,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         saveFolderUri = stored.saveFolderUri.ifBlank { null },
                         serverInput = resolvedServerInput,
                         llmConfig = stored.llmConfig,
+                        customPresets = stored.customPresets,
                         aiStudio = _state.value.aiStudio.copy(
                             accounts = stored.aiStudioAccounts,
                             // v0.2.46：账号字段跟 serverInput 一样需要"内存领先磁盘"的
@@ -2923,6 +2930,263 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * AI 助手的对话历史（v0.2.54）。
+     *
+     * 进程内内存态：AI 助手是排查/安装这类短会话，不值得落盘（且包含终端输出，
+     * 可能带路径与凭据片段）。
+     */
+    private val _assistantMessages = MutableStateFlow<List<TerminalChatMessage>>(emptyList())
+    val assistantMessages: StateFlow<List<TerminalChatMessage>> = _assistantMessages.asStateFlow()
+    private var assistantJob: Job? = null
+    /** 待用户确认的命令（界面渲染确认按钮）与它们的风险标注。 */
+    private val _pendingCommands = MutableStateFlow<List<PendingCommand>>(emptyList())
+    val pendingCommands: StateFlow<List<PendingCommand>> = _pendingCommands.asStateFlow()
+
+    /** 一条待确认的命令 + 风险标注。 */
+    data class PendingCommand(
+        val id: String,
+        val command: String,
+        val dangerous: Boolean,
+        val readOnly: Boolean,
+        val install: Boolean,
+    )
+
+    fun clearAssistantConversation() {
+        assistantJob?.cancel()
+        assistantJob = null
+        _assistantMessages.value = emptyList()
+        _pendingCommands.value = emptyList()
+    }
+
+    /** 丢弃待执行命令（用户点“跳过”）。 */
+    fun dismissPendingCommands() {
+        _pendingCommands.value = emptyList()
+    }
+
+    /**
+     * 向 AI 助手提问。回复里的命令会被解析出来放入待确认队列。
+     *
+     * 不直接执行任何命令：即使模型给出的是只读命令，也由用户点“执行”才发。
+     * 这保证“AI 说的”与“实际跑的”之间永远有一个人工关卡。
+     */
+    fun askAssistant(question: String) {
+        val prompt = question.trim()
+        if (prompt.isBlank()) return
+        val config = _state.value.llmConfig
+        if (!config.isConfigured()) {
+            _assistantMessages.update {
+                it + TerminalChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    role = TerminalMessageRole.SYSTEM_NOTE,
+                    text = "还没配置大模型：设置 → AI 提示词助手，填接口地址和模型名。",
+                )
+            }
+            return
+        }
+        if (assistantJob?.isActive == true) return
+        val userMessage = TerminalChatMessage(
+            id = UUID.randomUUID().toString(),
+            role = TerminalMessageRole.USER,
+            text = prompt,
+        )
+        _assistantMessages.update { it + userMessage }
+        _pendingCommands.value = emptyList()
+        assistantJob = viewModelScope.launch {
+            val history = _assistantMessages.value
+            val reply = runCatching {
+                llm.chat(
+                    config = config,
+                    systemPrompt = LlmPrompts.terminalAgentSystemPrompt(
+                        osHint = "Linux (cloud container)",
+                        workingDir = "~",
+                    ),
+                    userMessage = buildAssistantUserMessage(history, prompt),
+                )
+            }.getOrElse { error ->
+                if (error is CancellationException) throw error
+                AppLogger.error("AI 助手请求失败", error)
+                _assistantMessages.update {
+                    it + TerminalChatMessage(
+                        id = UUID.randomUUID().toString(),
+                        role = TerminalMessageRole.SYSTEM_NOTE,
+                        text = "请求失败：${error.message ?: error.javaClass.simpleName}",
+                    )
+                }
+                return@launch
+            }.trim()
+            val commands = TerminalCommandSafety.parseCommands(reply)
+            _assistantMessages.update {
+                it + TerminalChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    role = TerminalMessageRole.ASSISTANT,
+                    text = reply,
+                    commands = commands,
+                )
+            }
+            _pendingCommands.value = commands.map { command ->
+                PendingCommand(
+                    id = UUID.randomUUID().toString(),
+                    command = command,
+                    dangerous = TerminalCommandSafety.isDangerous(command),
+                    readOnly = TerminalCommandSafety.isReadOnly(command),
+                    install = TerminalCommandSafety.isInstall(command),
+                )
+            }
+        }.also { job ->
+            job.invokeOnCompletion { if (assistantJob === job) assistantJob = null }
+        }
+    }
+
+    /**
+     * 把最近几轮对话 + 命令输出拼成一条 user 消息。
+     *
+     * OpenAI 兼容接口支持多轮，但本仓库的 [LlmRepository.chat] 只收单条 user 消息，
+     * 所以在这里把历史折叠成文本——足够模型理解上下文，且不用改网络层。
+     * 只取最近 [ASSISTANT_HISTORY_TURNS] 轮，避免上下文无限增长。
+     */
+    private fun buildAssistantUserMessage(history: List<TerminalChatMessage>, prompt: String): String =
+        buildString {
+            val recent = history.takeLast(ASSISTANT_HISTORY_TURNS)
+            if (recent.size > 1) {
+                append("Conversation so far:\n")
+                recent.dropLast(1).forEach { message ->
+                    val speaker = when (message.role) {
+                        TerminalMessageRole.USER -> "User"
+                        TerminalMessageRole.ASSISTANT -> "You"
+                        TerminalMessageRole.SYSTEM_NOTE -> "System"
+                    }
+                    append("$speaker: ").append(message.text.take(600)).append("\n\n")
+                }
+            }
+            append("User: ").append(prompt)
+        }
+
+    /**
+     * 执行一条 AI 提议的命令：加边界标记后发到终端，等输出回传，再把结果喂回对话。
+     *
+     * 需已连接终端；未连接时给提示而不是把命令发到空气里。
+     */
+    fun executeAssistantCommand(pending: PendingCommand) {
+        val panel = _state.value.aiStudio
+        if (!panel.consoleConnected) {
+            _assistantMessages.update {
+                it + TerminalChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    role = TerminalMessageRole.SYSTEM_NOTE,
+                    text = "终端未连接：先去「更多 → 控制台」连上终端，再执行命令。",
+                )
+            }
+            return
+        }
+        _pendingCommands.value = _pendingCommands.value.filterNot { it.id == pending.id }
+        val token = UUID.randomUUID().toString().take(8)
+        val baseline = _state.value.aiStudio.terminalLines.size
+        kernelClient.sendInput(TerminalCommandSafety.wrap(pending.command, token))
+        _assistantMessages.update {
+            it + TerminalChatMessage(
+                id = UUID.randomUUID().toString(),
+                role = TerminalMessageRole.USER,
+                text = "（已执行）${pending.command}",
+            )
+        }
+        viewModelScope.launch {
+            val result = awaitCommandResult(pending.command, token, baseline)
+            _assistantMessages.update {
+                it + TerminalChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    role = TerminalMessageRole.SYSTEM_NOTE,
+                    text = result.forModel(600),
+                )
+            }
+            // 拿到输出后自动接一轮：让模型解释/接着提案，用户不用自己描述结果。
+            askAssistantFollowUp(result)
+        }
+    }
+
+    /**
+     * 等命令结束标记出现，切出输出与退出码。
+     *
+     * 为什么需要标记：终端是一条连续流，无法从内容本身判断命令跑完没有。
+     * 不用标记时会把上一轮命令的尾巴当成结果，模型后续判断就会错。
+     */
+    private suspend fun awaitCommandResult(
+        command: String,
+        token: String,
+        baseline: Int,
+    ): TerminalCommandResult {
+        val deadline = System.currentTimeMillis() + ASSISTANT_COMMAND_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            delay(400L)
+            val lines = _state.value.aiStudio.terminalLines
+            // 只取本条命令之后新增的行。终端缓冲是滚动的（保留最近 2000 行），
+            // baseline 可能已失效，用 coerceAtMost 兜底避免越界。
+            val fresh = lines.drop(baseline.coerceAtMost(lines.size))
+            val endIndex = fresh.indexOfFirst { TerminalCommandSafety.parseExitCode(it, token) != null }
+            if (endIndex >= 0) {
+                val exitCode = TerminalCommandSafety.parseExitCode(fresh[endIndex], token)
+                // 去掉回显里的 BEGIN/END 标记行，只留真正的输出。
+                val body = fresh.take(endIndex)
+                    .filterNot { it.contains(TerminalCommandSafety.beginMarker(token)) }
+                    .joinToString("\n")
+                return TerminalCommandResult(
+                    command = command,
+                    output = body,
+                    exitCode = exitCode,
+                    success = exitCode == 0,
+                )
+            }
+        }
+        return TerminalCommandResult(
+            command = command,
+            output = "（等待输出超时，可在控制台直接查看）",
+            exitCode = null,
+            success = false,
+        )
+    }
+
+    /** 把命令结果喂回模型，让它解释或接着给下一步。 */
+    private fun askAssistantFollowUp(result: TerminalCommandResult) {
+        val config = _state.value.llmConfig
+        if (!config.isConfigured()) return
+        if (assistantJob?.isActive == true) return
+        val followUp = "${LlmPrompts.commandResultPrefix()}\n\n${result.forModel()}"
+        assistantJob = viewModelScope.launch {
+            val reply = runCatching {
+                llm.chat(
+                    config = config,
+                    systemPrompt = LlmPrompts.terminalAgentSystemPrompt("Linux (cloud container)", "~"),
+                    userMessage = buildAssistantUserMessage(_assistantMessages.value, followUp),
+                )
+            }.getOrElse { error ->
+                if (error is CancellationException) throw error
+                AppLogger.warn("AI 助手跟进请求失败", error)
+                return@launch
+            }.trim()
+            if (reply.isBlank()) return@launch
+            val commands = TerminalCommandSafety.parseCommands(reply)
+            _assistantMessages.update {
+                it + TerminalChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    role = TerminalMessageRole.ASSISTANT,
+                    text = reply,
+                    commands = commands,
+                )
+            }
+            _pendingCommands.value = commands.map { command ->
+                PendingCommand(
+                    id = UUID.randomUUID().toString(),
+                    command = command,
+                    dangerous = TerminalCommandSafety.isDangerous(command),
+                    readOnly = TerminalCommandSafety.isReadOnly(command),
+                    install = TerminalCommandSafety.isInstall(command),
+                )
+            }
+        }.also { job ->
+            job.invokeOnCompletion { if (assistantJob === job) assistantJob = null }
+        }
+    }
+
     // ===== v0.1.88 AI 提示词助手 =====
 
     /** 设置页：保存大模型配置（地址 / Key / 模型名 / 风格预设）。 */
@@ -2932,6 +3196,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { preferences.saveLlmConfig(config) }
                 .onFailure { AppLogger.error("保存大模型配置失败", it) }
         }
+    }
+
+    /**
+     * 保存用户自建的提示词预设（v0.2.54）。
+     *
+     * 内置预设不可改也不可删（改坏了对用户没好处），所以这里只接受自定义项；
+     * 传入列表里的内置项一律透掉，防止界面失误把内置规则写进库里。
+     */
+    fun saveCustomPresets(presets: List<PromptPreset>) {
+        val custom = presets.filterNot { it.builtin }
+        _state.update { it.copy(customPresets = custom) }
+        viewModelScope.launch {
+            runCatching { preferences.saveCustomPresets(custom) }
+                .onFailure { AppLogger.error("保存自定义预设失败", it) }
+        }
+    }
+
+    /**
+     * 当前选中的预设（内置或自定义）。界面只读它，不再直取枚举。
+     */
+    fun activePreset(): PromptPreset =
+        PromptPresets.find(_state.value.llmConfig.presetId, _state.value.customPresets)
+
+    /**
+     * 当前工作流的模型上下文（v0.2.54）：checkpoint + 已加载的 LoRA。
+     *
+     * 供 AI 写提示词时参考。从**当前选中的工作流**取（参数页）或快捷页字段取，
+     * 优先参数页；两边都没有就返回空，此时退回纯预设规则。
+     */
+    private fun currentWorkflowContext(): LlmPrompts.WorkflowContext {
+        val st = _state.value
+        val fields = st.fields.ifEmpty { st.quickFields }
+        if (fields.isEmpty()) return LlmPrompts.WorkflowContext()
+        val checkpoint = fields.firstOrNull { field ->
+            field.kind == ParameterKind.COMBO && (
+                field.nodeType.contains("CheckpointLoader", ignoreCase = true) ||
+                    field.name.equals("ckpt_name", ignoreCase = true) ||
+                    field.name.equals("unet_name", ignoreCase = true)
+                )
+        }?.displayValue.orEmpty()
+        val loras = fields
+            .filter { it.name == "lora_name" && it.nodeType.contains("LoraLoader", ignoreCase = true) }
+            .map { it.displayValue }
+            .filter { it.isNotBlank() }
+        return LlmPrompts.WorkflowContext(checkpoint = checkpoint, loras = loras)
     }
 
     /** 设置页：用一句话探活，免得填完配置到生图时才发现是错的。 */
@@ -3044,7 +3353,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val text = runCatching {
                 llm.chat(
                     config,
-                    LlmPrompts.systemPrompt(config.preset, target.isNegative),
+                    LlmPrompts.systemPrompt(
+                        preset = activePreset(),
+                        isNegative = target.isNegative,
+                        context = currentWorkflowContext(),
+                    ),
                     LlmPrompts.userPrompt(mode, current, idea),
                 )
             }.getOrElse { error ->
@@ -6346,6 +6659,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val BATCH_ITEM_TIMEOUT_MS = 20 * 60_000L
         /** 控制台终端最多保留的行数：长时间跑命令（如装依赖）也会刷出成千上万行。 */
         const val TERMINAL_MAX_LINES = 2_000
+        /** v0.2.54：AI 助手单条命令的等待上限。装包/下载可能很慢，给足 10 分钟。 */
+        const val ASSISTANT_COMMAND_TIMEOUT_MS = 10 * 60_000L
+        /** v0.2.54：喂回模型的对话轮数。太多会挤爆上下文（每轮都带终端输出）。 */
+        const val ASSISTANT_HISTORY_TURNS = 8
         /** 上报给远端 PTY 的行数。列数由界面实测宽度决定（见 aiStudioResizeConsole）。 */
         const val CONSOLE_ROWS = 40
         /** 控制台终端断线重连退避（毫秒）。最后一次失败后不再自动重试，提示手动重连。 */

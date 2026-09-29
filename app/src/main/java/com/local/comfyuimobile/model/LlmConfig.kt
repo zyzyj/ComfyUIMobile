@@ -11,7 +11,8 @@ data class LlmConfig(
     val baseUrl: String = "",
     val apiKey: String = "",
     val model: String = "",
-    val preset: LlmPreset = LlmPreset.GENERAL,
+    /** 选中的提示词预设 id。v0.2.54 起改用字符串，以支持用户自建预设。 */
+    val presetId: String = PromptPresets.DEFAULT_PRESET_ID,
     val temperature: Float = DEFAULT_TEMPERATURE,
 ) {
     /**
@@ -31,31 +32,9 @@ data class LlmConfig(
 }
 
 /**
- * 提示词风格预设，只影响喂给大模型的 system prompt。
- *
- * ANIMA 那套规则取自 comfyui-good-anima 的 `comfyui-animatool/SKILL.md`：
- * 组装顺序 `quality_meta_year_safe → count → character → series → artist →
- * style → appearance → tags → environment → nltags`，外加固定的质量前缀。
- * 该项目本身没有可执行代码（只是一组 Skill 文档），所以这里把规则文本搬过来，
- * 而不是"引入依赖"。
+ * 提示词风格预设见 [PromptPreset] / [PromptPresets]（内置只读 + 用户自建）。
+ * v0.2.54 前这里是一个写死的枚举；已改为数据模型以便自定义。
  */
-enum class LlmPreset(val id: String, val label: String, val hint: String) {
-    GENERAL(
-        id = "general",
-        label = "通用",
-        hint = "SDXL / Flux / SD15 等绝大多数模型都能用，输出逗号分隔的短语标签",
-    ),
-    ANIMA(
-        id = "anima",
-        label = "Anima",
-        hint = "Qwen3 文本编码器，走质量前缀 + 固定字段顺序，偏自然语言长句",
-    ),
-    ;
-
-    companion object {
-        fun fromId(id: String?): LlmPreset = entries.firstOrNull { it.id == id } ?: GENERAL
-    }
-}
 
 /** AI 助手这一次的动作。 */
 enum class AiAssistMode(val label: String, val hint: String) {

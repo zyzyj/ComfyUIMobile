@@ -242,6 +242,8 @@ import com.local.comfyuimobile.model.LoraStrengthRun
 import com.local.comfyuimobile.model.LoraStrengthSlot
 import com.local.comfyuimobile.model.LoraStrengthTarget
 import com.local.comfyuimobile.model.StrengthPhase
+import com.local.comfyuimobile.model.TerminalChatMessage
+import com.local.comfyuimobile.model.TerminalMessageRole
 import com.local.comfyuimobile.data.WorkflowBrowser
 import com.local.comfyuimobile.data.WorkflowPath
 import com.local.comfyuimobile.model.AppDestination
@@ -261,7 +263,8 @@ import com.local.comfyuimobile.model.ConnectionStatus
 import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.JobSummary
 import com.local.comfyuimobile.model.LlmConfig
-import com.local.comfyuimobile.model.LlmPreset
+import com.local.comfyuimobile.model.PromptPreset
+import com.local.comfyuimobile.model.PromptPresets
 import com.local.comfyuimobile.model.MediaKind
 import com.local.comfyuimobile.model.ParameterField
 import com.local.comfyuimobile.model.ParameterKind
@@ -276,6 +279,7 @@ import com.local.comfyuimobile.model.WorkflowNode
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.launch
 import kotlin.random.Random
@@ -293,16 +297,19 @@ private const val IME_RELOCATION_SUPPRESSION_MILLIS = 700L
  * [MainPage.bottomBarEntries]。
  */
 private enum class MainPage(val label: String, val icon: ImageVector, val inBottomBar: Boolean = true) {
+    // v0.2.54：底栏收成 5 个（Material 3 规范上限）：「更多」接管了控制台 / 任务 /
+    // AI 助手。以前 6 个已经超出规范，标签被挤得很窄。
     ACCOUNT("账号", Icons.Outlined.AccountCircle),
-    CONSOLE("控制台", Icons.Outlined.Computer),
     WORKFLOWS("工作流", Icons.Outlined.Folder),
-    RESULTS("结果", Icons.Outlined.Image),
-    TASKS("任务", Icons.AutoMirrored.Outlined.List),
     QUICK("快捷", Icons.Outlined.PlayArrow),
-    // 图标沿用本文件已验证可用的 Icons.Outlined.Tune（Outlined 版不确定存在）；
-    // 它不进底栏，实际不会渲染，这里只为保持枚举完整。
+    RESULTS("结果", Icons.Outlined.Image),
+    MORE("更多", Icons.Outlined.MoreHoriz),
+    // 以下不进底栏，从「更多」或页面内进入。
+    CONSOLE("控制台", Icons.Outlined.Computer, inBottomBar = false),
+    TASKS("任务", Icons.AutoMirrored.Outlined.List, inBottomBar = false),
+    AI_ASSISTANT("AI 助手", Icons.Outlined.Bolt, inBottomBar = false),
     PARAMETERS("参数", Icons.Outlined.Tune, inBottomBar = false),
-    // v0.2.36：空间管理页。从设置进入，也不进底栏。
+    // v0.2.36：空间管理页。从设置进入。
     STORAGE("空间管理", Icons.Outlined.Memory, inBottomBar = false),
     ;
 
@@ -579,6 +586,280 @@ private fun ServerCard(profile: ServerProfile, onClick: () -> Unit, onDelete: ((
     }
 }
 
+/**
+ * v0.2.54：「更多」页。底栏受 Material 3 限制（最多 5 个）放不下的入口收在这里。
+ *
+ * 以前底栏 6 个：账号/控制台/工作流/结果/任务/快捷——已经超出规范，标签被挤得很窄。
+ * 现在底栏保持 5 个，控制台 / 任务 / AI 助手 移到本页。
+ */
+@Composable
+private fun MoreScreen(
+    onOpen: (MainPage) -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    val entries = listOf(
+        Triple(MainPage.AI_ASSISTANT, "让 AI 帮你管服务器：下载插件、找模型、看日志", "AI 助手"),
+        Triple(MainPage.CONSOLE, "云端终端：执行命令、启动 ComfyUI", "控制台"),
+        Triple(MainPage.TASKS, "服务器任务队列与历史", "任务"),
+    )
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text("更多", style = MaterialTheme.typography.titleLarge)
+        entries.forEach { (page, description, label) ->
+            OutlinedCard(
+                modifier = Modifier.fillMaxWidth().clickable { onOpen(page) },
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(page.icon, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(label, style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Icon(Icons.Outlined.ChevronRight, null)
+                }
+            }
+        }
+        OutlinedCard(
+            modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenSettings),
+            shape = RoundedCornerShape(14.dp),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Settings, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("设置", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "大模型 / 提示词预设 / 保存位置 / 诊断日志",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Icon(Icons.Outlined.ChevronRight, null)
+            }
+        }
+    }
+}
+
+/**
+ * v0.2.54：AI 助手板块。
+ *
+ * 两件事：① 帮你写提示词（直接写入参数页/快捷页的字段）；② 管服务器——你描述需求，
+ * AI 给出命令，**你确认后**才在云端终端执行，输出自动回喂给 AI 接着分析。
+ *
+ * 安全边界：AI 永远不直接执行命令。危险命令（删除/覆盖/卸载）在界面上单独标红，
+ * 需要再点一次确认。详见 TerminalCommandSafety 的注释。
+ */
+@Composable
+private fun AiAssistantScreen(state: AppUiState, viewModel: MainViewModel) {
+    val messages by viewModel.assistantMessages.collectAsStateWithLifecycle()
+    val pending by viewModel.pendingCommands.collectAsStateWithLifecycle()
+    var input by remember { mutableStateOf("" ) }
+    val listState = rememberLazyListState()
+    val configured = state.llmConfig.isConfigured()
+    val terminalConnected = state.aiStudio.consoleConnected
+    // 新消息到达时滚到底部，否则用户看不到最新回复。
+    LaunchedEffect(messages.size, pending.size) {
+        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Outlined.Bolt, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text("AI 助手", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    when {
+                        !configured -> "未配置大模型（设置 → AI 提示词助手）"
+                        terminalConnected -> "终端已连接·可直接执行命令"
+                        else -> "终端未连接（仅能对话，无法执行命令）"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (terminalConnected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (messages.isNotEmpty()) {
+                IconButton(onClick = viewModel::clearAssistantConversation) {
+                    Icon(Icons.Outlined.Delete, "清空对话")
+                }
+            }
+        }
+
+        if (messages.isEmpty()) {
+            Column(
+                Modifier.fillMaxWidth().weight(1f).padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Icon(
+                    Icons.Outlined.Bolt,
+                    null,
+                    Modifier.size(36.dp),
+                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "描述你想干什么，AI 会给出命令、由你确认后再执行。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "例：帮我看看 ComfyUI 装了哪些插件 / 下载 ComfyUI-Manager / 磁盘还剩多少",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(messages, key = { it.id }) { message ->
+                    AssistantMessageCard(message)
+                }
+            }
+        }
+
+        // 待确认命令：模型刚给出的建议。
+        pending.forEach { item ->
+            var confirming by remember(item.id) { mutableStateOf(false) }
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                color = if (item.dangerous) MaterialTheme.colorScheme.errorContainer
+                else MaterialTheme.colorScheme.secondaryContainer,
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            if (item.dangerous) Icons.Outlined.Warning else Icons.Outlined.PlayArrow,
+                            null,
+                            Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            when {
+                                item.dangerous -> "危险命令·确认后执行"
+                                item.install -> "安装/下载"
+                                item.readOnly -> "只读命令"
+                                else -> "命令"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                    Text(
+                        item.command,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (confirming) {
+                            Button(
+                                onClick = {
+                                    confirming = false
+                                    viewModel.executeAssistantCommand(item)
+                                },
+                            ) { Text("我确认，执行") }
+                            OutlinedButton(onClick = { confirming = false }) { Text("取消") }
+                        } else {
+                            Button(
+                                onClick = {
+                                    // 危险命令多点一次：防手滑把 rm 跑出去。
+                                    if (item.dangerous) confirming = true
+                                    else viewModel.executeAssistantCommand(item)
+                                },
+                                enabled = terminalConnected,
+                            ) { Text(if (item.dangerous) "执行（需确认）" else "执行") }
+                            OutlinedButton(onClick = viewModel::dismissPendingCommands) { Text("跳过") }
+                        }
+                    }
+                }
+            }
+        }
+
+        Row(
+            Modifier.fillMaxWidth().padding(12.dp),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = { input = it },
+                modifier = Modifier.weight(1f),
+                minLines = 1,
+                maxLines = 4,
+                placeholder = { Text("想做什么？") },
+            )
+            Button(
+                onClick = {
+                    val text = input
+                    input = ""
+                    viewModel.askAssistant(text)
+                },
+                enabled = input.isNotBlank(),
+            ) { Text("发送") }
+        }
+    }
+}
+
+@Composable
+private fun AssistantMessageCard(message: TerminalChatMessage) {
+    val isUser = message.role == TerminalMessageRole.USER
+    val isNote = message.role == TerminalMessageRole.SYSTEM_NOTE
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = when {
+            isUser -> MaterialTheme.colorScheme.primaryContainer
+            isNote -> MaterialTheme.colorScheme.surfaceVariant
+            else -> MaterialTheme.colorScheme.surface
+        },
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = if (isUser || isNote) 0.dp else 2.dp,
+    ) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                when {
+                    isUser -> "你"
+                    isNote -> "系统"
+                    else -> "AI"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // 命令块用等宽字体，普通文字用正文字体，与终端保持一致的视觉语言。
+            if (isNote) {
+                Text(
+                    message.text,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                )
+            } else {
+                Text(message.text, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: SnackbarHostState) {
@@ -658,7 +939,11 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                         // 高亮「工作流」比整栏全灰更符合“我从哪儿来的”。
                         selected = page == target ||
                             (target == MainPage.WORKFLOWS && page == MainPage.PARAMETERS) ||
-                            (target == MainPage.ACCOUNT && page == MainPage.STORAGE),
+                            (target == MainPage.ACCOUNT && page == MainPage.STORAGE) ||
+                            // 「更多」的子里页在底栏仍高亮「更多」，否则整栏全灰。
+                            (target == MainPage.MORE && page in setOf(
+                                MainPage.CONSOLE, MainPage.TASKS, MainPage.AI_ASSISTANT,
+                            )),
                         onClick = { page = target },
                         icon = { Icon(target.icon, null) },
                         label = { Text(target.label, style = MaterialTheme.typography.labelSmall) },
@@ -706,6 +991,11 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                         MainPage.CONSOLE -> ConsoleScreen(state, viewModel)
                         MainPage.WORKFLOWS -> WorkflowScreen(state, viewModel, onOpenParameters = { page = MainPage.PARAMETERS })
                         MainPage.PARAMETERS -> ParameterScreen(state, viewModel)
+                        MainPage.MORE -> MoreScreen(
+                            onOpen = { target -> page = target },
+                            onOpenSettings = { settings = true },
+                        )
+                        MainPage.AI_ASSISTANT -> AiAssistantScreen(state, viewModel)
                         MainPage.RESULTS -> ResultScreen(
                             state = state,
                             viewModel = viewModel,
@@ -3931,16 +4221,21 @@ private fun LlmSettingsSection(
     expanded: Boolean,
     onToggle: () -> Unit,
     onSave: (LlmConfig) -> Unit,
+    onSaveCustomPresets: (List<PromptPreset>) -> Unit,
     onTest: () -> Unit,
 ) {
     val config = state.llmConfig
     var baseUrl by remember(config) { mutableStateOf(config.baseUrl) }
     var apiKey by remember(config) { mutableStateOf(config.apiKey) }
     var model by remember(config) { mutableStateOf(config.model) }
-    var preset by remember(config) { mutableStateOf(config.preset) }
+    var presetId by remember(config, state.customPresets) { mutableStateOf(config.presetId) }
     var temperature by remember(config) { mutableStateOf(config.temperature) }
+    val allPresets = PromptPresets.all(state.customPresets)
+    val activePreset = allPresets.firstOrNull { it.id == presetId } ?: allPresets.first()
+    var editorFor by remember { mutableStateOf<PromptPreset?>(null) }
+    var showPresetEditor by remember { mutableStateOf(false) }
     val dirty = baseUrl != config.baseUrl || apiKey != config.apiKey ||
-        model != config.model || preset != config.preset || temperature != config.temperature
+        model != config.model || presetId != config.presetId || temperature != config.temperature
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3984,16 +4279,65 @@ private fun LlmSettingsSection(
                 placeholder = { Text("gpt-4o-mini") },
             )
             Text("提示词风格", style = MaterialTheme.typography.bodySmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                LlmPreset.entries.forEach { item ->
-                    if (preset == item) {
-                        Button(onClick = { preset = item }, modifier = Modifier.weight(1f)) { Text(item.label) }
-                    } else {
-                        OutlinedButton(onClick = { preset = item }, modifier = Modifier.weight(1f)) { Text(item.label) }
+            // v0.2.54：预设改为可切换列表（内置只读 + 自定义可增删改）。
+            allPresets.chunked(2).forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    row.forEach { item ->
+                        val selected = presetId == item.id
+                        if (selected) {
+                            Button(onClick = { presetId = item.id }, modifier = Modifier.weight(1f)) {
+                                Text(item.label, maxLines = 1)
+                            }
+                        } else {
+                            OutlinedButton(onClick = { presetId = item.id }, modifier = Modifier.weight(1f)) {
+                                Text(item.label, maxLines = 1)
+                            }
+                        }
                     }
+                    // 奇数个时补齐占位，保持两列宽度一致。
+                    if (row.size == 1) Spacer(Modifier.weight(1f))
                 }
             }
-            Text(preset.hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                activePreset.hint.ifBlank { "自定义预设" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // 内置预设不可改：想改就复制一份成自定义，避免手滑改坏规则又没法恢复。
+                OutlinedButton(
+                    onClick = {
+                        editorFor = activePreset.copy(
+                            id = "custom-" + UUID.randomUUID().toString().take(8),
+                            label = if (activePreset.builtin) "${activePreset.label} 副本" else activePreset.label,
+                            builtin = false,
+                        )
+                        showPresetEditor = true
+                    },
+                    modifier = Modifier.weight(1f),
+                ) { Text("新建自定义") }
+                if (!activePreset.builtin) {
+                    OutlinedButton(
+                        onClick = {
+                            editorFor = activePreset
+                            showPresetEditor = true
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("编辑") }
+                    OutlinedButton(
+                        onClick = {
+                            val remaining = state.customPresets.filterNot { it.id == activePreset.id }
+                            onSaveCustomPresets(remaining)
+                            // 删掉正在用的预设时回退到内置默认，避免 UI 指向不存在的 id。
+                            if (presetId == activePreset.id) {
+                                presetId = PromptPresets.DEFAULT_PRESET_ID
+                                onSave(LlmConfig(baseUrl.trim(), apiKey, model.trim(), PromptPresets.DEFAULT_PRESET_ID, temperature))
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("删除") }
+                }
+            }
             Text("发散程度", style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf(0.5f to "保守", 0.9f to "标准", 1.3f to "放飞").forEach { (value, label) ->
@@ -4006,7 +4350,7 @@ private fun LlmSettingsSection(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
-                    onClick = { onSave(LlmConfig(baseUrl.trim(), apiKey, model.trim(), preset, temperature)) },
+                    onClick = { onSave(LlmConfig(baseUrl.trim(), apiKey, model.trim(), presetId, temperature)) },
                     modifier = Modifier.weight(1f),
                     enabled = dirty,
                 ) { Text(if (dirty) "保存" else "已保存") }
@@ -4021,6 +4365,94 @@ private fun LlmSettingsSection(
             }
         }
     }
+
+    // 预设编辑器：新建/编辑自定义预设。
+    if (showPresetEditor) {
+        editorFor?.let { editing ->
+            PresetEditorDialog(
+                initial = editing,
+                onDismiss = { showPresetEditor = false },
+                onSave = { updated ->
+                    val others = state.customPresets.filterNot { it.id == updated.id }
+                    onSaveCustomPresets(others + updated)
+                    presetId = updated.id
+                    onSave(LlmConfig(baseUrl.trim(), apiKey, model.trim(), updated.id, temperature))
+                    showPresetEditor = false
+                },
+            )
+        }
+    }
+}
+
+/**
+ * 自定义预设编辑器（v0.2.54）。
+ *
+ * 直接暴露 system prompt 原文：这是给懂行的用户调规则用的，加一层"友好的字段表单"
+ * 反而把规则的真实写法藏起来，改不动。
+ */
+@Composable
+private fun PresetEditorDialog(
+    initial: PromptPreset,
+    onDismiss: () -> Unit,
+    onSave: (PromptPreset) -> Unit,
+) {
+    var label by remember(initial.id) { mutableStateOf(initial.label) }
+    var hint by remember(initial.id) { mutableStateOf(initial.hint) }
+    var prompt by remember(initial.id) { mutableStateOf(initial.systemPrompt) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("自定义提示词预设") },
+        text = {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = label,
+                    onValueChange = { label = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("名称") },
+                )
+                OutlinedTextField(
+                    value = hint,
+                    onValueChange = { hint = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("说明（可选）") },
+                )
+                OutlinedTextField(
+                    value = prompt,
+                    onValueChange = { prompt = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 8,
+                    maxLines = 16,
+                    label = { Text("System Prompt") },
+                )
+                Text(
+                    "这是直接发给大模型的规则文本。内置预设的规则可参考：设置里切换预设后重新点「新建自定义」，会把当前规则带进来当模板。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = label.isNotBlank() && prompt.isNotBlank(),
+                onClick = {
+                    onSave(
+                        initial.copy(
+                            label = label.trim(),
+                            hint = hint.trim(),
+                            systemPrompt = prompt,
+                            builtin = false,
+                        ),
+                    )
+                },
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 /**
@@ -4364,6 +4796,7 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                     expanded = llmExpanded,
                     onToggle = { llmExpanded = !llmExpanded },
                     onSave = viewModel::saveLlmConfig,
+                    onSaveCustomPresets = viewModel::saveCustomPresets,
                     onTest = viewModel::testLlmConnection,
                 )
 

@@ -260,6 +260,8 @@ data class AppUiState(
     val seedMode: SeedMode = SeedMode.RANDOM,
     val saveFolderUri: String? = null,
     val quickWorkflowPath: String? = null,
+    /** 用户自建的提示词预设（v0.2.54）。内置预设由 PromptPresets 提供，不入此列表。 */
+    val customPresets: List<PromptPreset> = emptyList(),
     val quickWorkflowName: String? = null,
     val quickFields: List<ParameterField> = emptyList(),
     val quickEnabledParams: List<String> = emptyList(),

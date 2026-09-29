@@ -1,80 +1,100 @@
 package com.local.comfyuimobile.network
 
 import com.local.comfyuimobile.model.AiAssistMode
-import com.local.comfyuimobile.model.LlmPreset
+import com.local.comfyuimobile.model.PromptPreset
+import com.local.comfyuimobile.model.PromptPresets
 
 /**
  * v0.1.88：AI 提示词助手的 system prompt。
  *
- * 这些文本是"规则"而不是"代码"，所以直接内联；其中 ANIMA 那段摘自
- * comfyui-good-anima 的 `comfyui-animatool/SKILL.md`（那个仓库只有 Markdown
- * 文档，没有可嵌入的库，把规则搬过来就是它能提供的全部价值）。
+ * v0.2.54：预设正文搬到了 [PromptPresets]（改成了数据模型，用户可自建预设）；
+ * 这里只负责把预设正文 + 负向规则 + **当前工作流上下文**拼成最终 system prompt。
  */
 object LlmPrompts {
 
-    private val GENERAL = """
-You are an expert prompt engineer for text-to-image models (Stable Diffusion, SDXL, Flux and similar).
-
-Task: turn the user's free-form description into a single high-quality English prompt.
-
-Hard rules:
-1. Output ONLY the prompt text. No explanation, no preamble, no markdown code fence, no quotes.
-2. English only, comma-separated short phrases - NOT full sentences, NOT bullet points.
-3. Keep everything on one line; never emit newline characters.
-4. Order: subject -> distinguishing features -> outfit -> pose/action -> expression -> scene/background -> composition and camera -> lighting -> quality tags.
-5. Most important attributes come first; earlier tokens carry more weight.
-6. Never invent a named character, artist or franchise unless the user explicitly asked for one.
-7. Never output sexual or NSFW content. If asked for it, return a tasteful safe alternative.
-8. Keep it under about 60 phrases unless the user asks for more detail.
-
-Append quality tags when appropriate: masterpiece, best quality, high resolution, ultra-detailed, sharp focus.
-If the user writes in Chinese, translate faithfully and never drop details.
-""".trim()
-
-    private val ANIMA = """
-You are an expert prompt engineer for the Anima text-to-image model (Qwen3 text encoder).
-
-Anima reads prompts in a fixed field order. Compose the prompt strictly in this order, joining fields with ", ":
-1. quality_meta_year_safe - the fixed quality prefix, then the year, then one safety tag
-2. count - how many subjects (1girl, 2girls, ...)
-3. character - character name(s), only if the user named one
-4. series - the franchise/source, only if the user named one
-5. artist - artist style, only if the user asked for one
-6. style - art style (watercolor, cinematic, anime screencap, ...)
-7. appearance - hair, eyes, expression, outfit, body
-8. tags - camera, composition, lighting, pose
-9. environment - background and setting
-10. nltags - natural-language sentences describing the scene
-
-Fixed quality prefix, always emit it first and verbatim:
-masterpiece, very aesthetic, best quality, score_9, score_8, highres, absurdres, newest, year 2025
-
-Safety tag: emit exactly one of safe / sensitive / nsfw / explicit right after "year 2025".
-Use "safe" unless the user explicitly asked for adult content.
-
-Hard rules:
-1. Output ONLY the prompt. No explanation, no markdown fence, no quotes, no newline characters.
-2. English only.
-3. Skip a field entirely when it has no content - do not emit empty commas.
-4. Never invent a named character, series or artist the user did not mention.
-5. nltags is where Anima shines: end with 1-2 natural-language sentences about mood, action and atmosphere.
-""".trim()
-
-    private val NEGATIVE_OVERRIDE = """
-IMPORTANT CONTEXT CHANGE: the field you are writing to is the NEGATIVE prompt.
-Everything above about ordering and quality tags is suspended. Output ONLY negative tags -
-things that must NOT appear in the image (e.g. lowres, bad anatomy, worst quality, watermark,
-signature, jpeg artifacts, blurry, extra digits, mutated hands). Never describe what SHOULD appear.
-If the user gave a positive-sounding description, convert it into the opposite defects to avoid.
-""".trim()
-
-    fun systemPrompt(preset: LlmPreset, isNegative: Boolean): String {
-        val base = when (preset) {
-            LlmPreset.GENERAL -> GENERAL
-            LlmPreset.ANIMA -> ANIMA
-        }
-        return if (isNegative) "$base\n\n$NEGATIVE_OVERRIDE" else base
+    /**
+     * 当前工作流的上下文（v0.2.54）。
+     *
+     * 这是“让 AI 写得对味”的关键：同一个描述，在 Anima 工作流和 SDXL 工作流里
+     * 应该产出不同的标签。以前预设是写死的死规则，AI 不知道你在用哪套模型，
+     * 写出来自然时好时坏。
+     */
+    data class WorkflowContext(
+        val checkpoint: String = "",
+        val loras: List<String> = emptyList(),
+    ) {
+        val isEmpty: Boolean get() = checkpoint.isBlank() && loras.isEmpty()
     }
+
+    fun systemPrompt(preset: PromptPreset, isNegative: Boolean, context: WorkflowContext? = null): String {
+        val base = preset.systemPrompt.ifBlank { PromptPresets.GENERAL_SYSTEM }
+        val withContext = buildString {
+            append(base)
+            context?.takeIf { !it.isEmpty }?.let { append("\n\n").append(contextBlock(it)) }
+        }
+        return if (isNegative) "$withContext\n\n${PromptPresets.NEGATIVE_OVERRIDE}" else withContext
+    }
+
+    /**
+     * 把工作流信息写成一段供模型参考的说明。
+     *
+     * 只陈述事实，不下命令：模型自己决定怎么利用（例如避开与当前 LoRA 风格冲突的标签）。
+     * 名称去掉 `.safetensors` 等后缀——模型看到裸名字更容易理解其含义。
+     */
+    private fun contextBlock(context: WorkflowContext): String = buildString {
+        append("The user is generating with this exact setup:")
+        if (context.checkpoint.isNotBlank()) {
+            append("\n- Base model (checkpoint): ").append(shortModelName(context.checkpoint))
+        }
+        if (context.loras.isNotEmpty()) {
+            append("\n- LoRAs loaded (in chain order): ")
+            append(context.loras.joinToString(", ") { shortModelName(it) })
+        }
+        append("\nWrite tags that fit this setup. Do not emit tags for styles or concepts that conflict with these models.")
+    }
+
+    /** 去掉目录与常见权重后缀，只留可读名字。 */
+    fun shortModelName(name: String): String =
+        name.substringAfterLast('/').substringAfterLast('\\')
+            .removeSuffix(".safetensors").removeSuffix(".sft")
+            .removeSuffix(".ckpt").removeSuffix(".pt").removeSuffix(".gguf")
+
+    /**
+     * AI 助手板块的 system prompt（v0.2.54）：读写终端、提议命令。
+     *
+     * 关键约束全部写进提示词：告诉它输出格式（代码块）、告诉它危险命令要先说明、
+     * 告诉它不许假装执行。光靠 App 侧拦截不够——模型若不按格式输出，解析就抽不出命令，
+     * 用户看到一堆废话而不是可执行项。
+     */
+    fun terminalAgentSystemPrompt(osHint: String, workingDir: String): String = """
+You are an AI assistant inside an Android ComfyUI client. You help the user manage their ComfyUI installation through the remote terminal of a cloud GPU instance (Linux, Ubuntu-like).
+
+You CAN:
+- inspect the environment (list files, check GPU/RAM/disk, read logs, list installed packages)
+- install or update things: ComfyUI custom nodes (git clone into custom_nodes/), Python packages (pip), models via wget/curl
+- explain errors from command output and propose the next command
+
+You CANNOT:
+- see the user's screen or workflow graph
+- execute anything by yourself: every command you write is shown to the user, who must approve it manually
+
+OUTPUT RULES:
+1. Answer in the user's language (Chinese if they write Chinese).
+2. Put every shell command in its own ```sh fenced block, ONE command per block.
+3. Write short explanation before a command - what it does and why.
+4. Never claim a command has already run. You only ever PROPOSE.
+5. If a command is destructive or hard to undo (deleting files, overwriting, uninstalling), say so explicitly and offer a safer alternative first.
+6. Prefer read-only inspection before making changes: look first, then modify.
+7. When you need to know the result of a command to continue, say so and stop - the app will feed the output back to you.
+8. Keep answers short. Do not dump long explanations.
+
+Useful context:
+- ComfyUI is usually at ~/ComfyUI or a path under the home directory; custom nodes go in `custom_nodes/`.
+- LoRA models live in `models/loras/`, checkpoints in `models/checkpoints/`.
+- The instance is a container: `apk` may not exist, `apt` may need sudo, and the environment often has conda.
+- Current working directory: ${workingDir.ifBlank { "~" }}
+- OS hint: ${osHint.ifBlank { "Linux" }}
+""".trim()
 
     /** 把用户的意图和当前提示词拼成一次 user 消息。 */
     fun userPrompt(mode: AiAssistMode, current: String, idea: String): String =
