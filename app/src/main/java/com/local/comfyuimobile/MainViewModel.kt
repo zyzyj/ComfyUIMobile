@@ -333,6 +333,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val cached = localResultCache.load()
             _state.update { it.copy(localResults = cached) }
         }
+        // v0.2.49：启动时把本机快照里的工作流先摆进列表。
+        //
+        // 列表以前只在两种时机被填充：连上服务器（refreshAll）或刚导入完。冷启动时
+        // 两者都不会发生，用户看到的是空列表——明明之前导入过、也确认"导入后能打开"，
+        // 一重启 App 就像丢了（真机反馈）。这里启动即读快照（服务器域 + @local 域
+        // 全读，避免连过的服务器域名拼错也一样丢），未连接时也能看到并点并导入过的一切。
+        // 连上后 refreshWorkflowsInternal 会用服务器真实列表 + 合并逻辑接管，不冲突。
+        viewModelScope.launch {
+            // savedServers 是 DataStore 异步推出来的，冷启动这一刻可能还没到。直接用
+            // 当前内存值会漏掉全部已保存服务器，所以等首帧偏好先到位。
+            val stored = runCatching { preferences.settings.first() }.getOrNull()
+            val serverUrls = stored?.profiles?.map { it.baseUrl }.orEmpty()
+            val snapshots = runCatching {
+                (workflowSnapshots.list(snapshotScopeFor(_state.value.activeServer?.baseUrl)) +
+                    workflowSnapshots.list(WorkflowSnapshotStore.LOCAL_SCOPE) +
+                    serverUrls.map { url ->
+                        runCatching { workflowSnapshots.list(url) }.getOrElse { emptyList() }
+                    }.flatten())
+                    .distinctBy { it.path }
+                    .sortedByDescending { it.modified }
+            }.getOrElse { emptyList() }
+            if (snapshots.isNotEmpty() && _state.value.workflows.isEmpty()) {
+                _state.update { it.copy(workflows = snapshots) }
+            }
+        }
     }
 
     fun attachBridge(value: ComfyBridge) {
@@ -4534,6 +4559,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         wsReconnectBackoffMs = WS_RECONNECT_MIN_MS
         lastWsBackoffLoggedMs = 0L
         _state.update { it.copy(status = ConnectionStatus.CONNECTED, connectionMessage = "已连接 ${it.activeServer?.name.orEmpty()}") }
+        // v0.2.49：重连成功后立刻补一次任务状态。断开期间错过的 progress 事件服务器
+        // 不会补发，若那时任务已经完成，顶栏会一直挂在旧百分比——直到下一次刷新才
+        // 被纠正。这里主动对齐一次，把“重连后进度冻在旧值”的窗口压到最小。
+        viewModelScope.launch {
+            runCatching { refreshTasksInternal() }
+                .onFailure { if (it is CancellationException) throw it }
+        }
     }
 
     private fun scheduleReconnect() {
@@ -4548,12 +4580,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (httpAlive) {
                 // AI Studio 反代对 /ws 很暴力：真机日志里每 2.3 秒就掐一次
                 // （00:51 一分钟刷出 20+ 条）。无退避地重开只是原地打转、白耗电，
-                // 所以逐步拉长间隔（2s → 4s → … → 30s 封顶）。
+                // 所以逐步拉长间隔（2s → 4s → … → 10s 封顶）。
                 // 期间 HTTP 正常，状态保持「已连接」，不影响生图。
-                val wait = wsReconnectBackoffMs
+                // v0.2.49：有任务正在跑时不涨退避。指数退避在"2.3 秒掐一次"的代理下是
+                // 反效果——退到 10 秒意味着 WebSocket 十之八九处于断开，采样 progress
+                // 大量丢失，用户看到的顶栏/通知进度就"不实时"（真机反馈）。有活跃任务
+                // 时固定用最小间隔快速重连；空闲时仍走指数退避省电。
+                val hasRunningJob = _state.value.jobs.any {
+                    it.id == _state.value.activeJobId && it.state == JobState.RUNNING
+                } || _state.value.generating
+                if (!hasRunningJob) {
+                    wsReconnectBackoffMs = (wsReconnectBackoffMs * 2).coerceAtMost(WS_RECONNECT_MAX_MS)
+                }
+                val wait = if (hasRunningJob) WS_RECONNECT_MIN_MS else wsReconnectBackoffMs
                 // v0.2.43：封顶从 30 秒降到 10 秒。反代抬断后最多等 10 秒就能重连，
                 // 进度断档窗口更短（用户反馈"进度长时间不动"）。
-                wsReconnectBackoffMs = (wsReconnectBackoffMs * 2).coerceAtMost(WS_RECONNECT_MAX_MS)
                 delay(wait)
                 if (_state.value.activeServer == null) return@launch
                 // 这种抖动在繁忙期能达到每 2.3 秒一次（一分钟 26 条），不节流会把

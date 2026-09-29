@@ -334,7 +334,15 @@ class AiStudioKernelClient {
         terminalSocket = client.newWebSocket(
             builder.build(),
             object : WebSocketListener() {
-                override fun onOpen(webSocket: WebSocket, response: Response) = onOpen()
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    // v0.2.49：与 onFailure / onClosed 一致的身份守卫。openTerminal 每次先
+                    // closeTerminal()（异步）再建新连接，旧连接的迟到 onOpen 若不拦，会把
+                    // terminalManualClose 改回 false（用户刚点断开却被自动重连）、并把
+                    // consoleConnected 置 true（顶栏报"已连接"实际没有 socket）——与 v0.2.46
+                    // 在 ComfyClient 修掉的问题同构。
+                    if (terminalSocket !== webSocket) return
+                    onOpen()
+                }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     val raw = AiStudioProtocol.parseTerminalOutput(text) ?: return
