@@ -240,6 +240,7 @@ import com.local.comfyuimobile.bridge.ComfyBridge
 import com.local.comfyuimobile.bridge.FieldValidator
 import com.local.comfyuimobile.data.CachePolicy
 import com.local.comfyuimobile.data.RecentWorkflows
+import com.local.comfyuimobile.data.UrlQuery
 import com.local.comfyuimobile.data.WorkflowBrowser
 import com.local.comfyuimobile.data.WorkflowPath
 import com.local.comfyuimobile.model.AppDestination
@@ -4381,7 +4382,13 @@ private fun quotaTypeLabel(type: String): String = when (type.uppercase()) {
 }
 
 private fun previewUrl(media: ResultMedia): String =
-    if (media.kind == MediaKind.IMAGE && media.source == ResultSource.CLOUD) "${media.url}&preview=webp;90" else media.url
+    if (media.kind == MediaKind.IMAGE && media.source == ResultSource.CLOUD) {
+        // v0.2.51：以前写死用 `&` 追加，URL 本身没查询参数时会拼出 `.../view&preview=...`
+        // 这种非法地址（参数丢失、缩略图拿不到）。改由 UrlQuery 按是否已有 query 选择。
+        UrlQuery.append(media.url, "preview", "webp;90")
+    } else {
+        media.url
+    }
 
 // ===================== v0.1.90：账号页 =====================
 

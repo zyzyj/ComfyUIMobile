@@ -235,6 +235,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 停止后的状态轮询任务（v0.2.47）。与启动方向一样需要可取消，否则切账号后
      * 它会继续用旧账号凭据打平台。 */
     private var aiStudioStopPollJob: Job? = null
+    /** 账号资源（积分 / 算力卡 / A币）刷新任务，切换账号或再次刷新时作废（v0.2.51）。 */
+    private var aiStudioRefreshJob: Job? = null
+    /**
+     * 资源刷新代次（v0.2.51）。
+     *
+     * 递增后旧请求写回时会被丢掉。只用 accountId 不够——“切到 B 再切回 A”时
+     * 旧请求的 accountId 又会等于当前账号，仍然能盖回旧数据。
+     */
+    private var aiStudioRefreshGeneration = 0L
     /**
      * 刚在内存里切好、还没落盘的账号 id（v0.2.46）。
      *
@@ -816,12 +825,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * 刷新当前账号的资源数据（积分 / 算力卡）。
-     *
-     * 三个接口各自独立：任何一个失败都不影响其它两个——否则积分接口一改版，
-     * 算力卡也跟着显示不出来。失败只记日志，界面上对应那块显示「—」。
-     */
-    /**
      * 切换到另一个 AI Studio 账号时，把上一个账号留下的一切都清干净（v0.2.46）。
      *
      * 三件事缺一不可，否则新账号会带着旧身份干活：
@@ -840,8 +843,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         aiStudioStartPollJob = null
         aiStudioStopPollJob = null
         aiStudioScheduleJob = null
+        // v0.2.51：资源刷新也要作废。它只靠 accountId 判断，而“切到 B 再切回 A”时
+        // 旧请求的 accountId 又对上了，会把旧积分/算力卡盖回新面板。用 generation 作废。
+        invalidateAiStudioRefresh()
         aiStudioDisconnectConsole()
         kernelClient.clearProjectCookies()
+    }
+
+    /**
+     * 使进行中的账号资源刷新作废（v0.2.51）。
+     *
+     * 资源刷新过去没有自己的 Job，也不记录请求代次，只能靠写回时比对 accountId。
+     * 但账号 ID 在“切走再切回”后会重新相等，旧请求于是又能写回。这里递增代次并取消
+     * 旧协程，写回时用代次判定“我还是最新那次请求吗”。
+     */
+    private fun invalidateAiStudioRefresh() {
+        aiStudioRefreshGeneration += 1
+        aiStudioRefreshJob?.cancel()
+        aiStudioRefreshJob = null
     }
 
     /**
@@ -858,7 +877,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun aiStudioRefreshAccount() {
         val account = _state.value.aiStudio.activeAccount() ?: return
-        viewModelScope.launch {
+        // 每次刷新取消上一次：同一账号重复进入账号页时，只让最后一次写回。
+        aiStudioRefreshJob?.cancel()
+        val generation = ++aiStudioRefreshGeneration
+        aiStudioRefreshJob = viewModelScope.launch {
             val (points, signedTodayFromApi) = runCatching { aiStudio.fetchPointsInfo(account) }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
@@ -877,8 +899,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     AppLogger.warn("读取 AI Studio A币失败", error)
                 }
                 .getOrNull()
-            // v0.2.46：请求发出去之后用户可能已经切了账号。这些协程回来时无条件写
-            // _state，于是"切到 B，A 的积分又盖回面板上"。写回前核对一下账号。
+            // v0.2.46：请求发出去之后用户可能已经切了账号。
+            // v0.2.51：再加上代次校验——“切到 B 再切回 A”时 accountId 又会相等，
+            // 只比账号 ID 拦不住旧请求，必须确认自己仍是最新一次刷新。
+            if (generation != aiStudioRefreshGeneration) return@launch
             if (!isActiveAiStudioAccount(account.id)) return@launch
             // 签到状态优先用平台返回的 isFinishSign；拿不到才退回本机记录的日期。
             val lastSign = account.lastSignInAt
@@ -903,6 +927,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 "AI Studio 资源：积分=${points ?: "未知"}，算力卡=${snapshot.computeCard ?: "未知"}，" +
                     "A币=${aCoin ?: "未知"}",
             )
+        }.also { job ->
+            job.invokeOnCompletion { if (aiStudioRefreshJob === job) aiStudioRefreshJob = null }
         }
     }
 
@@ -954,6 +980,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update {
             it.copy(aiStudio = it.aiStudio.copy(consoleBusy = true, error = null, message = null))
         }
+        // v0.2.51：记录连接发起时的账号/项目，写回 kernelEndpoint 前必须仍然匹配。
+        // 否则“连的过程中切了账号或改了项目”时，旧 endpoint 会被当成本次结果写进去。
+        val connectAccountId = account.id
+        val connectProjectId = project.projectId
         aiStudioActionJob = viewModelScope.launch {
             runCatching {
                 val endpoint = kernelClient.fetchEndpoint(account, project.projectId, "")
@@ -962,6 +992,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 endpoint to name
             }
                 .onSuccess { (endpoint, name) ->
+                    // 账号或项目已变 → 这次连接结果作废，不写 kernelEndpoint、不开 socket。
+                    val stillCurrent = connectAccountId == _state.value.aiStudio.activeAccountId &&
+                        _state.value.aiStudio.projects.any { it.projectId == connectProjectId }
+                    if (!stillCurrent) {
+                        AppLogger.info("控制台连接结果已过期（账号或项目已变），丢弃")
+                        _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleBusy = false)) }
+                        return@onSuccess
+                    }
                     kernelEndpoint = endpoint
                     // 新一次连接：允许再自动连一次 ComfyUI（上次的失败不带到这次）。
                     autoConnectAttempted = false
@@ -996,6 +1034,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var terminalReconnectJob: Job? = null
     private var terminalManualClose = false
+    /**
+     * 终端连接代次（v0.2.51）。
+     *
+     * 每次建立/断开/切账号都递增。openTerminalSocket 的回调、以及自动重连任务都带上
+     * 发起时的代次，回调回来时若代次已变就丢弃——否则旧连接的 onOutput / onClosed
+     * 会把新连接（或新账号）的状态改掉。
+     */
+    private var terminalConnectGeneration = 0L
     /** 项目级 Cookie 预热任务：自动/手动连 ComfyUI 前要等它完成，否则 Cookie 不全。 */
     private var warmUpJob: Job? = null
     /** 静默重开 WebSocket 的退避（被反代猛掐时逐步拉长，避免原地打转）。 */
@@ -1029,12 +1075,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         name: String,
         attempt: Int = 0,
     ) {
+        // v0.2.51：本次连接所属的代次。回调里先用它确认"我还是当前连接"，再看账号。
+        val generation = ++terminalConnectGeneration
+        fun stale() = generation != terminalConnectGeneration
         kernelClient.openTerminal(
             account = account,
             endpoint = endpoint,
             name = name,
-            onOutput = { chunk -> appendTerminal(chunk) },
+            onOutput = { chunk -> if (!stale()) appendTerminal(chunk) },
             onOpen = {
+                if (stale()) return@openTerminal
                 terminalManualClose = false
                 AppLogger.info("控制台：终端已连接 $name")
                 // 修正远端 locale：平台环境把 LANG 设成 en_US.UTF-8，但这个 locale
@@ -1059,11 +1109,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             },
             onClosed = { reason ->
+                // 旧连接的迟到关闭回调（切账号/重连后）不能把当前终端报成断开。
+                if (stale()) return@openTerminal
                 AppLogger.info("控制台：终端断开（$reason）")
                 _state.update {
                     it.copy(aiStudio = it.aiStudio.copy(consoleConnected = false, message = "终端断开：$reason"))
                 }
-                if (!terminalManualClose) scheduleTerminalReconnect(account, endpoint, name, attempt)
+                if (!terminalManualClose) scheduleTerminalReconnect(account, endpoint, name, attempt, generation)
             },
         )
     }
@@ -1073,6 +1125,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         endpoint: AiStudioKernelClient.KernelEndpoint,
         name: String,
         attempt: Int,
+        generation: Long,
     ) {
         // 已经在重连中就不再排（避免 onClosed 抖动时排一堆）。
         if (terminalReconnectJob?.isActive == true) return
@@ -1089,9 +1142,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             while (true) {
                 val wait = TERMINAL_RECONNECT_DELAYS_MS.getOrElse(current) { TERMINAL_RECONNECT_MAX_MS }
                 delay(wait)
+                // v0.2.51：连接代次已变（用户手动断开 / 切了账号 / 已重新连上）就停。
+                if (generation != terminalConnectGeneration) return@launch
                 if (terminalManualClose) return@launch
                 // 用户已经手动断开/换了服务器，就不用再重连了。
                 if (_state.value.activeServer == null) return@launch
+                // 切了账号就不再为旧账号重连（否则会拿旧凭据反复打平台）。
+                if (_state.value.aiStudio.activeAccountId != account.id) return@launch
                 _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "终端重连中…")) }
                 // 终端名可能因项目重启而失效，重连前重新确认一次。
                 val fresh = runCatching {
@@ -1099,6 +1156,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         ?: kernelClient.createTerminal(account, endpoint)
                 }.getOrNull()
                 if (fresh != null) {
+                    // 等待期间可能又断开/切账号，开新 socket 前再校一次代次。
+                    if (generation != terminalConnectGeneration) return@launch
                     // openTerminalSocket 会重置 terminalManualClose；若这次又失败，
                     // 它会再调 scheduleTerminalReconnect，但那时本 job 已结束，不会被挡。
                     openTerminalSocket(account, endpoint, fresh, current + 1)
@@ -1335,6 +1394,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun aiStudioDisconnectConsole() {
         terminalManualClose = true
         terminalReconnectJob?.cancel()
+        // v0.2.51：作废当前连接代次，旧 socket 的迟到回调会被丢弃（见 openTerminalSocket）。
+        terminalConnectGeneration += 1
         kernelClient.closeTerminal()
         kernelEndpoint = null
         terminalKeepAlive = false

@@ -20,6 +20,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
@@ -328,23 +329,35 @@ class AiStudioKernelClient {
     ) {
         closeTerminal()
         terminalPendingEscape.setLength(0)
+        // v0.2.51：本次连接的代次 id。closeTerminal() 是异步的，换连接/切账号时旧 socket
+        // 的 onOpen / onMessage / onFailure / onClosed 都可能晚到。只看 `terminalSocket !== webSocket`
+        // 已经挡住大部分，但 onMessage 的输出、以及新连接建立后旧连接的输出，仍可能混进来。
+        // 统一用连接 id 做身份判定，四个回调一致处理。
+        val connectionId = UUID.randomUUID().toString()
+        terminalConnectionId = connectionId
         val url = withToken(endpoint, wsBase(endpoint) + "terminals/websocket/" + encode(name))
         val builder = Request.Builder().url(url)
         commonHeaders(account, endpoint).forEach { (k, v) -> builder.header(k, v) }
         terminalSocket = client.newWebSocket(
             builder.build(),
             object : WebSocketListener() {
+                private fun stale(webSocket: WebSocket) =
+                    terminalSocket !== webSocket || terminalConnectionId != connectionId
+
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     // v0.2.49：与 onFailure / onClosed 一致的身份守卫。openTerminal 每次先
                     // closeTerminal()（异步）再建新连接，旧连接的迟到 onOpen 若不拦，会把
                     // terminalManualClose 改回 false（用户刚点断开却被自动重连）、并把
                     // consoleConnected 置 true（顶栏报"已连接"实际没有 socket）——与 v0.2.46
                     // 在 ComfyClient 修掉的问题同构。
-                    if (terminalSocket !== webSocket) return
+                    if (stale(webSocket)) return
                     onOpen()
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
+                    // v0.2.51：旧连接的迟到输出不能写进当前终端日志（切账号后旧机器仍在
+                    // 吐输出，混进来会让人以为命令发错了机器）。
+                    if (stale(webSocket)) return
                     val raw = AiStudioProtocol.parseTerminalOutput(text) ?: return
                     // 只剔 OSC/CSI 等控制序列，**保留** ANSI 颜色码——由界面渲染成颜色，
                     // 不然 ls 的着色、彩色提示符全没了，一屏白字看起来又乱又平。
@@ -361,19 +374,24 @@ class AiStudioKernelClient {
                     // 只有「当前 socket」的回调才算数。换连接时 closeTerminal() 会先关掉旧
                     // socket，它的 onFailure/onClosed 是异步后到的——不判断身份的话，旧连接
                     // 的回调会把刚建立的新连接报成"断开"，于是界面一直"重连中"。
-                    if (terminalSocket !== webSocket) return
+                    if (stale(webSocket)) return
                     terminalSocket = null
+                    terminalConnectionId = null
                     onClosed(t.message ?: "连接中断")
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    if (terminalSocket !== webSocket) return
+                    if (stale(webSocket)) return
                     terminalSocket = null
+                    terminalConnectionId = null
                     onClosed("终端已关闭（$code）")
                 }
             },
         )
     }
+
+    /** 当前终端连接的代次 id；closeTerminal() 会置空，旧回调用它判定自己已过期（v0.2.51）。 */
+    @Volatile private var terminalConnectionId: String? = null
 
     /** 向终端发一条命令（自动补回车）。协议帧：`["stdin", "...\r"]`。 */
     fun sendInput(command: String): Boolean {
@@ -399,6 +417,8 @@ class AiStudioKernelClient {
     }
 
     fun closeTerminal() {
+        // 先作废连接 id，再关 socket：否则旧 socket 的迟到回调仍可能被当成当前连接。
+        terminalConnectionId = null
         terminalSocket?.close(1000, "client close")
         terminalSocket = null
     }
