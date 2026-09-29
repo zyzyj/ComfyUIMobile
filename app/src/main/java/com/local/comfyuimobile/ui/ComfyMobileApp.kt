@@ -241,6 +241,11 @@ import com.local.comfyuimobile.bridge.FieldValidator
 import com.local.comfyuimobile.data.CachePolicy
 import com.local.comfyuimobile.data.RecentWorkflows
 import com.local.comfyuimobile.data.UrlQuery
+import com.local.comfyuimobile.model.LoraStrengthMatrix
+import com.local.comfyuimobile.model.LoraStrengthRun
+import com.local.comfyuimobile.model.LoraStrengthSlot
+import com.local.comfyuimobile.model.LoraStrengthTarget
+import com.local.comfyuimobile.model.StrengthPhase
 import com.local.comfyuimobile.data.WorkflowBrowser
 import com.local.comfyuimobile.data.WorkflowPath
 import com.local.comfyuimobile.model.AppDestination
@@ -2892,6 +2897,10 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
     var showBatchConfig by remember { mutableStateOf(false) }
     var showBatchResult by remember { mutableStateOf(false) }
     val batchActive = batchRunState?.phase == BatchPhase.RUNNING || batchRunState?.phase == BatchPhase.PAUSED
+    val strengthRunState by viewModel.strengthRun.collectAsStateWithLifecycle()
+    var showStrengthConfig by remember { mutableStateOf(false) }
+    var showStrengthResult by remember { mutableStateOf(false) }
+    val strengthActive = strengthRunState?.phase == StrengthPhase.RUNNING || strengthRunState?.phase == StrengthPhase.PAUSED
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
@@ -3086,9 +3095,31 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
             }
         }
 
+        // ===== v0.2.52 LoRA 强度测试（控制变量法） =====
+        if (loraFields.isNotEmpty() && quickFields.isNotEmpty()) {
+            val run = strengthRunState
+            if (run == null) {
+                OutlinedButton(
+                    onClick = { showStrengthConfig = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !state.generating && !state.loading && !batchActive,
+                ) {
+                    Icon(Icons.Outlined.Tune, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("强度测试：LoRA 不变，只调强度找最佳值")
+                }
+            } else {
+                StrengthRunCard(
+                    run = run,
+                    viewModel = viewModel,
+                    onShowResult = { showStrengthResult = true },
+                )
+            }
+        }
+
         Button(
             onClick = viewModel::quickGenerate,
-            enabled = !state.generating && !state.loading && state.bridgeReady && !batchActive,
+            enabled = !state.generating && !state.loading && state.bridgeReady && !batchActive && !strengthActive,
             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
         ) {
             Icon(Icons.Outlined.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text(if (state.generating) "生成中…" else "快捷生成")
@@ -3114,6 +3145,22 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
             onDismiss = { showBatchConfig = false },
         )
     }
+    if (showStrengthConfig) {
+        StrengthConfigDialog(
+            slots = viewModel.loraStrengthSlots(),
+            viewModel = viewModel,
+            onDismiss = { showStrengthConfig = false },
+        )
+    }
+    if (showStrengthResult) {
+        strengthRunState?.let { run ->
+            StrengthResultDialog(
+                run = run,
+                viewModel = viewModel,
+                onDismiss = { showStrengthResult = false },
+            )
+        }
+    }
     if (showBatchResult) {
         batchRunState?.let { batch ->
             BatchResultDialog(
@@ -3123,6 +3170,289 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
             )
         }
     }
+}
+
+/**
+ * v0.2.52 LoRA 强度测试：配置对话框（控制变量法）。
+ *
+ * 交互：选一个槽位 → 填 起止值 + 间距 → 实时预览会生成哪些档位、共多少张。
+ * 默认只改 model 强度；节点带 strength_clip 时才允许选 clip / 两者同时。
+ */
+@Composable
+private fun StrengthConfigDialog(
+    slots: List<LoraStrengthSlot>,
+    viewModel: MainViewModel,
+    onDismiss: () -> Unit,
+) {
+    if (slots.isEmpty()) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("LoRA 强度测试") },
+            text = { Text("当前工作流里没有可调强度的 LoRA 节点（需要 LoraLoader / LoraLoaderModelOnly）。") },
+            confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+        )
+        return
+    }
+    var slotIndex by remember { mutableIntStateOf(0) }
+    val slot = slots[slotIndex.coerceIn(slots.indices)]
+    var target by remember(slot.nodeId) { mutableStateOf(LoraStrengthTarget.MODEL) }
+    var startText by remember(slot.nodeId) { mutableStateOf("0.1") }
+    var endText by remember(slot.nodeId) { mutableStateOf("1.0") }
+    var stepText by remember(slot.nodeId) { mutableStateOf("0.1") }
+
+    val start = startText.trim().toDoubleOrNull()
+    val end = endText.trim().toDoubleOrNull()
+    val step = stepText.trim().toDoubleOrNull()
+    val strengths = if (start != null && end != null && step != null) {
+        LoraStrengthMatrix.expandSteps(start, end, step)
+    } else {
+        emptyList()
+    }
+    val overLimit = LoraStrengthMatrix.exceedsLimit(strengths.size)
+    val invalid = strengths.isEmpty() || overLimit
+    val hasClip = slot.clipFieldKey != null
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("LoRA 强度测试") },
+        text = {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "固定当前 LoRA 组合与其它参数，只改一个 LoRA 的强度逐张出图（控制变量法）。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (slots.size > 1) {
+                    Text("选择要测试的 LoRA（共 ${slots.size} 个）", style = MaterialTheme.typography.labelMedium)
+                    var slotExpanded by remember { mutableStateOf(false) }
+                    Box {
+                        OutlinedButton(onClick = { slotExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text(shortLoraName(slot.displayName), modifier = Modifier.weight(1f), maxLines = 1)
+                            Icon(Icons.Outlined.ArrowDropDown, null)
+                        }
+                        DropdownMenu(expanded = slotExpanded, onDismissRequest = { slotExpanded = false }) {
+                            slots.forEachIndexed { index, item ->
+                                DropdownMenuItem(
+                                    text = { Text(shortLoraName(item.displayName), maxLines = 1) },
+                                    onClick = { slotIndex = index; slotExpanded = false },
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Text("将测试：${shortLoraName(slot.displayName)}", style = MaterialTheme.typography.labelMedium)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = startText,
+                        onValueChange = { startText = it },
+                        label = { Text("起始") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        value = endText,
+                        onValueChange = { endText = it },
+                        label = { Text("结束") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        value = stepText,
+                        onValueChange = { stepText = it },
+                        label = { Text("间距") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Text("测试范围", style = MaterialTheme.typography.labelMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    StrengthTargetChip("model", LoraStrengthTarget.MODEL, target) { target = it }
+                    if (hasClip) {
+                        StrengthTargetChip("clip", LoraStrengthTarget.CLIP, target) { target = it }
+                        StrengthTargetChip("两者", LoraStrengthTarget.BOTH, target) { target = it }
+                    }
+                }
+                when {
+                    start == null || end == null || step == null ->
+                        Text("请填入有效数字", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    strengths.isEmpty() ->
+                        Text(
+                            "区间无效：间距需大于 0、结束值不小于起始值，且一次不超过 ${LoraStrengthMatrix.MAX_STEPS} 档",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    overLimit ->
+                        Text(
+                            "会生成 ${strengths.size} 张，超过单次上限 ${LoraStrengthMatrix.MAX_TASKS} 张。请收窄区间或加大间距。",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    else ->
+                        Text(
+                            "将生成 ${strengths.size} 张：${LoraStrengthMatrix.describeSteps(strengths)}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                }
+                Text(
+                    "其它 LoRA 与提示词、种子等参数全部保持不变，跑完自动恢复原强度。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !invalid,
+                onClick = {
+                    if (viewModel.startStrengthMatrix(slot.nodeId, target, strengths)) onDismiss()
+                },
+            ) { Text("开始测试") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@Composable
+private fun StrengthTargetChip(
+    label: String,
+    value: LoraStrengthTarget,
+    current: LoraStrengthTarget,
+    onSelect: (LoraStrengthTarget) -> Unit,
+) {
+    val selected = value == current
+    val padding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+    if (selected) {
+        FilledTonalButton(onClick = {}, enabled = false, contentPadding = padding) {
+            Text(label, style = MaterialTheme.typography.labelMedium)
+        }
+    } else {
+        OutlinedButton(onClick = { onSelect(value) }, contentPadding = padding) {
+            Text(label, style = MaterialTheme.typography.labelMedium)
+        }
+    }
+}
+
+/** LoRA 强度测试：进行中/已结束的卡片。 */
+@Composable
+private fun StrengthRunCard(run: LoraStrengthRun, viewModel: MainViewModel, onShowResult: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "强度测试 · ${shortLoraName(run.slotTitle)}",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                )
+                if (run.phase == StrengthPhase.DONE || run.phase == StrengthPhase.CANCELLED) {
+                    IconButton(onClick = viewModel::dismissStrengthRun) { Icon(Icons.Outlined.Close, "收起强度测试卡片") }
+                }
+            }
+            val running = run.phase == StrengthPhase.RUNNING || run.phase == StrengthPhase.PAUSED
+            if (running) {
+                LinearProgressIndicator(
+                    progress = { run.finished.toFloat() / run.total.coerceAtLeast(1) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "${run.finished}/${run.total} · ${run.current?.label ?: "等待提交…"} · 种子=${run.seed.take(12)}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row {
+                    if (run.phase == StrengthPhase.RUNNING) {
+                        TextButton(onClick = viewModel::pauseStrengthRun) { Text("暂停") }
+                    } else {
+                        TextButton(onClick = viewModel::resumeStrengthRun) { Text("继续") }
+                    }
+                    TextButton(onClick = viewModel::cancelStrengthRun) { Text("取消") }
+                }
+            } else {
+                Text(
+                    run.message.ifBlank { if (run.phase == StrengthPhase.CANCELLED) "已取消" else "测试结束" },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                val mediaCount = run.items.sumOf { it.media.size }
+                Row {
+                    if (mediaCount > 0) {
+                        TextButton(onClick = onShowResult) { Text("查看 $mediaCount 张图") }
+                    }
+                    TextButton(onClick = viewModel::dismissStrengthRun) { Text("收起") }
+                }
+            }
+            run.items.takeLast(6).forEach { item ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        if (item.success) Icons.Outlined.CheckCircle else Icons.Outlined.Close,
+                        null,
+                        Modifier.size(16.dp),
+                        tint = if (item.success) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        item.label +
+                            (item.message.takeIf { m -> !item.success && m.isNotBlank() }?.let { " · $it" } ?: ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 强度测试结果：按强度排序平铺，每张标注强度值。 */
+@Composable
+private fun StrengthResultDialog(run: LoraStrengthRun, viewModel: MainViewModel, onDismiss: () -> Unit) {
+    val media = run.items.sortedBy { it.strength }.flatMap { item ->
+        item.media.map { item to it }
+    }
+    var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(viewerIndex) {
+        val index = viewerIndex ?: return@LaunchedEffect
+        viewerIndex = null
+        onDismiss()
+        viewModel.openGalleryViewer(media.map { it.second }, index, fromResults = false)
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("强度测试结果（${media.size} 张）") },
+        text = {
+            if (media.isEmpty()) {
+                Text("这批没有可展示的图片", style = MaterialTheme.typography.bodySmall)
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(96.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 460.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    gridItemsIndexed(media, key = { _, pair -> pair.second.stableKey() }) { index, pair ->
+                        Column(
+                            Modifier.fillMaxWidth().clickable { viewerIndex = index },
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            AsyncImage(
+                                pair.second.url,
+                                pair.first.label,
+                                Modifier.fillMaxWidth().aspectRatio(1f),
+                                contentScale = ContentScale.Crop,
+                            )
+                            Text(
+                                LoraStrengthMatrix.formatStrength(pair.first.strength),
+                                style = MaterialTheme.typography.labelLarge,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
 }
 
 /**
