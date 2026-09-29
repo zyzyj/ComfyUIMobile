@@ -2873,6 +2873,9 @@ private fun TaskScreen(state: AppUiState, viewModel: MainViewModel) {
  */
 @Composable
 private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
+    LaunchedEffect(state.status, state.workflows) {
+        viewModel.restoreQuickWorkflowIfNeeded()
+    }
     var showWorkflowPicker by remember { mutableStateOf(false) }
     var showParamPicker by remember { mutableStateOf(false) }
     val quickFields = state.quickFields
@@ -2912,22 +2915,49 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
             )
             Icon(Icons.Outlined.ExpandMore, null)
         }
-        DropdownMenu(expanded = showWorkflowPicker, onDismissRequest = { showWorkflowPicker = false }) {
-            val candidates = state.workflows.filterNot { it.isDirectory }
-            if (candidates.isEmpty()) {
-                DropdownMenuItem(
-                    text = { Text("服务器上没有可用工作流，请先在工作流页上传") },
-                    onClick = { showWorkflowPicker = false },
-                )
-            } else {
-                candidates.forEach { entry ->
-                    DropdownMenuItem(
-                        text = { Text(entry.name, maxLines = 1) },
-                        onClick = {
-                            showWorkflowPicker = false
-                            viewModel.quickSelectWorkflow(entry)
-                        },
-                    )
+        if (showWorkflowPicker) {
+            // DropdownMenu 锚定在按钮附近，长列表会被窗口边界压缩/裁切，
+            // 尤其是工作流很多或按钮靠近底部时位置不稳定。用独立 Dialog + LazyColumn，
+            // 与 LoRA 选择器保持一致：固定可控高度、可滚动、不会被页面滚动容器影响。
+            Dialog(
+                onDismissRequest = { showWorkflowPicker = false },
+                properties = DialogProperties(usePlatformDefaultWidth = false),
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(0.92f).heightIn(max = 560.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    tonalElevation = 6.dp,
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("选择快捷工作流", style = MaterialTheme.typography.titleLarge)
+                        Spacer(Modifier.height(8.dp))
+                        val candidates = state.workflows.filterNot { it.isDirectory }
+                        if (candidates.isEmpty()) {
+                            Text(
+                                "暂无可用工作流，请先在工作流页导入或连接服务器。",
+                                modifier = Modifier.padding(vertical = 24.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                                items(candidates, key = { it.path }) { entry ->
+                                    TextButton(
+                                        onClick = {
+                                            showWorkflowPicker = false
+                                            viewModel.quickSelectWorkflow(entry)
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Text(entry.name, modifier = Modifier.weight(1f), maxLines = 1)
+                                    }
+                                }
+                            }
+                        }
+                        TextButton(
+                            onClick = { showWorkflowPicker = false },
+                            modifier = Modifier.align(Alignment.End),
+                        ) { Text("取消") }
+                    }
                 }
             }
         }
@@ -2994,7 +3024,13 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        enabledFields.forEach { field -> QuickParamRow(field, viewModel) }
+        enabledFields.forEach { field ->
+            QuickParamRow(
+                field = field,
+                viewModel = viewModel,
+                onRemove = { viewModel.quickRemoveParam(field.key) },
+            )
+        }
 
         if (showParamPicker) {
             AlertDialog(
@@ -3377,13 +3413,28 @@ private fun SeedModeChip(label: String, mode: SeedMode, current: SeedMode, viewM
 }
 
 @Composable
-private fun QuickParamRow(field: ParameterField, viewModel: MainViewModel) {
+private fun QuickParamRow(
+    field: ParameterField,
+    viewModel: MainViewModel,
+    onRemove: (() -> Unit)? = null,
+) {
     val isSeed = field.name.contains("seed", ignoreCase = true)
     when (field.kind) {
         ParameterKind.COMBO -> {
             var expanded by remember { mutableStateOf(false) }
             Column {
-                Text("${field.nodeTitle.ifBlank { field.nodeType }} · ${field.label}", style = MaterialTheme.typography.labelMedium)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${field.nodeTitle.ifBlank { field.nodeType }} · ${field.label}",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    onRemove?.let {
+                        IconButton(onClick = it) {
+                            Icon(Icons.Outlined.Close, "移除参数")
+                        }
+                    }
+                }
                 OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
                     Text(field.displayValue, modifier = Modifier.weight(1f), maxLines = 1)
                     Icon(Icons.Outlined.ArrowDropDown, null)
@@ -3404,6 +3455,9 @@ private fun QuickParamRow(field: ParameterField, viewModel: MainViewModel) {
         ParameterKind.BOOLEAN -> {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(field.label, modifier = Modifier.weight(1f))
+                onRemove?.let {
+                    IconButton(onClick = it) { Icon(Icons.Outlined.Close, "移除参数") }
+                }
                 Switch(
                     field.displayValue.equals("true", ignoreCase = true),
                     { viewModel.quickUpdateField(field.key, if (it) "true" else "false") },
@@ -3414,6 +3468,9 @@ private fun QuickParamRow(field: ParameterField, viewModel: MainViewModel) {
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(field.label, modifier = Modifier.weight(1f))
+                    onRemove?.let {
+                        IconButton(onClick = it) { Icon(Icons.Outlined.Close, "移除参数") }
+                    }
                     if (isSeed) {
                         TextButton(onClick = { viewModel.quickUpdateField(field.key, Math.abs(Random.nextLong()).toString()) }) {
                             Icon(Icons.Outlined.Refresh, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("随机")
