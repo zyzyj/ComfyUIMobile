@@ -59,10 +59,12 @@ import com.local.comfyuimobile.model.ConnectionStatus
 import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.JobSummary
 import com.local.comfyuimobile.model.LlmConfig
+import com.local.comfyuimobile.model.LoraMatrixTask
 import com.local.comfyuimobile.model.LoraStrengthMatrix
 import com.local.comfyuimobile.model.LoraStrengthRun
 import com.local.comfyuimobile.model.LoraStrengthSlot
 import com.local.comfyuimobile.model.LoraStrengthTarget
+import com.local.comfyuimobile.model.StrengthItemResult
 import com.local.comfyuimobile.model.StrengthPhase
 import com.local.comfyuimobile.model.MediaKind
 import com.local.comfyuimobile.model.ParameterField
