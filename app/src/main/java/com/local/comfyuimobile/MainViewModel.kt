@@ -59,6 +59,11 @@ import com.local.comfyuimobile.model.ConnectionStatus
 import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.JobSummary
 import com.local.comfyuimobile.model.LlmConfig
+import com.local.comfyuimobile.model.LoraStrengthMatrix
+import com.local.comfyuimobile.model.LoraStrengthRun
+import com.local.comfyuimobile.model.LoraStrengthSlot
+import com.local.comfyuimobile.model.LoraStrengthTarget
+import com.local.comfyuimobile.model.StrengthPhase
 import com.local.comfyuimobile.model.MediaKind
 import com.local.comfyuimobile.model.ParameterField
 import com.local.comfyuimobile.model.ParameterKind
@@ -156,6 +161,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // 暂停闸门：false = 放行下一张，true = 在"下一张开始前"挂起。
     private val batchPauseGate = MutableStateFlow(false)
     @Volatile private var batchCancelRequested = false
+
+    // ===== v0.2.52 LoRA 强度矩阵（控制变量法） =====
+    //
+    // 与「批量对比」的区别：那个换 LoRA 名字，这个固定 LoRA、只让某一个的强度变化。
+    // 状态与批量对比分开：二者的暂停/取消/结果网格互不影响，可各自独立使用。
+    private val _strengthRun = MutableStateFlow<LoraStrengthRun?>(null)
+    val strengthRun: StateFlow<LoraStrengthRun?> = _strengthRun.asStateFlow()
+    private var strengthJob: Job? = null
+    private val strengthPauseGate = MutableStateFlow(false)
+    @Volatile private var strengthCancelRequested = false
     private var workflowSaveJob: Job? = null
     private var workflowDraftSaveJob: Job? = null
     private var visibleNodeJob: Job? = null
@@ -3127,6 +3142,306 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             plannedTotal = queue.size,
         )
         batchJob = viewModelScope.launch { runBatchLoop() }
+    }
+
+    // ===== v0.2.52 LoRA 强度矩阵（控制变量法） =====
+
+    /**
+     * 从当前快捷工作流里找出所有可调强度的 LoRA 槽位。
+     *
+     * 判定依据：节点类型含 LoraLoader / LoraLoaderModelOnly，且确实带 lora_name 字段。
+     * 强度字段可能缺失（LoraLoaderModelOnly 没有 strength_clip）。
+     */
+    fun loraStrengthSlots(): List<LoraStrengthSlot> {
+        val fields = _state.value.quickFields
+        val loraFields = fields.filter { it.name == "lora_name" && it.nodeType.contains("LoraLoader", ignoreCase = true) }
+        return loraFields.mapNotNull { nameField ->
+            val nodeId = nameField.nodeId
+            val modelField = fields.firstOrNull { it.nodeId == nodeId && it.name == "strength_model" }
+                ?: return@mapNotNull null
+            val clipField = fields.firstOrNull { it.nodeId == nodeId && it.name == "strength_clip" }
+            LoraStrengthSlot(
+                nodeId = nodeId,
+                nodeTitle = nameField.nodeTitle.ifBlank { nameField.nodeType },
+                loraName = nameField.displayValue,
+                nameFieldKey = nameField.key,
+                modelFieldKey = modelField.key,
+                clipFieldKey = clipField?.key,
+                currentModel = modelField.displayValue.toDoubleOrNull() ?: 1.0,
+                currentClip = clipField?.displayValue?.toDoubleOrNull() ?: 1.0,
+            )
+        }
+    }
+
+    /**
+     * 开始一次强度矩阵测试：固定 LoRA 组合，只改被测槽位的强度。
+     *
+     * 其余槽位的强度、提示词、种子等全部保持工作流原值（种子进入前先锁 FIXED）。
+     * 返回 false 表示环境或参数不满足（界面已提示原因）。
+     */
+    fun startStrengthMatrix(targetSlotNodeId: String, target: LoraStrengthTarget, strengths: List<Double>): Boolean {
+        if (strengthJob?.isActive == true || batchJob?.isActive == true) return false
+        val st = _state.value
+        val workflowPath = st.quickWorkflowPath ?: return false
+        val workflowName = st.quickWorkflowName ?: return false
+        if (st.status != ConnectionStatus.CONNECTED || !st.bridgeReady) {
+            _state.update { it.copy(notice = "尚未连接服务器或页面未就绪，无法开始强度测试") }
+            return false
+        }
+        val slots = loraStrengthSlots()
+        val tasks = LoraStrengthMatrix.buildTasks(slots, targetSlotNodeId, strengths, target)
+        if (tasks.isEmpty()) {
+            _state.update { it.copy(notice = "没有可执行的任务：检查槽位是否存在（CLIP 强度需要节点带 strength_clip）") }
+            return false
+        }
+        if (LoraStrengthMatrix.exceedsLimit(tasks.size)) {
+            _state.update { it.copy(notice = "一次最多 ${LoraStrengthMatrix.MAX_TASKS} 张，请收窄区间或加大间距") }
+            return false
+        }
+        val slot = tasks.first().slot
+        val seed = st.quickFields
+            .firstOrNull { it.kind == ParameterKind.INTEGER && it.name.contains("seed", ignoreCase = true) }
+            ?.displayValue.orEmpty()
+        AppLogger.info(
+            "强度矩阵开始：$workflowPath，槽位=${slot.nodeTitle}（${slot.nodeId}），" +
+                "模式=${target.name}，${tasks.size} 档，种子=$seed",
+        )
+        strengthCancelRequested = false
+        strengthPauseGate.value = false
+        _strengthRun.value = LoraStrengthRun(
+            id = UUID.randomUUID().toString().take(8),
+            workflowPath = workflowPath,
+            workflowName = workflowName,
+            slotNodeId = slot.nodeId,
+            slotTitle = slot.nodeTitle,
+            target = target,
+            seed = seed,
+            originalModel = slot.currentModel,
+            originalClip = slot.currentClip,
+            pending = tasks,
+            phase = StrengthPhase.RUNNING,
+            startedAt = System.currentTimeMillis(),
+            plannedTotal = tasks.size,
+        )
+        strengthJob = viewModelScope.launch { runStrengthLoop() }
+        return true
+    }
+
+    fun pauseStrengthRun() {
+        strengthPauseGate.value = true
+        _strengthRun.update { it?.copy(phase = StrengthPhase.PAUSED) }
+    }
+
+    fun resumeStrengthRun() {
+        val run = _strengthRun.value ?: return
+        if (run.phase != StrengthPhase.PAUSED) return
+        _strengthRun.update { it?.copy(phase = StrengthPhase.RUNNING, message = "") }
+        strengthPauseGate.value = false
+    }
+
+    /** 取消：不再提交剩余档位；正在跑的一张让它跑完并记录结果。 */
+    fun cancelStrengthRun() {
+        strengthCancelRequested = true
+        strengthPauseGate.value = false
+        _strengthRun.update {
+            it?.takeIf { run -> run.phase == StrengthPhase.RUNNING }
+                ?.copy(message = "正在取消：等待当前一张结束…")
+        }
+    }
+
+    fun dismissStrengthRun() {
+        if (strengthJob?.isActive == true) return
+        _strengthRun.value = null
+    }
+
+    private suspend fun runStrengthLoop() {
+        val previousSeedMode = _state.value.seedMode
+        val run = _strengthRun.value
+        val restoreModelKey = run?.let { r ->
+            _state.value.quickFields.firstOrNull { it.nodeId == r.slotNodeId && it.name == "strength_model" }?.key
+        }
+        val restoreClipKey = run?.let { r ->
+            _state.value.quickFields.firstOrNull { it.nodeId == r.slotNodeId && it.name == "strength_clip" }?.key
+        }
+        // 控制变量法的前提：所有档位用同一个种子。临时切 FIXED，结束（含取消/异常）恢复。
+        _state.update { it.copy(seedMode = SeedMode.FIXED) }
+        var consecutiveFailures = 0
+        try {
+            while (true) {
+                val current = _strengthRun.value ?: break
+                if (current.phase == StrengthPhase.CANCELLED) break
+                if (current.pending.isEmpty()) {
+                    _strengthRun.update {
+                        it?.copy(
+                            phase = StrengthPhase.DONE,
+                            current = null,
+                            message = "强度测试结束：成功 ${it.successCount} 张，失败 ${it.failedCount} 张",
+                        )
+                    }
+                    AppLogger.info("强度矩阵结束：成功 ${current.successCount}，失败 ${current.failedCount}")
+                    break
+                }
+                // 防呆：完成数达到计划总数就强制收工（同批量对比的 v0.1.84 事故回归锁）。
+                if (current.plannedTotal in 1..current.items.size) {
+                    _strengthRun.update {
+                        it?.copy(
+                            phase = StrengthPhase.DONE,
+                            current = null,
+                            message = "已达到计划张数 ${it.plannedTotal}，强制结束" +
+                                "（成功 ${it.successCount}，失败 ${it.failedCount}）——这个提示不该出现，请把日志发回给开发者",
+                        )
+                    }
+                    AppLogger.error("强度矩阵触达计划张数上限强制结束：items=${current.items.size}，plannedTotal=${current.plannedTotal}")
+                    break
+                }
+                strengthPauseGate.first { !it }
+                if (strengthCancelRequested) {
+                    _strengthRun.update { it?.copy(phase = StrengthPhase.CANCELLED, current = null) }
+                    break
+                }
+                val advanced = advanceStrengthQueue(current) ?: continue
+                _strengthRun.value = advanced
+                val task = advanced.current ?: continue
+                val result = submitStrengthItem(advanced, task)
+                consecutiveFailures = if (result.success) 0 else consecutiveFailures + 1
+                _strengthRun.update { snapshot ->
+                    val base = snapshot ?: advanced
+                    base.copy(items = base.items + result, current = null)
+                }
+                AppLogger.info(
+                    "强度矩阵进度：${_strengthRun.value?.finished ?: 0}/${_strengthRun.value?.total ?: 0}，" +
+                        "${task.label}，成功=${result.success}" +
+                        result.message.takeIf { it.isNotBlank() }?.let { "，原因=$it" }.orEmpty(),
+                )
+                if (BatchCompareLogic.shouldAutoPause(consecutiveFailures)) {
+                    _strengthRun.update {
+                        it?.copy(
+                            phase = StrengthPhase.PAUSED,
+                            message = "连续 $consecutiveFailures 张失败已自动暂停（常见原因：登录过期、断线）。处理后点「继续」",
+                        )
+                    }
+                    strengthPauseGate.value = true
+                    consecutiveFailures = 0
+                }
+            }
+        } catch (error: CancellationException) {
+            _strengthRun.update { it?.copy(phase = StrengthPhase.CANCELLED, current = null) }
+            throw error
+        } finally {
+            _state.update { it.copy(seedMode = previousSeedMode) }
+            // 恢复被改动槽位的原强度：用户回快捷页看到的是自己原来的值。
+            run?.let { started ->
+                if (restoreModelKey != null) {
+                    quickUpdateField(restoreModelKey, LoraStrengthMatrix.formatStrength(started.originalModel))
+                }
+                if (restoreClipKey != null) {
+                    quickUpdateField(restoreClipKey, LoraStrengthMatrix.formatStrength(started.originalClip))
+                }
+            }
+        }
+    }
+
+    /** 取出队首任务并推进队列（同批量对比的"取出即出队"不变量）。 */
+    private fun advanceStrengthQueue(run: LoraStrengthRun): LoraStrengthRun? {
+        if (run.pending.isEmpty()) return null
+        return run.copy(current = run.pending.first(), pending = run.pending.drop(1))
+    }
+
+    /** 提交一张并等待完成：失败重试一次，仍失败返回失败结果。 */
+    private suspend fun submitStrengthItem(run: LoraStrengthRun, task: LoraMatrixTask): StrengthItemResult {
+        val startedAt = System.currentTimeMillis()
+        var firstFailure: String? = null
+        repeat(2) { attempt ->
+            if (attempt == 1) delay(2_000L)
+            val outcome = runCatching { submitStrengthItemOnce(run, task, startedAt) }
+                .getOrElse { error ->
+                    if (error is CancellationException) throw error
+                    StrengthItemResult(
+                        strength = task.strength,
+                        target = task.target,
+                        slotNodeId = task.slot.nodeId,
+                        slotName = task.slot.displayName,
+                        label = task.label,
+                        success = false,
+                        message = error.message ?: "提交失败",
+                        elapsedMs = System.currentTimeMillis() - startedAt,
+                    )
+                }
+            if (outcome.success) return outcome
+            if (firstFailure == null) firstFailure = outcome.message
+        }
+        return StrengthItemResult(
+            strength = task.strength,
+            target = task.target,
+            slotNodeId = task.slot.nodeId,
+            slotName = task.slot.displayName,
+            label = task.label,
+            success = false,
+            message = "重试后仍失败：${firstFailure.orEmpty()}",
+            elapsedMs = System.currentTimeMillis() - startedAt,
+        )
+    }
+
+    private suspend fun submitStrengthItemOnce(
+        run: LoraStrengthRun,
+        task: LoraMatrixTask,
+        startedAt: Long,
+    ): StrengthItemResult {
+        // 1. 只改被测槽位的强度；LoRA 名与其它槽位一律不动（控制变量）。
+        val value = LoraStrengthMatrix.formatStrength(task.strength)
+        when (task.target) {
+            LoraStrengthTarget.MODEL -> quickUpdateField(task.slot.modelFieldKey, value)
+            LoraStrengthTarget.CLIP -> task.slot.clipFieldKey?.let { quickUpdateField(it, value) }
+            LoraStrengthTarget.BOTH -> {
+                quickUpdateField(task.slot.modelFieldKey, value)
+                task.slot.clipFieldKey?.let { quickUpdateField(it, value) }
+            }
+        }
+        val fields = _state.value.quickFields
+        // 2. 桥接构造 prompt（种子已由全局 FIXED 模式锁定）
+        val generated = bridgeOperationMutex.withLock {
+            ensureBridgeReadyForQuick()
+            (bridge ?: error("前端桥接不可用")).buildPrompt(fields, 1)
+        }
+        val response = client.queuePrompt(
+            generated.promptJson,
+            generated.workflowJson,
+            clientId,
+            run.workflowPath,
+            run.workflowName,
+            refreshAuthCookie = { refreshComfyAuthCookie() },
+        )
+        awaitingQueueJobIds.add(response.promptId)
+        submittedAt[response.promptId] = System.currentTimeMillis()
+        val submitted = _state.value.submittedJobIds + response.promptId
+        runCatching { preferences.saveSubmittedJobs(submitted) }
+            .onFailure { AppLogger.error("保存已提交任务记录失败", it) }
+        _state.update {
+            it.copy(
+                submittedJobIds = submitted,
+                activeJobId = response.promptId,
+                currentExecutingNodeId = null,
+                generationProgress = null,
+                generationMessage = "强度测试 ${_strengthRun.value?.let { r -> "${r.finished + 1}/${r.total}" }.orEmpty()}：${task.label}",
+            )
+        }
+        startMonitor(response.promptId, run.workflowName, run.workflowPath)
+        // 3. 轮询 /history 等完成（不依赖 WebSocket，断线重连期间照样判定）
+        val (completed, message) = awaitBatchCompletion(response.promptId)
+        val finalHistory = runCatching { client.history(response.promptId) }.getOrNull()
+        val media = finalHistory?.let { runCatching { ResultParser.parse(client.serverUrl(), it) }.getOrNull() }.orEmpty()
+        return StrengthItemResult(
+            strength = task.strength,
+            target = task.target,
+            slotNodeId = task.slot.nodeId,
+            slotName = task.slot.displayName,
+            label = task.label,
+            promptId = response.promptId,
+            success = completed,
+            message = message,
+            media = media,
+            elapsedMs = System.currentTimeMillis() - startedAt,
+        )
     }
 
     fun pauseBatch() {
