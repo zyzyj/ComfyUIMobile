@@ -360,6 +360,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** 恢复快捷页上次选中的工作流；由快捷页在连接和列表就绪后触发。 */
+    fun restoreQuickWorkflowIfNeeded() {
+        if (_state.value.quickWorkflowPath != null || _state.value.status != ConnectionStatus.CONNECTED) return
+        viewModelScope.launch {
+            val path = preferences.settings.first().quickWorkflowPath
+            val entry = _state.value.workflows.firstOrNull { it.path == path } ?: return@launch
+            quickSelectWorkflow(entry)
+        }
+    }
+
     fun attachBridge(value: ComfyBridge) {
         bridge = value
         value.onWebViewRecreated = {
@@ -2620,11 +2630,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setBatchCount(count: Int) {
         val clamped = count.coerceIn(1, 16)
+        val path = _state.value.quickWorkflowPath
         _state.update { it.copy(batchCount = clamped) }
+        if (path != null) {
+            viewModelScope.launch {
+                preferences.saveQuickBatchSettings(path, clamped, _state.value.seedMode.name)
+            }
+        }
     }
 
     fun setSeedMode(mode: SeedMode) {
+        val path = _state.value.quickWorkflowPath
         _state.update { it.copy(seedMode = mode) }
+        if (path != null) {
+            viewModelScope.launch {
+                preferences.saveQuickBatchSettings(path, _state.value.batchCount, mode.name)
+            }
+        }
     }
 
     /** 每个工作流记住上一次实际使用的种子，供"上一个种子"模式复用。 */
@@ -2681,23 +2703,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(rawJson = raw, workflowPath = entry.path)
                 }
-                val enabledKeys = preferences.settings.first().quickEnabledParamsByWorkflow[entry.path].orEmpty()
+                val stored = preferences.settings.first()
+                val enabledKeys = stored.quickEnabledParamsByWorkflow[entry.path].orEmpty()
+                val savedValues = stored.quickFieldValuesByWorkflow[entry.path].orEmpty()
+                val restoredFields = manifest.fields.map { field ->
+                    savedValues[field.key]?.let { value ->
+                        field.copy(
+                            valueJson = valueJson(field.kind, value, field.originalValueJson),
+                            displayValue = value,
+                        )
+                    } ?: field
+                }
+                val savedBatchCount = stored.quickBatchCountByWorkflow[entry.path] ?: 1
+                val savedSeedMode = stored.quickSeedModeByWorkflow[entry.path]
+                    ?.let { runCatching { SeedMode.valueOf(it) }.getOrNull() }
+                    ?: SeedMode.RANDOM
                 _state.update {
                     it.copy(
                         quickWorkflowPath = entry.path,
                         quickWorkflowName = entry.name,
-                        quickFields = manifest.fields,
+                        quickFields = restoredFields,
                         quickEnabledParams = enabledKeys.filter { key -> manifest.fields.any { it.key == key } },
+                        batchCount = savedBatchCount,
+                        seedMode = savedSeedMode,
                         loading = false,
                         notice = "已加载快捷工作流：${entry.name}",
                     )
                 }
+                preferences.saveQuickWorkflowPath(entry.path)
             }
         }
     }
 
     /** 快捷生图页：更新某个参数的值（仅记录用户改动，未改动的保持工作流原值）。 */
     fun quickUpdateField(key: String, value: String) {
+        val path = _state.value.quickWorkflowPath
         _state.update { st ->
             st.copy(quickFields = st.quickFields.map { field ->
                 if (field.key == key) field.copy(
@@ -2706,6 +2746,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 ) else field
             })
         }
+        if (path != null) {
+            viewModelScope.launch {
+                val values = _state.value.quickFields.associate { it.key to it.displayValue }
+                preferences.saveQuickFieldValues(path, values)
+            }
+        }
+    }
+
+    /** 快捷页：移除一个已显示参数，并把选择持久化。 */
+    fun quickRemoveParam(key: String) {
+        val path = _state.value.quickWorkflowPath ?: return
+        val updated = _state.value.quickEnabledParams.filterNot { it == key }
+        _state.update { it.copy(quickEnabledParams = updated) }
+        viewModelScope.launch { preferences.saveQuickEnabledParams(path, updated) }
     }
 
     /** 快捷生图页：勾选/取消某个 DIY 参数，持久化到该工作流的配置。 */

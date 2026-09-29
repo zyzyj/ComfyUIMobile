@@ -65,6 +65,10 @@ data class StoredSettings(
     val favoriteResultKeys: Set<String> = emptySet(),
     val saveFolderUri: String = "",
     val quickEnabledParamsByWorkflow: Map<String, List<String>> = emptyMap(),
+    val quickFieldValuesByWorkflow: Map<String, Map<String, String>> = emptyMap(),
+    val quickBatchCountByWorkflow: Map<String, Int> = emptyMap(),
+    val quickSeedModeByWorkflow: Map<String, String> = emptyMap(),
+    val quickWorkflowPath: String = "",
     // v0.1.88：AI 提示词助手所用的外部大模型配置。
     val llmConfig: LlmConfig = LlmConfig(),
     // v0.1.90：AI Studio 平台账号（Cookie 即凭证）。
@@ -91,6 +95,9 @@ class AppPreferences(private val context: Context) {
         val favoriteResultKeys = stringPreferencesKey("favorite_result_keys")
         val saveFolderUri = stringPreferencesKey("save_folder_uri")
         val quickEnabledParams = stringPreferencesKey("quick_enabled_params")
+        val quickFieldValues = stringPreferencesKey("quick_field_values")
+        val quickBatchSettings = stringPreferencesKey("quick_batch_settings")
+        val quickWorkflowPath = stringPreferencesKey("quick_workflow_path")
         val llmConfig = stringPreferencesKey("llm_config")
         val aiStudioAccounts = stringPreferencesKey("ai_studio_accounts")
         val aiStudioActiveId = stringPreferencesKey("ai_studio_active_id")
@@ -118,6 +125,10 @@ class AppPreferences(private val context: Context) {
             favoriteResultKeys = decodeStrings(preferences[Keys.favoriteResultKeys].orEmpty()).toSet(),
             saveFolderUri = preferences[Keys.saveFolderUri].orEmpty(),
             quickEnabledParamsByWorkflow = decodeQuickParams(preferences[Keys.quickEnabledParams].orEmpty()),
+            quickFieldValuesByWorkflow = decodeQuickFieldValues(preferences[Keys.quickFieldValues].orEmpty()),
+            quickBatchCountByWorkflow = decodeQuickBatchSettings(preferences[Keys.quickBatchSettings].orEmpty()).first,
+            quickSeedModeByWorkflow = decodeQuickBatchSettings(preferences[Keys.quickBatchSettings].orEmpty()).second,
+            quickWorkflowPath = preferences[Keys.quickWorkflowPath].orEmpty(),
             llmConfig = decodeLlmConfig(preferences[Keys.llmConfig].orEmpty()),
             aiStudioAccounts = decodeAiStudioAccounts(preferences[Keys.aiStudioAccounts].orEmpty()),
             aiStudioActiveId = preferences[Keys.aiStudioActiveId].orEmpty(),
@@ -240,6 +251,26 @@ class AppPreferences(private val context: Context) {
         }
     }
 
+    suspend fun saveQuickWorkflowPath(workflowPath: String) {
+        context.dataStore.edit { it[Keys.quickWorkflowPath] = workflowPath }
+    }
+
+    suspend fun saveQuickFieldValues(workflowPath: String, values: Map<String, String>) {
+        context.dataStore.edit { preferences ->
+            val current = decodeQuickFieldValues(preferences[Keys.quickFieldValues].orEmpty()).toMutableMap()
+            current[workflowPath] = values.filterKeys(String::isNotBlank)
+            preferences[Keys.quickFieldValues] = encodeQuickFieldValues(current)
+        }
+    }
+
+    suspend fun saveQuickBatchSettings(workflowPath: String, batchCount: Int, seedMode: String) {
+        context.dataStore.edit { preferences ->
+            val root = JSONObject(preferences[Keys.quickBatchSettings].orEmpty().ifBlank { "{}" })
+            root.put(workflowPath, JSONObject().put("batchCount", batchCount).put("seedMode", seedMode))
+            preferences[Keys.quickBatchSettings] = root.toString()
+        }
+    }
+
     suspend fun saveLlmConfig(config: LlmConfig) {
         context.dataStore.edit { preferences ->
             preferences[Keys.llmConfig] = JSONObject()
@@ -343,6 +374,36 @@ class AppPreferences(private val context: Context) {
             put(JSONObject().put("path", path).put("keys", JSONArray(keys.take(200))))
         }
     }.toString()
+
+    private fun decodeQuickFieldValues(raw: String): Map<String, Map<String, String>> = runCatching {
+        val root = JSONObject(raw.ifBlank { "{}" })
+        buildMap {
+            root.keys().forEach { path ->
+                val item = root.optJSONObject(path) ?: return@forEach
+                val values = buildMap {
+                    item.keys().forEach { key -> put(key, item.optString(key)) }
+                }
+                put(path, values)
+            }
+        }
+    }.getOrDefault(emptyMap())
+
+    private fun encodeQuickFieldValues(map: Map<String, Map<String, String>>): String =
+        JSONObject().apply {
+            map.forEach { (path, values) -> put(path, JSONObject(values)) }
+        }.toString()
+
+    private fun decodeQuickBatchSettings(raw: String): Pair<Map<String, Int>, Map<String, String>> = runCatching {
+        val root = JSONObject(raw.ifBlank { "{}" })
+        val counts = mutableMapOf<String, Int>()
+        val modes = mutableMapOf<String, String>()
+        root.keys().forEach { path ->
+            val item = root.optJSONObject(path) ?: return@forEach
+            counts[path] = item.optInt("batchCount", 1).coerceIn(1, 16)
+            modes[path] = item.optString("seedMode", "RANDOM")
+        }
+        counts to modes
+    }.getOrDefault(emptyMap<String, Int>() to emptyMap())
 
     private fun decodeProfiles(raw: String): List<ServerProfile> = runCatching {
         val array = JSONArray(raw.ifBlank { "[]" })
