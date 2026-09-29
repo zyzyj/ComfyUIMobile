@@ -14,15 +14,10 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -70,6 +65,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -586,7 +582,10 @@ private fun ServerCard(profile: ServerProfile, onClick: () -> Unit, onDelete: ((
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: SnackbarHostState) {
-    var page by rememberSaveable { mutableStateOf(MainPage.WORKFLOWS) }
+    // v0.2.53：默认首页改为「账号」。
+    // 账号页是「我是谁 → 我有什么 → 我能做什么」的入口：登录、启 GPU、连 ComfyUI
+    // 都从这里开始；未连接时直接看到工作流页会是空的（没服务器就没有列表）。
+    var page by rememberSaveable { mutableStateOf(MainPage.ACCOUNT) }
     var settings by remember { mutableStateOf(false) }
     var resultSource by rememberSaveable { mutableStateOf(ResultSource.LOCAL) }
     var resultLayout by rememberSaveable { mutableStateOf(ResultLayout.ALBUMS) }
@@ -655,7 +654,11 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
             ) {
                 MainPage.bottomBarEntries.forEach { target ->
                     NavigationBarItem(
-                        selected = page == target,
+                        // v0.2.53：参数页不在底栏，但它从工作流列表进入，
+                        // 高亮「工作流」比整栏全灰更符合“我从哪儿来的”。
+                        selected = page == target ||
+                            (target == MainPage.WORKFLOWS && page == MainPage.PARAMETERS) ||
+                            (target == MainPage.ACCOUNT && page == MainPage.STORAGE),
                         onClick = { page = target },
                         icon = { Icon(target.icon, null) },
                         label = { Text(target.label, style = MaterialTheme.typography.labelSmall) },
@@ -676,47 +679,50 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
-            // 页面切换过渡：淡入 + 微上浮（180ms）。比直接硬切更有"换了页"的
-            // 空间感，又不至于慢到拖着不过去。用 AnimatedContent 而不是 Crossfade，
-            // 因为前者还能拿到进出方向做位移。
-            AnimatedContent(
-                targetState = page,
-                transitionSpec = {
-                    val forward = targetState.ordinal > initialState.ordinal
-                    (fadeIn(tween(200, easing = FastOutSlowInEasing)) +
-                        slideInVertically(tween(220, easing = FastOutSlowInEasing)) { h ->
-                            (if (forward) h else -h) / 14
-                        })
-                        .togetherWith(
-                            fadeOut(tween(120)) +
-                                slideOutVertically(tween(180, easing = FastOutSlowInEasing)) { h ->
-                                    (if (forward) -h else h) / 14
-                                },
+            // v0.2.53：页面切换改用动画期间**只组合一个页面**的写法。
+            //
+            // 以前用 AnimatedContent：动画期间新旧两个页面会同时组合。而这些页面
+            // 本身很重（LazyColumn/LazyVerticalGrid + AsyncImage 网格 + 终端行），
+            // 双份组合会把主线程压满，切页明显掉帧、不跟手——尤其从结果页/控制台
+            // 这种长列表切走时。现在不再做双页面交叉淡入，只让进入的页面淡入：
+            // 组合量最多少一半，切换立即响应。
+            //
+            // 各页面的滚动位置不丢失：LazyColumn/LazyVerticalGrid 的滚动位置会随
+            // 本页离开组合而重置，所以进入时从顶部开始——这本来也是切页后的预期。
+            key(page) {
+                // 单页淡入：只对「刚进入的页面」做一次 140ms 透明度过渡，
+                // 不对旧页面做退场动画（那会要求它继续保留在组合树里）。
+                // 用 graphicsLayer 改 alpha 而不是 Modifier.alpha：后者会带着
+                // 整棵子树重新创建图层，长列表下反而更贵。
+                val pageAlpha = remember(page) { Animatable(0f) }
+                LaunchedEffect(page) { pageAlpha.animateTo(1f, tween(140, easing = FastOutSlowInEasing)) }
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { alpha = pageAlpha.value },
+                ) {
+                    when (page) {
+                        MainPage.ACCOUNT -> AccountScreen(state, viewModel)
+                        MainPage.CONSOLE -> ConsoleScreen(state, viewModel)
+                        MainPage.WORKFLOWS -> WorkflowScreen(state, viewModel, onOpenParameters = { page = MainPage.PARAMETERS })
+                        MainPage.PARAMETERS -> ParameterScreen(state, viewModel)
+                        MainPage.RESULTS -> ResultScreen(
+                            state = state,
+                            viewModel = viewModel,
+                            source = resultSource,
+                            onSourceChange = {
+                                resultSource = it
+                                resultAlbumId = null
+                            },
+                            layout = resultLayout,
+                            onLayoutChange = { resultLayout = it },
+                            selectedAlbumId = resultAlbumId,
+                            onSelectedAlbumChange = { resultAlbumId = it },
                         )
-                },
-                label = "page",
-            ) { targetPage ->
-                when (targetPage) {
-                    MainPage.ACCOUNT -> AccountScreen(state, viewModel)
-                    MainPage.CONSOLE -> ConsoleScreen(state, viewModel)
-                    MainPage.WORKFLOWS -> WorkflowScreen(state, viewModel, onOpenParameters = { page = MainPage.PARAMETERS })
-                    MainPage.PARAMETERS -> ParameterScreen(state, viewModel)
-                    MainPage.RESULTS -> ResultScreen(
-                        state = state,
-                        viewModel = viewModel,
-                        source = resultSource,
-                        onSourceChange = {
-                            resultSource = it
-                            resultAlbumId = null
-                        },
-                        layout = resultLayout,
-                        onLayoutChange = { resultLayout = it },
-                        selectedAlbumId = resultAlbumId,
-                        onSelectedAlbumChange = { resultAlbumId = it },
-                    )
-                    MainPage.TASKS -> TaskScreen(state, viewModel)
-                    MainPage.QUICK -> QuickGenScreen(state, viewModel)
-                    MainPage.STORAGE -> StorageScreen(state, viewModel)
+                        MainPage.TASKS -> TaskScreen(state, viewModel)
+                        MainPage.QUICK -> QuickGenScreen(state, viewModel)
+                        MainPage.STORAGE -> StorageScreen(state, viewModel)
+                    }
                 }
             }
             if (state.loading || state.generating) {
@@ -1066,26 +1072,39 @@ private fun ParameterScreen(state: AppUiState, viewModel: MainViewModel) {
         if (uri != null && field != null) viewModel.uploadField(field, uri)
         uploadField = null
     }
-    val visibleFields = state.fields.filter { it.visible }.groupBy { it.nodeId }
-    val nodes = workflow.nodes.sortedBy { it.order }.map { node ->
-        val fields = visibleFields[node.id].orEmpty().sortedBy { it.order }
-        node to fields
+    // v0.2.53：下面这些派生量都加 remember。它们原本在每次重组时重算——参数页字段
+    // 动辄几十上百条，用户在参数页滚动/改值时每次重组都重跑 filter+groupBy+sortedBy，
+    // 主线程被白白占满，这是面板“不跟手”的一大来源。键取真正影响结果的输入。
+    val visibleFields = remember(state.fields) { state.fields.filter { it.visible }.groupBy { it.nodeId } }
+    val nodes = remember(workflow.nodes, visibleFields) {
+        workflow.nodes.sortedBy { it.order }.map { node ->
+            val fields = visibleFields[node.id].orEmpty().sortedBy { it.order }
+            node to fields
+        }
     }
     val workflowFolders = remember(state.workflows, workflow.entry.path) {
         WorkflowPath.availableFolders(state.workflows, workflow.entry.path)
     }
-    val outputNodeTypes = nodes.asSequence().map { it.first }.filter { it.isOutput }.map { it.type }.toSet()
+    val outputNodeTypes = remember(nodes) {
+        nodes.asSequence().map { it.first }.filter { it.isOutput }.map { it.type }.toSet()
+    }
     val hasConfiguredLocalOutput = CachePolicy.hasConfiguredOutput(
         state.cacheOutputRules,
         state.activeServer?.baseUrl,
         outputNodeTypes,
     )
-    val localProblems = FieldValidator.detailedProblems(state.fields)
-    val localProblemsByNode = localProblems.groupBy { it.nodeId }.mapValues { (_, items) -> items.map { it.message } }
-    val problemNodeIds = localProblemsByNode.keys + state.nodeProblems.keys
-    val recentWorkflows = RecentWorkflows.resolveEntries(state.recentWorkflowPaths, state.workflows)
-        .let { entries -> listOf(workflow.entry) + entries.filterNot { it.path == workflow.entry.path } }
-        .distinctBy { it.path }
+    val localProblems = remember(state.fields) { FieldValidator.detailedProblems(state.fields) }
+    val localProblemsByNode = remember(localProblems) {
+        localProblems.groupBy { it.nodeId }.mapValues { (_, items) -> items.map { it.message } }
+    }
+    val problemNodeIds = remember(localProblemsByNode, state.nodeProblems) {
+        localProblemsByNode.keys + state.nodeProblems.keys
+    }
+    val recentWorkflows = remember(state.recentWorkflowPaths, state.workflows, workflow.entry.path) {
+        RecentWorkflows.resolveEntries(state.recentWorkflowPaths, state.workflows)
+            .let { entries -> listOf(workflow.entry) + entries.filterNot { it.path == workflow.entry.path } }
+            .distinctBy { it.path }
+    }
     val defaultBringIntoViewSpec = LocalBringIntoViewSpec.current
     val suppressAutomaticRelocationUntil = remember(workflow.entry.path) { AtomicLong(0L) }
     val parameterBringIntoViewSpec = remember(workflow.entry.path, defaultBringIntoViewSpec) {
@@ -2006,12 +2025,16 @@ private fun ResultScreen(
     var confirmDeleteSelection by remember { mutableStateOf(false) }
     val media = (if (source == ResultSource.LOCAL) state.localResults else state.results)
         .sortedWith(compareByDescending<ResultMedia> { it.createdAt }.thenByDescending { it.taskNumber })
-    val albums = media.groupBy { it.jobId }
-        .map { (jobId, items) -> ResultAlbum(jobId, items) }
-        .sortedWith(compareByDescending<ResultAlbum> { it.media.maxOfOrNull(ResultMedia::createdAt) ?: 0L }
-            .thenByDescending { it.media.maxOfOrNull(ResultMedia::taskNumber) ?: 0L })
+    // v0.2.53：相册分组 + 排序加 remember。结果多时（一次批量几十张）每次重组都重算
+    // groupBy + 两次 sortedWith，在结果页滚动/多选时很卡。
+    val albums = remember(media) {
+        media.groupBy { it.jobId }
+            .map { (jobId, items) -> ResultAlbum(jobId, items) }
+            .sortedWith(compareByDescending<ResultAlbum> { it.media.maxOfOrNull(ResultMedia::createdAt) ?: 0L }
+                .thenByDescending { it.media.maxOfOrNull(ResultMedia::taskNumber) ?: 0L })
+    }
     val selectedAlbum = albums.firstOrNull { it.jobId == selectedAlbumId }
-    val selectedItems = media.filter { it.stableKey() in selectedKeys }
+    val selectedItems = remember(media, selectedKeys) { media.filter { it.stableKey() in selectedKeys } }
     val selectionMode = selectedKeys.isNotEmpty()
     fun toggleSelection(items: Collection<ResultMedia>) {
         val keys = items.map(ResultMedia::stableKey).toSet()
@@ -2856,7 +2879,10 @@ private fun StorageBucketCard(bucket: StorageBucket, onClear: () -> Unit) {
 @Composable
 private fun TaskScreen(state: AppUiState, viewModel: MainViewModel) {
     var appOnly by remember { mutableStateOf(false) }
-    val jobs = if (appOnly) state.jobs.filter { it.submittedByApp } else state.jobs
+    // v0.2.53：过滤结果加 remember，避免每次重组重跑 filter。
+    val jobs = remember(state.jobs, appOnly) {
+        if (appOnly) state.jobs.filter { it.submittedByApp } else state.jobs
+    }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("服务器任务", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
@@ -5737,12 +5763,18 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     state = terminalState,
                     modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
                 ) {
-                    items(panel.terminalLines) { line ->
+                    // v0.2.53：给行加 key。终端是流式追加的，没 key 时每次新输出到达都
+                    // 会把可见行当成新项重组，连带重跑下面的 ANSI 解析；有了 key，
+                    // Compose 能复用已存在的行。
+                    itemsIndexed(panel.terminalLines, key = { index, _ -> index }) { _, line ->
                         // 逐行包 SelectionContainer：支持长按选择复制，又不干扰
                         // LazyColumn 自身的滚动。
                         SelectionContainer {
+                            // ANSI 解析是正则逐行扫，终端滚动时每帧都会重组；
+                            // 记住上一行结果，避免反复重跑（长会话下这很可观）。
+                            val annotated = remember(line, theme) { terminalAnnotatedLine(line.ifEmpty { " " }, theme) }
                             Text(
-                                terminalAnnotatedLine(line.ifEmpty { " " }, theme),
+                                annotated,
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = fontSizeSp.sp,
