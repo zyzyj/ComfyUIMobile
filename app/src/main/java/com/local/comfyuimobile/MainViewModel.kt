@@ -2986,7 +2986,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
-        if (assistantJob?.isActive == true) return
+        // v0.2.58：上一条还在等回复时不能静默丢弃。以前这里直接 return，用户点了发送
+        // 却看不到任何反应（消息没进列表、也没有提示），只能反复点。现在把用户这条话
+        // 照常入列，再补一句系统说明，让界面明确"在排队"。
+        if (assistantJob?.isActive == true) {
+            val queued = TerminalChatMessage(
+                id = UUID.randomUUID().toString(),
+                role = TerminalMessageRole.USER,
+                text = prompt,
+            )
+            _assistantMessages.update {
+                it + queued + TerminalChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    role = TerminalMessageRole.SYSTEM_NOTE,
+                    text = "上一条还在等大模型回复，这条已收到，稍后一起发送\n（AI 助手一次只处理一轮，避免命令与输出串台）",
+                )
+            }
+            return
+        }
         val userMessage = TerminalChatMessage(
             id = UUID.randomUUID().toString(),
             role = TerminalMessageRole.USER,
@@ -3084,7 +3101,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _pendingCommands.value = _pendingCommands.value.filterNot { it.id == pending.id }
         val token = UUID.randomUUID().toString().take(8)
         val baseline = _state.value.aiStudio.terminalLines.size
-        kernelClient.sendInput(TerminalCommandSafety.wrap(pending.command, token))
+        // v0.2.58：sendInput 返回 false 表示没 socket、发送失败。以前忽略返回值，于是失败时
+        // 还要按超时等满 10 分钟才报错，用户一直以为命令在跑。现在立即反馈。
+        val sent = kernelClient.sendInput(TerminalCommandSafety.wrap(pending.command, token))
+        if (!sent) {
+            _assistantMessages.update {
+                it + TerminalChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    role = TerminalMessageRole.SYSTEM_NOTE,
+                    text = "发送失败：终端连接已断开。请到「更多 → 控制台」重连后再执行。\n命令未执行：$pending.command",
+                )
+            }
+            return
+        }
         _assistantMessages.update {
             it + TerminalChatMessage(
                 id = UUID.randomUUID().toString(),

@@ -5327,10 +5327,13 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                         OutlinedButton(
                             onClick = { viewModel.aiStudioReceiveResource() },
                             modifier = Modifier.weight(1f),
+                            // v0.2.58：忙时禁用。以前没有 enabled 保护，任务在跑时点击会静默
+                            // 无反应（ViewModel 里 isActive 就 return，界面不给任何反馈）。
+                            enabled = !panel.loadingProjects && !panel.consoleBusy,
                         ) { Text("领算力") }
                     }
                     // v0.2.57：这个按钮容易被误解为“点一下就到账 8 点”，但实测
-                    // （2026-09-30，两个真实账号）确认：每日 8 点算力是**启动项目时**
+                    // （2026-09-30，两个真实账号）确认：每日 8 点算力是「启动项目」时
                     // 平台自动发的（启动前后 49.0 → 57.0，+480 分钟；同日第二次不再发）。
                     // 本按钮只在平台有可领额度时才生效；没额度时无论项目是否在跑都回
                     // “无效操作”。把规则写在按钮下面，避免用户反复点一个不会生效的按钮。
