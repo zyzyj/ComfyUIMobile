@@ -225,6 +225,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private val llm = LlmRepository()
     private var aiAssistJob: Job? = null
+    /** 拉取模型列表的任务（v0.2.56）。 */
+    private var llmModelsJob: Job? = null
     // v0.1.89：服务器已注册的节点类型集合，来自 /object_info，用于缺失预检。
     @Volatile private var knownNodeTypes: Set<String>? = null
     // ===== v0.1.90 AI Studio 平台 =====
@@ -3189,6 +3191,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ===== v0.1.88 AI 提示词助手 =====
 
+    /**
+     * 拉取模型列表（v0.2.56）。
+     *
+     * 只依赖当前输入的地址与 Key——不要求模型名已填，否则用户会卡在
+     * "想拉列表但还没填模型名"。结果放进 state 供下拉选择；失败只记 aiAssistError。
+     */
+    fun fetchLlmModels(baseUrl: String, apiKey: String) {
+        if (llmModelsJob?.isActive == true) return
+        _state.update { it.copy(llmModelsLoading = true, aiAssistError = null) }
+        llmModelsJob = viewModelScope.launch {
+            runCatching { llm.listModels(baseUrl, apiKey) }
+                .onSuccess { models ->
+                    _state.update {
+                        it.copy(
+                            llmModels = models,
+                            llmModelsLoading = false,
+                            notice = "已拉取 ${models.size} 个模型",
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    AppLogger.warn("拉取模型列表失败", error)
+                    _state.update {
+                        it.copy(
+                            llmModelsLoading = false,
+                            llmModels = emptyList(),
+                            aiAssistError = error.message ?: "拉取模型列表失败",
+                        )
+                    }
+                }
+        }.also { job ->
+            job.invokeOnCompletion { if (llmModelsJob === job) llmModelsJob = null }
+        }
+    }
+
+    /** 清空已拉取的模型列表（改地址/Key 后旧列表不再适用）。 */
+    fun clearLlmModels() {
+        llmModelsJob?.cancel()
+        llmModelsJob = null
+        _state.update { it.copy(llmModels = emptyList(), llmModelsLoading = false) }
+    }
+
     /** 设置页：保存大模型配置（地址 / Key / 模型名 / 风格预设）。 */
     fun saveLlmConfig(config: LlmConfig) {
         _state.update { it.copy(llmConfig = config, aiAssistError = null) }
@@ -3243,10 +3288,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return LlmPrompts.WorkflowContext(checkpoint = checkpoint, loras = loras)
     }
 
-    /** 设置页：用一句话探活，免得填完配置到生图时才发现是错的。 */
-    fun testLlmConnection() {
+    /**
+     * 设置页：用一句话探活，免得填完配置到生图时才发现是错的。
+     *
+     * v0.2.56：改为接受**当前输入框里的值**。以前读的是已保存的 config，于是
+     * "改完地址/Key 直接点测试"测的还是旧配置——用户会看到与预期不符的成功/失败。
+     */
+    fun testLlmConnection(config: LlmConfig = _state.value.llmConfig) {
         if (aiAssistJob?.isActive == true) return
-        val config = _state.value.llmConfig
+        // 参数 config 已由调用方传入（输入框当前值）；不再读已保存的旧配置。
         if (!config.isConfigured()) {
             _state.update { it.copy(aiAssistError = "先填接口地址和模型名再测试") }
             return

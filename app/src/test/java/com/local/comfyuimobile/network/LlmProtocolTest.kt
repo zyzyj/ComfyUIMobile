@@ -55,6 +55,70 @@ class LlmProtocolTest {
         assertEquals("", LlmProtocol.chatEndpoint("   "))
     }
 
+    // ===== 模型列表（v0.2.56） =====
+
+    @Test
+    fun `models 端点与 chat 端点同一套归一规则`() {
+        assertEquals(
+            "https://api.openai.com/v1/models",
+            LlmProtocol.modelsEndpoint("https://api.openai.com"),
+        )
+        assertEquals(
+            "https://api.deepseek.com/v1/models",
+            LlmProtocol.modelsEndpoint("https://api.deepseek.com/v1"),
+        )
+        // 用户直接把聊天端点粘进来也要能拼对（常见误操作）
+        assertEquals(
+            "https://api.deepseek.com/v1/models",
+            LlmProtocol.modelsEndpoint("https://api.deepseek.com/v1/chat/completions"),
+        )
+        // 已经是 models 端点则不重复拼
+        assertEquals(
+            "https://x.example.com/api/v1/models",
+            LlmProtocol.modelsEndpoint("https://x.example.com/api/v1/models"),
+        )
+        assertEquals("", LlmProtocol.modelsEndpoint("  "))
+    }
+
+    @Test
+    fun `解析 OpenAI 官方 data 数组`() {
+        val raw = """{"object":"list","data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"}]}"""
+        assertEquals(listOf("gpt-4o", "gpt-4o-mini"), LlmProtocol.parseModels(raw))
+    }
+
+    @Test
+    fun `解析裸数组与 models 字段两种非标准形态`() {
+        assertEquals(listOf("a", "b"), LlmProtocol.parseModels("""[{"id":"b"},{"id":"a"}]"""))
+        assertEquals(listOf("m1"), LlmProtocol.parseModels("""{"models":[{"id":"m1"}]}"""))
+    }
+
+    @Test
+    fun `兼容 model 与 name 字段而不是 id`() {
+        val raw = """{"data":[{"model":"deepseek-chat"},{"name":"qwen-max"}]}"""
+        assertEquals(listOf("deepseek-chat", "qwen-max"), LlmProtocol.parseModels(raw))
+    }
+
+    @Test
+    fun `无法解析时返回空列表而不抛异常`() {
+        // 拉列表失败不该把设置页卡住：返回空，由调用方决定提示
+        assertEquals(emptyList<String>(), LlmProtocol.parseModels(""))
+        assertEquals(emptyList<String>(), LlmProtocol.parseModels("not json"))
+        assertEquals(emptyList<String>(), LlmProtocol.parseModels("""{"unexpected":1}"""))
+    }
+
+    @Test
+    fun `模型列表去重并排序`() {
+        val raw = """{"data":[{"id":"b"},{"id":"a"},{"id":"b"}]}"""
+        assertEquals(listOf("a", "b"), LlmProtocol.parseModels(raw))
+    }
+
+    @Test
+    fun `authHeader 重载可直接接受 apiKey`() {
+        assertEquals("Bearer sk-x", LlmProtocol.authHeader(" sk-x "))
+        assertEquals(null, LlmProtocol.authHeader("   "))
+        assertEquals(null, LlmProtocol.authHeader(""))
+    }
+
     // ===== 请求体 =====
 
     @Test

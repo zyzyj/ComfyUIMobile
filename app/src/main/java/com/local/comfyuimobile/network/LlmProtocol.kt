@@ -15,6 +15,7 @@ import org.json.JSONObject
 object LlmProtocol {
 
     private const val CHAT_COMPLETIONS = "chat/completions"
+    private const val MODELS = "models"
 
     /**
      * 把用户填的地址规范化成完整的 `/chat/completions` 端点。
@@ -34,6 +35,61 @@ object LlmProtocol {
         }
     }
 
+    /**
+     * 模型列表端点 `/models`（v0.2.56）。
+     *
+     * 与 [chatEndpoint] 同一套地址归一规则，只是末尾换成 `models`：用户填的地址
+     * 可能是聊天端点、`/v1`、或裸域名，三种都要能拼对。
+     */
+    fun modelsEndpoint(baseUrl: String): String {
+        val trimmed = baseUrl.trim().trimEnd('/')
+        if (trimmed.isBlank()) return ""
+        return when {
+            trimmed.endsWith("/$CHAT_COMPLETIONS") ->
+                trimmed.removeSuffix("/$CHAT_COMPLETIONS") + "/$MODELS"
+            trimmed.endsWith("/v1") -> "$trimmed/$MODELS"
+            trimmed.endsWith("/v1/") -> "$trimmed/$MODELS"
+            trimmed.endsWith("/$MODELS") -> trimmed
+            else -> "$trimmed/v1/$MODELS"
+        }
+    }
+
+    /**
+     * 从 `/models` 响应里取出模型 id 列表。
+     *
+     * 兼容两种常见形态：OpenAI 官方 `{data:[{id:"gpt-4o"}]}`，以及部分服务商直接
+     * 返回数组 `[{id:"x"}]`；再兜底一种 `{models:[...]}`。
+     * 取不到时返回空列表（由调用方决定提示什么），不抛异常——列表拉失败不该把
+     * 整个设置页卡住，用户手填模型名仍然可用。
+     */
+    fun parseModels(raw: String): List<String> {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return emptyList()
+        val entries: List<JSONObject> = runCatching {
+            when {
+                trimmed.startsWith("[") -> {
+                    val array = JSONArray(trimmed)
+                    List(array.length()) { index -> array.optJSONObject(index) }
+                }
+                else -> {
+                    val root = JSONObject(trimmed)
+                    val array = root.optJSONArray("data")
+                        ?: root.optJSONArray("models")
+                        ?: return emptyList()
+                    List(array.length()) { index -> array.optJSONObject(index) }
+                }
+            }
+        }.getOrElse { emptyList() }
+        val ids = entries.mapNotNull { item ->
+            item ?: return@mapNotNull null
+            // 少数服务商用 model/name 而不是 id；也兼容字符串元素的情况。
+            item.optString("id").ifBlank { item.optString("model") }
+                .ifBlank { item.optString("name") }
+                .takeIf { it.isNotBlank() }
+        }
+        return ids.distinct().sorted()
+    }
+
     fun buildRequestBody(config: LlmConfig, systemPrompt: String, userMessage: String): String =
         JSONObject()
             .put("model", config.model.trim())
@@ -50,8 +106,11 @@ object LlmProtocol {
             )
             .toString()
 
-    fun authHeader(config: LlmConfig): String? =
-        config.apiKey.trim().takeIf { it.isNotBlank() }?.let { "Bearer $it" }
+    fun authHeader(config: LlmConfig): String? = authHeader(config.apiKey)
+
+    /** 直接给 API Key 的重载（拉取模型列表时只有 Key、还没有完整配置）。 */
+    fun authHeader(apiKey: String): String? =
+        apiKey.trim().takeIf { it.isNotBlank() }?.let { "Bearer $it" }
 
     /**
      * 从响应体里抠出模型正文。

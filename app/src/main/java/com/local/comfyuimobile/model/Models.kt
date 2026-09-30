@@ -262,6 +262,9 @@ data class AppUiState(
     val quickWorkflowPath: String? = null,
     /** 用户自建的提示词预设（v0.2.54）。内置预设由 PromptPresets 提供，不入此列表。 */
     val customPresets: List<PromptPreset> = emptyList(),
+    /** 已拉取的大模型列表（v0.2.56）；空表示未拉取或拉取失败。 */
+    val llmModels: List<String> = emptyList(),
+    val llmModelsLoading: Boolean = false,
     val quickWorkflowName: String? = null,
     val quickFields: List<ParameterField> = emptyList(),
     val quickEnabledParams: List<String> = emptyList(),
