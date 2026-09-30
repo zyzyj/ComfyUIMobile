@@ -1,3 +1,41 @@
+# v0.2.58 — 全量自查：修两处「点了没反应」+ 一处白等 10 分钟
+
+这天做了一次全量自查（非针对反馈），自己找出并修掉的问题：
+
+## 修：AI 助手连续提问会静默丢弃
+
+`askAssistant()` 开头有 `if (assistantJob?.isActive == true) return`：上一条还在等大模型回复时点发送，消息**既不入列表也无任何提示**。用户只能反复点，以为界面卡了。
+
+改为：把这条话照常入列，再补一句系统说明「上一条还在等大模型回复，这条已收到，稍后一起发送」。界面明确在排队。
+
+（AI 助手一次只处理一轮是对的——命令与输出不能串台，这里只补反馈，不改串行策略。）
+
+## 修：命令发送失败却白等 10 分钟
+
+`executeAssistantCommand()` 调用 `kernelClient.sendInput(...)` 但**忽略返回值**。
+
+`sendInput` 返回 `false` 表示没有 socket、发送失败。旧代码不管这个，直接进入 `awaitCommandResult` 轮询等结束标记，失败时要**等满 10 分钟**才报错，期间用户一直以为命令在跑。
+
+改为：立即提示「发送失败：终端连接已断开…命令未执行」。
+
+## 修：「领算力」按钮忙时点了没反应
+
+签到按钮有 `enabled = !panel.signingIn` 保护，**领算力没有**。任务在跑时点击，ViewModel 里 `isActive` 就 return，界面无反馈。补上 `enabled = !panel.loadingProjects && !panel.consoleBusy`。
+
+## 自查中确认**不是** bug 的两项（记录以免重复排查）
+
+1. **`quickUpdateField` 每次输入都启动协程（此前标为潜在竞态）。确认 `_state.update` 是原子同步执行，两个 launch 读的都是最新值，不是旧值覆盖，只是冗余写入。暂不改动（改动需引入防抖 job，收益小）。
+2. **`executeAssistantCommand` 未检查 `consoleBusy`**：确认 `consoleBusy` 仅在连接终端期间为 true（连接成功即置 false），命令执行前只查 `consoleConnected` 是正确的。同时确认：
+   - 终端缓冲 `appendTerminal` 有空列表保护（`if (buffer.isEmpty()) buffer.add("")`），不会越界。
+   - `UpdateManager` 的进度除法有 `totalBytes > 0` 守卫，不会除零。
+   - 工程内无 TODO/FIXME，无空 catch 吞异常。
+
+## 顺带
+
+恢复 4 个被误删的跟踪文件（`app1.png` / `passport-mn.png` / `ui_window_mode.png` / `wappass.png`）。它们是历史提交进来的；删除跟踪文件应由用户决定，我不擅作主张删除。
+
+---
+
 # v0.2.57 — 搞清楚「领算力」按钮：每日 8 点算力其实靠启动项目自动发放
 
 ## 实测结论（2026-09-30，两个真实账号）
