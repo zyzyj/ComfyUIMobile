@@ -413,190 +413,14 @@ fun ComfyMobileApp(viewModel: MainViewModel, bridge: ComfyBridge) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ConnectionPage(state: AppUiState, viewModel: MainViewModel, snackbar: SnackbarHostState) {
-    var settings by remember { mutableStateOf(false) }
-    Scaffold(
-        containerColor = Color.Transparent,
-        topBar = {
-            // 顶栏用半透明玻璃：下面滚过的内容隐约透出来，是液态玻璃最直观的特征。
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = if (isSystemInDarkTheme()) {
-                        Color(0xFF14181E).copy(alpha = 0.62f)
-                    } else {
-                        Color.White.copy(alpha = 0.55f)
-                    },
-                ),
-                title = {},
-                actions = {
-                    IconButton(onClick = { settings = true }) {
-                        Icon(Icons.Outlined.Settings, "设置")
-                    }
-                },
-            )
-        },
-        snackbarHost = { SnackbarHost(snackbar) },
-    ) { padding ->
-        Column(
-            Modifier.fillMaxSize().padding(padding).padding(20.dp).verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Icon(Icons.Outlined.Wifi, null, Modifier.size(56.dp), tint = MaterialTheme.colorScheme.primary)
-            Text("ComfyUI 手机端", style = MaterialTheme.typography.headlineMedium)
-            Text(
-                "连接你信任的 ComfyUI 服务器。支持局域网、VPN、公网 HTTPS 地址，" +
-                    "以及带登录的反向代理（https://用户名:密码@域名）。",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            OutlinedTextField(
-                // 状态里存的是完整地址（可能含 user:pass@），这里只展示脱敏后的部分，
-                // 避免明文密码显示在输入框里。
-                value = LanAddress.withoutCredentials(state.serverInput),
-                onValueChange = viewModel::setServerInput,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("ComfyUI 地址") },
-                placeholder = { Text("http://192.168.1.10:8188 或 https://comfy.example.com") },
-                singleLine = true,
-            )
-            OutlinedTextField(
-                value = state.serverCookie,
-                onValueChange = viewModel::setServerCookie,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("认证 Cookie（可选）") },
-                placeholder = { Text("需要登录态时粘贴 Cookie；不填则视为无需认证") },
-                supportingText = {
-                    Text(
-                        "AI Studio 只需两段：user-你的ID-实例ID=... 和 ide-proxy=...，中间用分号隔开",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                },
-                // v0.1.69：maxLines 必须给上限。Cookie 动辄几百字符，以前只有
-                // minLines=2 没有 maxLines，粘一段 AI Studio 的两件套就把整个连接页
-                // 撑成只剩输入框，"连接"按钮要滑半天才够得着。限 4 行、超出内部滚动。
-                minLines = 2,
-                maxLines = 4,
-                singleLine = false,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = { viewModel.connect() }, enabled = !state.loading) {
-                    if (state.loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    else Icon(Icons.Outlined.Wifi, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("连接")
-                }
-                OutlinedButton(onClick = viewModel::scanLan, enabled = !state.scanning) {
-                    if (state.scanning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    else Icon(Icons.Outlined.Search, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("扫描局域网")
-                }
-            }
-            if (state.status == ConnectionStatus.CONNECTING || state.status == ConnectionStatus.ERROR) {
-                ConnectionProgressCard(state)
-            }
-            if (state.savedServers.isNotEmpty()) {
-                Text("已保存", style = MaterialTheme.typography.titleMedium)
-                state.savedServers.forEach { profile ->
-                    ServerCard(
-                        profile,
-                        onClick = {
-                            // 完整地址（含凭据）进状态，重连才不会丢登录信息；
-                            // 明文密码由输入框和卡片在显示时统一脱敏。
-                            viewModel.setServerInput(profile.baseUrl)
-                            viewModel.setServerCookie(profile.cookie)
-                            viewModel.connect(profile.baseUrl)
-                        },
-                        onDelete = { viewModel.removeServer(profile.baseUrl) },
-                    )
-                }
-            }
-            if (state.discoveredServers.isNotEmpty()) {
-                Text("扫描结果", style = MaterialTheme.typography.titleMedium)
-                state.discoveredServers.forEach { profile ->
-                    ServerCard(profile, onClick = { viewModel.setServerInput(profile.baseUrl); viewModel.connect(profile.baseUrl) })
-                }
-            }
-            Text("电脑端需要使用 --listen 0.0.0.0 启动，并允许 Windows 防火墙放行 8188 端口。", style = MaterialTheme.typography.bodySmall)
-        }
-    }
-    if (settings) SettingsDialog(state, viewModel, onDismiss = { settings = false })
-}
-
-private val connectionStepNames = listOf(
-    "检查地址格式",
-    "读取服务器信息",
-    "打开 ComfyUI 网页",
-    "初始化前端",
-    "读取节点定义",
-    "同步连接数据",
-)
-
-@Composable
-private fun ConnectionProgressCard(state: AppUiState) {
-    val current = state.connectionStep.coerceIn(1, state.connectionTotalSteps)
-    val failed = state.status == ConnectionStatus.ERROR
-    OutlinedCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                if (failed) "连接失败（第 $current/${state.connectionTotalSteps} 步）"
-                else "正在连接（第 $current/${state.connectionTotalSteps} 步）",
-                style = MaterialTheme.typography.titleMedium,
-                color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-            )
-            LinearProgressIndicator(
-                progress = { current.toFloat() / state.connectionTotalSteps },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Text(state.connectionMessage, style = MaterialTheme.typography.bodyMedium)
-            connectionStepNames.forEachIndexed { index, name ->
-                val step = index + 1
-                val statusText = when {
-                    step < current -> "已完成"
-                    step == current && failed -> "失败"
-                    step == current -> "进行中"
-                    else -> "等待"
-                }
-                val color = when {
-                    step == current && failed -> MaterialTheme.colorScheme.error
-                    step <= current -> MaterialTheme.colorScheme.primary
-                    else -> MaterialTheme.colorScheme.onSurfaceVariant
-                }
-                Text("$step. $name · $statusText", color = color, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ServerCard(profile: ServerProfile, onClick: () -> Unit, onDelete: (() -> Unit)? = null) {
-    OutlinedCard(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Outlined.CheckCircle, null, tint = MaterialTheme.colorScheme.secondary)
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(profile.name, style = MaterialTheme.typography.titleSmall)
-                // 卡片上不展示明文密码，只显示去掉凭据后的地址。
-                Text(LanAddress.withoutCredentials(profile.baseUrl), style = MaterialTheme.typography.bodySmall)
-            }
-            Text(profile.comfyVersion, style = MaterialTheme.typography.labelSmall)
-            if (onDelete != null) IconButton(onClick = onDelete) { Icon(Icons.Outlined.Delete, "删除服务器") }
-        }
-    }
-}
 
 /**
  * v0.2.54：「更多」页。底栏受 Material 3 限制（最多 5 个）放不下的入口收在这里。
  *
- * 以前底栏 6 个：账号/控制台/工作流/结果/任务/快捷——已经超出规范，标签被挤得很窄。
- * 现在底栏保持 5 个，控制台 / 任务 / AI 助手 移到本页。
+ * v0.2.55：**不再放设置入口**——顶栏已经有设置图标，两处重复了。
  */
 @Composable
-private fun MoreScreen(
-    onOpen: (MainPage) -> Unit,
-    onOpenSettings: () -> Unit,
-) {
+private fun MoreScreen(onOpen: (MainPage) -> Unit) {
     val entries = listOf(
         Triple(MainPage.AI_ASSISTANT, "让 AI 帮你管服务器：下载插件、找模型、看日志", "AI 助手"),
         Triple(MainPage.CONSOLE, "云端终端：执行命令、启动 ComfyUI", "控制台"),
@@ -628,27 +452,6 @@ private fun MoreScreen(
                     }
                     Icon(Icons.Outlined.ChevronRight, null)
                 }
-            }
-        }
-        OutlinedCard(
-            modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenSettings),
-            shape = RoundedCornerShape(14.dp),
-        ) {
-            Row(
-                Modifier.fillMaxWidth().padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Outlined.Settings, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("设置", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        "大模型 / 提示词预设 / 保存位置 / 诊断日志",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Icon(Icons.Outlined.ChevronRight, null)
             }
         }
     }
@@ -867,19 +670,115 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
     // 账号页是「我是谁 → 我有什么 → 我能做什么」的入口：登录、启 GPU、连 ComfyUI
     // 都从这里开始；未连接时直接看到工作流页会是空的（没服务器就没有列表）。
     var page by rememberSaveable { mutableStateOf(MainPage.ACCOUNT) }
+    /**
+     * 返回栈（v0.2.55）。
+     *
+     * 以前 page 是单变量，切到子页后按系统返回键直接退 App——因为没有任何地方
+     * 拦返回键，“返回”落到 Activity 默认行为（finish）。用户从「更多」进子页
+     * 再返回，就直接退出软件了。现在记录来路，返回键逐级回退。
+     */
+    val pageStack = remember { mutableStateListOf<MainPage>() }
+    /** 设置是独立页（v0.2.55）：以前它是顶栏图标弹出的对话框，与「更多」里的
+     *  入口重复；现在只由顶栏进入，弹层改为整页，UI 不再受对话框尺寸限制。 */
     var settings by remember { mutableStateOf(false) }
     var resultSource by rememberSaveable { mutableStateOf(ResultSource.LOCAL) }
     var resultLayout by rememberSaveable { mutableStateOf(ResultLayout.ALBUMS) }
     var resultAlbumId by rememberSaveable { mutableStateOf<String?>(null) }
+    // 切页统一走这里：底栏切主页面清空栈，子页入栈以便返回。
+    fun navigateTo(target: MainPage) {
+        if (target == page) return
+        pageStack.clear()
+        page = target
+    }
+    fun pushPage(target: MainPage) {
+        if (target == page) return
+        pageStack.add(page)
+        page = target
+    }
+    fun goBack() {
+        when {
+            settings -> settings = false
+            pageStack.isNotEmpty() -> page = pageStack.removeAt(pageStack.lastIndex)
+            // 无来路（如通知/分享直接进来）时回它所属的主页面。
+            page == MainPage.PARAMETERS -> page = MainPage.WORKFLOWS
+            page == MainPage.STORAGE -> page = MainPage.ACCOUNT
+            page in setOf(MainPage.CONSOLE, MainPage.TASKS, MainPage.AI_ASSISTANT) -> page = MainPage.MORE
+        }
+    }
+    // 只在“确实有路可退”时拦返回键；主页面（栈空）不拦，交给系统退出 App。
+    // 不能无条件拦：那样在首页按返回会什么都不发生，比直接退出更让人困惑。
+    val parentOfCurrent: MainPage? = when (page) {
+        MainPage.PARAMETERS -> MainPage.WORKFLOWS
+        MainPage.STORAGE -> MainPage.ACCOUNT
+        MainPage.CONSOLE, MainPage.TASKS, MainPage.AI_ASSISTANT -> MainPage.MORE
+        else -> null
+    }
+    BackHandler(enabled = settings || pageStack.isNotEmpty() || parentOfCurrent != null) { goBack() }
     LaunchedEffect(state.navigationRequest?.id) {
         val request = state.navigationRequest ?: return@LaunchedEffect
-        page = when (request.destination) {
-            AppDestination.PARAMETERS -> MainPage.PARAMETERS
-            AppDestination.RESULTS -> MainPage.RESULTS
-            AppDestination.WORKFLOWS -> MainPage.WORKFLOWS
-        }
+        // 通知/导入这类外部导航也入栈，返回时能回到原页。
+        pushPage(
+            when (request.destination) {
+                AppDestination.PARAMETERS -> MainPage.PARAMETERS
+                AppDestination.RESULTS -> MainPage.RESULTS
+                AppDestination.WORKFLOWS -> MainPage.WORKFLOWS
+            },
+        )
         viewModel.consumeNavigationRequest(request.id)
     }
+    // v0.2.55：设置作为**独立层**替代整个 Scaffold（含顶栏/底栏）。
+    // 不能渲染在 Scaffold 之后——那会变成盖在底栏上的浮层，两个栏都还看得见。
+    if (settings) {
+        SettingsScreen(
+            state = state,
+            viewModel = viewModel,
+            onBack = { settings = false },
+            onOpenStorage = {
+                settings = false
+                pushPage(MainPage.STORAGE)
+            },
+        )
+    } else {
+        ConnectedScaffold(
+            state = state,
+            viewModel = viewModel,
+            snackbar = snackbar,
+            page = page,
+            onNavigate = { navigateTo(it) },
+            onOpenSettings = { settings = true },
+            onPushPage = { pushPage(it) },
+            resultSource = resultSource,
+            onResultSourceChange = { resultSource = it; resultAlbumId = null },
+            resultLayout = resultLayout,
+            onResultLayoutChange = { resultLayout = it },
+            resultAlbumId = resultAlbumId,
+            onResultAlbumChange = { resultAlbumId = it },
+        )
+    }
+}
+
+/**
+ * 主界面骨架（顶栏 + 底栏 + 当前页）。
+ *
+ * v0.2.55：从 ConnectedApp 中抽出来，好让设置页能**整层替换**它（而不是叠在上面）。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConnectedScaffold(
+    state: AppUiState,
+    viewModel: MainViewModel,
+    snackbar: SnackbarHostState,
+    page: MainPage,
+    onNavigate: (MainPage) -> Unit,
+    onOpenSettings: () -> Unit,
+    onPushPage: (MainPage) -> Unit,
+    resultSource: ResultSource,
+    onResultSourceChange: (ResultSource) -> Unit,
+    resultLayout: ResultLayout,
+    onResultLayoutChange: (ResultLayout) -> Unit,
+    resultAlbumId: String?,
+    onResultAlbumChange: (String?) -> Unit,
+) {
     Scaffold(
         topBar = {
             // v0.1.91：账号/控制台页显示页面标题（它们不是「连接到某台 ComfyUI」
@@ -918,8 +817,8 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                     // ComfyUI 服务入口：圆形电脑图标（在「设置」左边）。点击向下展开
                     // 「刷新 / 连接 / 断开」——它把原来顶栏那两个旧图标（切换服务器、
                     // 重新连接）的职责一并接管了，所以下面不再单独放它们。
-                    ComfyServiceChip(state, viewModel, onSwitchServer = { page = MainPage.ACCOUNT })
-                    IconButton(onClick = { settings = true }) { Icon(Icons.Outlined.Settings, "设置") }
+                    ComfyServiceChip(state, viewModel, onSwitchServer = { onNavigate(MainPage.ACCOUNT) })
+                    IconButton(onClick = onOpenSettings) { Icon(Icons.Outlined.Settings, "设置") }
                 },
             )
         },
@@ -944,7 +843,7 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                             (target == MainPage.MORE && page in setOf(
                                 MainPage.CONSOLE, MainPage.TASKS, MainPage.AI_ASSISTANT,
                             )),
-                        onClick = { page = target },
+                        onClick = { onNavigate(target) },
                         icon = { Icon(target.icon, null) },
                         label = { Text(target.label, style = MaterialTheme.typography.labelSmall) },
                         colors = NavigationBarItemDefaults.colors(
@@ -989,25 +888,21 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                     when (page) {
                         MainPage.ACCOUNT -> AccountScreen(state, viewModel)
                         MainPage.CONSOLE -> ConsoleScreen(state, viewModel)
-                        MainPage.WORKFLOWS -> WorkflowScreen(state, viewModel, onOpenParameters = { page = MainPage.PARAMETERS })
+                        MainPage.WORKFLOWS -> WorkflowScreen(state, viewModel, onOpenParameters = { onPushPage(MainPage.PARAMETERS) })
                         MainPage.PARAMETERS -> ParameterScreen(state, viewModel)
                         MainPage.MORE -> MoreScreen(
-                            onOpen = { target -> page = target },
-                            onOpenSettings = { settings = true },
+                            onOpen = { target -> onPushPage(target) },
                         )
                         MainPage.AI_ASSISTANT -> AiAssistantScreen(state, viewModel)
                         MainPage.RESULTS -> ResultScreen(
                             state = state,
                             viewModel = viewModel,
                             source = resultSource,
-                            onSourceChange = {
-                                resultSource = it
-                                resultAlbumId = null
-                            },
+                            onSourceChange = onResultSourceChange,
                             layout = resultLayout,
-                            onLayoutChange = { resultLayout = it },
+                            onLayoutChange = onResultLayoutChange,
                             selectedAlbumId = resultAlbumId,
-                            onSelectedAlbumChange = { resultAlbumId = it },
+                            onSelectedAlbumChange = onResultAlbumChange,
                         )
                         MainPage.TASKS -> TaskScreen(state, viewModel)
                         MainPage.QUICK -> QuickGenScreen(state, viewModel)
@@ -1030,15 +925,6 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
             }
         }
     }
-    if (settings) SettingsDialog(
-        state,
-        viewModel,
-        onDismiss = { settings = false },
-        onOpenStorage = {
-            settings = false
-            page = MainPage.STORAGE
-        },
-    )
 }
 
 @Composable
@@ -4672,8 +4558,23 @@ private fun AppSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     )
 }
 
+/**
+ * v0.2.55：设置改为**整页**（以前是顶栏图标弹出的 AlertDialog）。
+ *
+ * 原因：① 设置项越加越多，对话框里那条窄滚动区又难滑又容易误触；
+ * ② 对话框与「更多」页里的入口重复了一个设置入口，现在只留顶栏一个；
+ * ③ 整页后能直接用页面级标题栏 + 返回，与其它页面一致。
+ *
+ * 内容本身一行未改（只是外面从对话框换成页面骨架），这些分区都是长期验证过的。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismiss: () -> Unit, onOpenStorage: (() -> Unit)? = null) {
+private fun SettingsScreen(
+    state: AppUiState,
+    viewModel: MainViewModel,
+    onBack: () -> Unit,
+    onOpenStorage: (() -> Unit)? = null,
+) {
     val context = LocalContext.current
     var confirmDeleteLocal by remember { mutableStateOf(false) }
     var confirmClearDrafts by remember { mutableStateOf(false) }
@@ -4695,6 +4596,48 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
         if (uri != null) viewModel.setSaveFolder(uri)
     }
     LaunchedEffect(Unit) { viewModel.refreshLocalDraftCount() }
+    // v0.2.55：设置是整页，返回键要能退回去。
+    BackHandler(enabled = true) { onBack() }
+    Scaffold(
+        containerColor = Color.Transparent,
+        topBar = {
+            TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = if (isSystemInDarkTheme()) {
+                        Color(0xFF14181E).copy(alpha = 0.62f)
+                    } else {
+                        Color.White.copy(alpha = 0.55f)
+                    },
+                ),
+                title = { Text("设置", style = MaterialTheme.typography.titleMedium) },
+                navigationIcon = {
+                    // 用项目已验证可用的 ChevronLeft；Outlined.ArrowBack 在本版本图标集里
+                    // 未确认存在，不冒险引新图标。
+                    IconButton(onClick = onBack) { Icon(Icons.Outlined.ChevronLeft, "返回") }
+                },
+            )
+        },
+    ) { padding ->
+        SettingsContent(
+            state = state,
+            viewModel = viewModel,
+            modifier = Modifier.padding(padding),
+            llmExpanded = llmExpanded,
+            onToggleLlm = { llmExpanded = !llmExpanded },
+            onRequestDeleteLocal = { confirmDeleteLocal = true },
+            onRequestClearDrafts = { confirmClearDrafts = true },
+            onOpenStorage = onOpenStorage,
+            onShowLog = {
+                diagnosticLog = viewModel.diagnosticLog()
+                showDiagnosticLog = true
+            },
+            onExportLog = {
+                pendingLogExport = viewModel.diagnosticLog()
+                logExportLauncher.launch("ComfyUIMobile-${System.currentTimeMillis()}.log")
+            },
+            onPickSaveFolder = { saveFolderLauncher.launch(null) },
+        )
+    }
     if (showDiagnosticLog) {
         AlertDialog(
             onDismissRequest = { showDiagnosticLog = false },
@@ -4707,8 +4650,13 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                 )
             },
             confirmButton = { TextButton(onClick = { showDiagnosticLog = false }) { Text("关闭") } },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingLogExport = diagnosticLog
+                    logExportLauncher.launch("ComfyUIMobile-${System.currentTimeMillis()}.log")
+                }) { Text("导出") }
+            },
         )
-        return
     }
     if (confirmDeleteLocal) {
         ConfirmDialog(
@@ -4720,7 +4668,6 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                 confirmDeleteLocal = false
             },
         )
-        return
     }
     if (confirmClearDrafts) {
         ConfirmDialog(
@@ -4732,264 +4679,271 @@ private fun SettingsDialog(state: AppUiState, viewModel: MainViewModel, onDismis
                 confirmClearDrafts = false
             },
         )
-        return
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("设置") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                // —— 服务器 ——
-                SettingsSection("服务器") {
-                    Text(
-                        state.activeServer?.baseUrl ?: "尚未连接",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    state.activeServer?.lastSeen?.takeIf { it > 0L }?.let {
-                        Text(
-                            "最后在线：${formatTime(it)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    state.systemStats?.let { stats ->
-                        Text(
-                            "ComfyUI ${stats.comfyVersion} · 前端 ${stats.frontendVersion}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        stats.devices.forEach {
-                            Text(
-                                "${it.name} · 显存 ${formatSize(it.vramFree)} / ${formatSize(it.vramTotal)} 可用",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                    if (state.activeServer != null) {
-                        OutlinedButton(onClick = { viewModel.disconnect() }, modifier = Modifier.fillMaxWidth()) {
-                            Icon(Icons.Outlined.CloudOff, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("断开当前服务器")
-                        }
-                    }
-                }
+}
 
-                // —— AI Studio ——
-                SettingsSection("AI Studio") {
-                    Text(
-                        "账号在「账号」页登录与管理",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    SettingsToggleRow(
-                        title = "每日自动签到并领算力",
-                        subtitle = "打开 App 时自动完成，连续签到才不会断；平台的一次性任务（公开项目、发布模型等）需真实创作内容，不代做",
-                        checked = state.autoDailyTasks,
-                        onCheckedChange = viewModel::setAutoDailyTasks,
-                    )
-                }
-
-                // —— AI 提示词助手 ——
-                LlmSettingsSection(
-                    state = state,
-                    expanded = llmExpanded,
-                    onToggle = { llmExpanded = !llmExpanded },
-                    onSave = viewModel::saveLlmConfig,
-                    onSaveCustomPresets = viewModel::saveCustomPresets,
-                    onTest = viewModel::testLlmConnection,
+/**
+ * 设置页的全部内容。抽成独立组件是为了让页面骨架（SettingsScreen）与内容解耦。
+ */
+@Composable
+private fun SettingsContent(
+    state: AppUiState,
+    viewModel: MainViewModel,
+    modifier: Modifier = Modifier,
+    llmExpanded: Boolean,
+    onToggleLlm: () -> Unit,
+    onRequestDeleteLocal: () -> Unit,
+    onRequestClearDrafts: () -> Unit,
+    onOpenStorage: (() -> Unit)?,
+    onShowLog: () -> Unit,
+    onExportLog: () -> Unit,
+    onPickSaveFolder: () -> Unit,
+) {
+    Column(
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        // —— 服务器 ——
+        SettingsSection("服务器") {
+            Text(
+                state.activeServer?.baseUrl ?: "尚未连接",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            state.activeServer?.lastSeen?.takeIf { it > 0L }?.let {
+                Text(
+                    "最后在线：${formatTime(it)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-
-                // —— 图片保存 ——
-                SettingsSection("图片保存") {
+            }
+            state.systemStats?.let { stats ->
+                Text(
+                    "ComfyUI ${stats.comfyVersion} · 前端 ${stats.frontendVersion}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                stats.devices.forEach {
                     Text(
-                        if (state.saveFolderUri != null) {
-                            "已选择自定义目录，生成结果将保存到所选文件夹"
-                        } else {
-                            "生成结果默认保存到系统相册 Pictures/ComfyUIMobile"
-                        },
+                        "${it.name} · 显存 ${formatSize(it.vramFree)} / ${formatSize(it.vramTotal)} 可用",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = { saveFolderLauncher.launch(null) },
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Icon(Icons.Outlined.Folder, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("选择目录")
-                        }
-                        if (state.saveFolderUri != null) {
-                            OutlinedButton(
-                                onClick = { viewModel.setSaveFolder(null) },
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Icon(Icons.Outlined.Delete, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("恢复默认")
-                            }
-                        }
-                    }
-                    SettingsToggleRow(
-                        title = "生成完成自动保存到图片文件夹",
-                        subtitle = "任务完成后把最新结果自动写入上方选择的文件夹（未设置则只保留在本地作品）",
-                        checked = state.autoSaveResults,
-                        onCheckedChange = viewModel::setAutoSaveResults,
                     )
                 }
+            }
+            if (state.activeServer != null) {
+                OutlinedButton(onClick = { viewModel.disconnect() }, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Outlined.CloudOff, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("断开当前服务器")
+                }
+            }
+        }
 
-                // —— 本地作品白名单 ——
-                SettingsSection("本地作品保存白名单") {
-                    Text(
-                        "按输出部件类型对所有工作流生效，不绑定单个工作流。只保存本 App 提交的任务；电脑浏览器提交的任务不会进入本地。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (state.cacheOutputRules.isEmpty()) {
-                        Text(
-                            "尚未添加输出部件",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } else {
-                        state.cacheOutputRules.forEach { rule ->
-                            Row(
-                                Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(rule.nodeTitle.ifBlank { rule.nodeType }, style = MaterialTheme.typography.titleSmall)
-                                    Text(
-                                        "${rule.nodeType} · 适用于所有工作流",
-                                        maxLines = 1,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                    Text(
-                                        rule.serverUrl,
-                                        maxLines = 1,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                AppSwitch(rule.enabled) { viewModel.setCacheRuleEnabled(rule, it) }
-                                IconButton(onClick = { viewModel.removeCacheRule(rule) }) {
-                                    Icon(Icons.Outlined.Delete, "删除白名单")
-                                }
-                            }
-                        }
-                    }
+        // —— AI Studio ——
+        SettingsSection("AI Studio") {
+            Text(
+                "账号在「账号」页登录与管理",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SettingsToggleRow(
+                title = "每日自动签到并领算力",
+                subtitle = "打开 App 时自动完成，连续签到才不会断；平台的一次性任务（公开项目、发布模型等）需真实创作内容，不代做",
+                checked = state.autoDailyTasks,
+                onCheckedChange = viewModel::setAutoDailyTasks,
+            )
+        }
+
+        // —— AI 提示词助手 ——
+        LlmSettingsSection(
+            state = state,
+            expanded = llmExpanded,
+            onToggle = onToggleLlm,
+            onSave = viewModel::saveLlmConfig,
+            onSaveCustomPresets = viewModel::saveCustomPresets,
+            onTest = viewModel::testLlmConnection,
+        )
+
+        // —— 图片保存 ——
+        SettingsSection("图片保存") {
+            Text(
+                if (state.saveFolderUri != null) {
+                    "已选择自定义目录，生成结果将保存到所选文件夹"
+                } else {
+                    "生成结果默认保存到系统相册 Pictures/ComfyUIMobile"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = onPickSaveFolder,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(Icons.Outlined.Folder, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("选择目录")
+                }
+                if (state.saveFolderUri != null) {
                     OutlinedButton(
-                        onClick = { confirmDeleteLocal = true },
-                        enabled = state.localResults.isNotEmpty(),
-                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { viewModel.setSaveFolder(null) },
+                        modifier = Modifier.weight(1f),
                     ) {
                         Icon(Icons.Outlined.Delete, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("删除全部本地作品（${state.localResults.size} 项）")
+                        Text("恢复默认")
                     }
                 }
+            }
+            SettingsToggleRow(
+                title = "生成完成自动保存到图片文件夹",
+                subtitle = "任务完成后把最新结果自动写入上方选择的文件夹（未设置则只保留在本地作品）",
+                checked = state.autoSaveResults,
+                onCheckedChange = viewModel::setAutoSaveResults,
+            )
+        }
 
-                // —— 本地草稿 ——
-                SettingsSection("本地草稿") {
-                    SettingsToggleRow(
-                        title = "保存本地草稿",
-                        subtitle = "关闭后打开工作流直接读取服务器版本，不再保存或恢复未保存修改",
-                        checked = state.localDraftsEnabled,
-                        onCheckedChange = viewModel::setLocalDraftsEnabled,
-                    )
-                    if (state.localDraftsEnabled) {
-                        Text(
-                            "当前 ${state.localDraftCount} 个工作流有本地草稿",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        OutlinedButton(
-                            onClick = { confirmClearDrafts = true },
-                            enabled = state.localDraftCount > 0,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Icon(Icons.Outlined.Delete, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("清除全部本地草稿（${state.localDraftCount}）")
-                        }
-                    }
-                }
-
-                // —— 空间管理（入口；未接入导航时（如连接页）不渲染）——
-                if (onOpenStorage != null) {
-                    SettingsSection("空间管理") {
-                        Text(
-                            "查看 App 的内存与磁盘占用明细，并逐项清理本地作品、缓存、日志",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        OutlinedButton(onClick = onOpenStorage, modifier = Modifier.fillMaxWidth()) {
-                            Icon(Icons.Outlined.Memory, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("打开空间管理")
-                        }
-                    }
-                }
-
-                // —— 诊断日志 ——
-                SettingsSection("诊断日志") {
-                    SettingsToggleRow(
-                        title = "记录运行和闪退日志",
-                        subtitle = "不记录提示词、工作流正文或生成图片",
-                        checked = state.loggingEnabled,
-                        onCheckedChange = viewModel::setLoggingEnabled,
-                    )
+        // —— 本地作品白名单 ——
+        SettingsSection("本地作品保存白名单") {
+            Text(
+                "按输出部件类型对所有工作流生效，不绑定单个工作流。只保存本 App 提交的任务；电脑浏览器提交的任务不会进入本地。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (state.cacheOutputRules.isEmpty()) {
+                Text(
+                    "尚未添加输出部件",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                state.cacheOutputRules.forEach { rule ->
                     Row(
-                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        OutlinedButton(onClick = {
-                            diagnosticLog = viewModel.diagnosticLog()
-                            showDiagnosticLog = true
-                        }) { Text("查看日志") }
-                        OutlinedButton(onClick = {
-                            pendingLogExport = viewModel.diagnosticLog()
-                            logExportLauncher.launch("ComfyUIMobile-${System.currentTimeMillis()}.log")
-                        }) { Text("导出日志") }
-                        TextButton(onClick = viewModel::clearDiagnosticLog) { Text("清空日志") }
-                    }
-                }
-
-                // —— 软件更新 ——
-                SettingsSection("软件更新") {
-                    OutlinedButton(onClick = { viewModel.checkUpdate() }, modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Outlined.Refresh, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("检查更新")
-                    }
-                    state.updateInfo?.let { info ->
-                        Text("发现 ${info.tag}", style = MaterialTheme.typography.bodyMedium)
-                        if (state.updateDownloading) {
-                            LinearProgressIndicator(
-                                progress = { state.updateDownloadProgress ?: 0f },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
+                        Column(Modifier.weight(1f)) {
+                            Text(rule.nodeTitle.ifBlank { rule.nodeType }, style = MaterialTheme.typography.titleSmall)
                             Text(
-                                "下载中 ${((state.updateDownloadProgress ?: 0f) * 100).toInt()}% · ${state.updateDownloadSource.orEmpty()}",
+                                "${rule.nodeType} · 适用于所有工作流",
+                                maxLines = 1,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                        } else {
-                            Button(onClick = viewModel::downloadUpdate, modifier = Modifier.fillMaxWidth()) {
-                                Icon(Icons.Outlined.Download, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("下载并安装")
-                            }
+                            Text(
+                                rule.serverUrl,
+                                maxLines = 1,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        AppSwitch(rule.enabled) { viewModel.setCacheRuleEnabled(rule, it) }
+                        IconButton(onClick = { viewModel.removeCacheRule(rule) }) {
+                            Icon(Icons.Outlined.Delete, "删除白名单")
                         }
                     }
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
-    )
+            OutlinedButton(
+                onClick = onRequestDeleteLocal,
+                enabled = state.localResults.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.Outlined.Delete, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("删除全部本地作品（${state.localResults.size} 项）")
+            }
+        }
+
+        // —— 本地草稿 ——
+        SettingsSection("本地草稿") {
+            SettingsToggleRow(
+                title = "保存本地草稿",
+                subtitle = "关闭后打开工作流直接读取服务器版本，不再保存或恢复未保存修改",
+                checked = state.localDraftsEnabled,
+                onCheckedChange = viewModel::setLocalDraftsEnabled,
+            )
+            if (state.localDraftsEnabled) {
+                Text(
+                    "当前 ${state.localDraftCount} 个工作流有本地草稿",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(
+                    onClick = onRequestClearDrafts,
+                    enabled = state.localDraftCount > 0,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Outlined.Delete, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("清除全部本地草稿（${state.localDraftCount}）")
+                }
+            }
+        }
+
+        // —— 空间管理 ——
+        SettingsSection("空间管理") {
+            Text(
+                "查看 App 的内存与磁盘占用明细，并逐项清理本地作品、缓存、日志",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(onClick = { onOpenStorage?.invoke() }, enabled = onOpenStorage != null, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Outlined.Memory, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("打开空间管理")
+            }
+        }
+
+        // —— 诊断日志 ——
+        SettingsSection("诊断日志") {
+            SettingsToggleRow(
+                title = "记录运行和闪退日志",
+                subtitle = "不记录提示词、工作流正文或生成图片",
+                checked = state.loggingEnabled,
+                onCheckedChange = viewModel::setLoggingEnabled,
+            )
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = onShowLog) { Text("查看日志") }
+                OutlinedButton(onClick = onExportLog) { Text("导出日志") }
+                TextButton(onClick = viewModel::clearDiagnosticLog) { Text("清空日志") }
+            }
+        }
+
+        // —— 软件更新 ——
+        SettingsSection("软件更新") {
+            OutlinedButton(onClick = { viewModel.checkUpdate() }, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Outlined.Refresh, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("检查更新")
+            }
+            state.updateInfo?.let { info ->
+                Text("发现 ${info.tag}", style = MaterialTheme.typography.bodyMedium)
+                if (state.updateDownloading) {
+                    LinearProgressIndicator(
+                        progress = { state.updateDownloadProgress ?: 0f },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        "下载中 ${((state.updateDownloadProgress ?: 0f) * 100).toInt()}% · ${state.updateDownloadSource.orEmpty()}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Button(onClick = viewModel::downloadUpdate, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Outlined.Download, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("下载并安装")
+                    }
+                }
+            }
+        }
+    }
 }
+
 
 @Composable
 private fun EmptyState(icon: ImageVector, message: String) {
