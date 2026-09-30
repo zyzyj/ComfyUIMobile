@@ -56,6 +56,37 @@ class LlmRepository {
     }
 
     /**
+     * 拉取服务商的模型列表（v0.2.56）。
+     *
+     * 以前只能手打模型名——填错一个字就是 404 或模型不存在，而各家模型名
+     * （`gpt-4o-mini`、`deepseek-chat`、`Qwen/Qwen2.5-7B-Instruct`）很难记。
+     * 这里请求 OpenAI 标准的 `/v1/models`，把 id 列出来供选择。
+     *
+     * 只需要地址与 Key（不要求模型名已填），否则用户会卡在"想拉列表但还没填模型名"。
+     */
+    suspend fun listModels(baseUrl: String, apiKey: String): List<String> {
+        val endpoint = LlmProtocol.modelsEndpoint(baseUrl)
+        if (endpoint.isBlank()) throw LlmException("先填接口地址，再拉取模型列表")
+        val builder = Request.Builder().url(endpoint).get()
+        LlmProtocol.authHeader(apiKey)?.let { builder.addHeader("Authorization", it) }
+        val request = builder.build()
+        return withContext(Dispatchers.IO) {
+            awaitCall(request).use { response ->
+                val raw = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    throw LlmException(LlmProtocol.describeHttpError(response.code, raw))
+                }
+                val models = LlmProtocol.parseModels(raw)
+                if (models.isEmpty()) {
+                    // 拉到了 200 但解析不出模型：如实告知，而不是假装成功返回空列表。
+                    throw LlmException("接口返回成功但没解析出模型列表，可能不支持 /v1/models；可以手填模型名")
+                }
+                models
+            }
+        }
+    }
+
+    /**
      * OkHttp 的 `execute()` 不理协程取消 —— 用户关掉对话框之后线程还傻等在那儿。
      * 用 `enqueue` + `suspendCancellableCoroutine` 包一层，取消才是真取消。
      */

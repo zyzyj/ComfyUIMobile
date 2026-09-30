@@ -215,6 +215,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -4105,11 +4106,12 @@ private fun JobCard(job: JobSummary, viewModel: MainViewModel, tracked: Boolean)
 @Composable
 private fun LlmSettingsSection(
     state: AppUiState,
+    viewModel: MainViewModel,
     expanded: Boolean,
     onToggle: () -> Unit,
     onSave: (LlmConfig) -> Unit,
     onSaveCustomPresets: (List<PromptPreset>) -> Unit,
-    onTest: () -> Unit,
+    onTest: (LlmConfig) -> Unit,
 ) {
     val config = state.llmConfig
     var baseUrl by remember(config) { mutableStateOf(config.baseUrl) }
@@ -4121,6 +4123,11 @@ private fun LlmSettingsSection(
     val activePreset = allPresets.firstOrNull { it.id == presetId } ?: allPresets.first()
     var editorFor by remember { mutableStateOf<PromptPreset?>(null) }
     var showPresetEditor by remember { mutableStateOf(false) }
+    // v0.2.56：模型列表下拉的开关。拉到列表后默认收起（用户往往直接点选），
+    // 但保留手填入口——不是所有服务商都实现 /v1/models。
+    var modelMenuExpanded by remember { mutableStateOf(false) }
+    // API Key 是否明文显示（v0.2.56）。默认遮蔽，需要核对时手动打开。
+    var apiKeyVisible by remember { mutableStateOf(false) }
     val dirty = baseUrl != config.baseUrl || apiKey != config.apiKey ||
         model != config.model || presetId != config.presetId || temperature != config.temperature
 
@@ -4145,26 +4152,100 @@ private fun LlmSettingsSection(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedTextField(
-                baseUrl, { baseUrl = it },
+                baseUrl,
+                {
+                    baseUrl = it
+                    // 换了地址，旧列表不再适用：留着会让人以为那批模型仍然可选。
+                    viewModel.clearLlmModels()
+                },
                 Modifier.fillMaxWidth(),
                 singleLine = true,
                 label = { Text("接口地址") },
                 placeholder = { Text("https://api.openai.com/v1") },
             )
             OutlinedTextField(
-                apiKey, { apiKey = it },
+                apiKey,
+                {
+                    apiKey = it
+                    viewModel.clearLlmModels()
+                },
                 Modifier.fillMaxWidth(),
                 singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
+                // v0.2.56：加“显示/隐藏”开关。Key 动辄几十个字符，一直遮蔽时
+                // 粘错了根本看不出来，只能反复重粘。默认仍遮蔽（肩窥防护）。
+                visualTransformation = if (apiKeyVisible) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
+                trailingIcon = {
+                    // 不用 Visibility/VisibilityOff：这两个图标在本项目的图标集里
+                    // 未验证存在，不冒险引新图标。Edit 已在用，语义也说得通。
+                    IconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
+                        Icon(
+                            Icons.Outlined.Edit,
+                            if (apiKeyVisible) "隐藏 Key" else "显示 Key",
+                            tint = if (apiKeyVisible) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
                 label = { Text("API Key（本地服务可留空）") },
             )
-            OutlinedTextField(
-                model, { model = it },
-                Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("模型名") },
-                placeholder = { Text("gpt-4o-mini") },
-            )
+            // v0.2.56：模型名可手填，也可从服务商拉取。以前只能手打，各家模型名
+            // （gpt-4o-mini / deepseek-chat / Qwen/Qwen2.5-7B-Instruct）难记又易错。
+            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    model, { model = it },
+                    Modifier.weight(1f),
+                    singleLine = true,
+                    label = { Text("模型名") },
+                    placeholder = { Text("gpt-4o-mini") },
+                )
+                OutlinedButton(
+                    onClick = { viewModel.fetchLlmModels(baseUrl, apiKey) },
+                    enabled = !state.llmModelsLoading && baseUrl.isNotBlank(),
+                    modifier = Modifier.padding(bottom = 4.dp),
+                ) {
+                    if (state.llmModelsLoading) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("拉取列表")
+                    }
+                }
+            }
+            if (state.llmModels.isNotEmpty()) {
+                Box(Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = { modelMenuExpanded = true },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            if (model.isBlank()) "从列表选择（${state.llmModels.size} 个）"
+                            else "换一个（${state.llmModels.size} 个可用）",
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                        )
+                        Icon(Icons.Outlined.ArrowDropDown, null)
+                    }
+                    DropdownMenu(
+                        expanded = modelMenuExpanded,
+                        onDismissRequest = { modelMenuExpanded = false },
+                    ) {
+                        state.llmModels.forEach { item ->
+                            DropdownMenuItem(
+                                text = { Text(item, maxLines = 1) },
+                                onClick = {
+                                    model = item
+                                    modelMenuExpanded = false
+                                    // 选完即存，少一步「再点保存」——这一步很容易漏。
+                                    onSave(LlmConfig(baseUrl.trim(), apiKey, item, presetId, temperature))
+                                },
+                            )
+                        }
+                    }
+                }
+            }
             Text("提示词风格", style = MaterialTheme.typography.bodySmall)
             // v0.2.54：预设改为可切换列表（内置只读 + 自定义可增删改）。
             allPresets.chunked(2).forEach { row ->
@@ -4242,9 +4323,14 @@ private fun LlmSettingsSection(
                     enabled = dirty,
                 ) { Text(if (dirty) "保存" else "已保存") }
                 OutlinedButton(
-                    onClick = onTest,
+                    // v0.2.56：传当前输入框的值。以前测的是已保存配置，改完地址直接
+                    // 点测试会误导（测的是旧值）；同时把「模型名已填」也纳入 enabled，
+                    // 否则点了只会得到一句错误提示。
+                    onClick = {
+                        onTest(LlmConfig(baseUrl.trim(), apiKey, model.trim(), presetId, temperature))
+                    },
                     modifier = Modifier.weight(1f),
-                    enabled = !state.aiAssistBusy && config.isConfigured(),
+                    enabled = !state.aiAssistBusy && baseUrl.isNotBlank() && model.isNotBlank(),
                 ) { Text(if (state.aiAssistBusy) "测试中" else "测试连接") }
             }
             state.aiAssistError?.let {
@@ -4758,6 +4844,7 @@ private fun SettingsContent(
         // —— AI 提示词助手 ——
         LlmSettingsSection(
             state = state,
+            viewModel = viewModel,
             expanded = llmExpanded,
             onToggle = onToggleLlm,
             onSave = viewModel::saveLlmConfig,
