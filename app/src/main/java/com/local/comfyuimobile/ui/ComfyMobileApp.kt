@@ -5329,6 +5329,17 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                             modifier = Modifier.weight(1f),
                         ) { Text("领算力") }
                     }
+                    // v0.2.57：这个按钮容易被误解为“点一下就到账 8 点”，但实测
+                    // （2026-09-30，两个真实账号）确认：每日 8 点算力是**启动项目时**
+                    // 平台自动发的（启动前后 49.0 → 57.0，+480 分钟；同日第二次不再发）。
+                    // 本按钮只在平台有可领额度时才生效；没额度时无论项目是否在跑都回
+                    // “无效操作”。把规则写在按钮下面，避免用户反复点一个不会生效的按钮。
+                    Text(
+                        "每日 8 点算力由平台在「启动项目」时自动发放（免费 CPU 档也会发）；" +
+                            "这个按钮只在活动/补发等有余量时才生效。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
 
                 // —— 项目 ——

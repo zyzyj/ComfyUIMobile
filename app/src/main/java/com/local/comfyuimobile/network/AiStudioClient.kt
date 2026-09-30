@@ -100,13 +100,20 @@ class AiStudioClient {
     }
 
     /**
-     * 领每日资源（算力）。
+     * 领取每日资源（算力）。
      *
-     * 真实调用：`POST /studio/user/center/resource/receive?isInfoComplete=1`，**无 body**。
+     * 重要：这个接口**不是**“每天点一下就能领 8 点算力”的入口。
+     * 2026-09-30 用两个真实账号实测确认：
      *
-     * 不预先去猜 check 接口的响应结构（字段名未知，猜错反而会误拦），而是直接领取；
-     * 平台在重复领取时回「无效操作」，把它翻译成「今日已领过」即可。
-     * 这样零猜测，拿不到真实响应也不会误判。
+     *  1. 真正的每日 8 点算力是**运行 Notebook 项目时平台自动发**的：
+     *     启动前 resourceTotal=2938（49.0），启动后=3418（57.0），
+     *     resourceIncome +480 分钟 = +8 点；同一天第二次启动不再发。
+     *     —— 不发的时候，本接口无论项目是否在跑都回 errorCode 500 “无效操作”。
+     *  2. 本接口的前置参数 `isInfoComplete=1` 是必需的：
+     *     不带它（或传 0）会回“用户信息不完整”，而不是“无效操作”。
+     *
+     * 所以“无效操作”的真实含义是**今天已经没有可领的算力**（通常是还没运行项目，
+     * 或今日已发过），不是接口坏了。这里把提示文案改成能指导下一步的说法。
      */
     suspend fun receiveResource(account: AiStudioAccount): String {
         return try {
@@ -121,8 +128,11 @@ class AiStudioClient {
         } catch (error: AiStudioException) {
             val message = error.message.orEmpty()
             if (message.contains("无效操作") || message.contains("已领取")) {
-                // 今日已领过：这是正常状态，不是错误。
-                "今日已领过，明天再来"
+                // 前置条件过了但没可领的额度：指导用户去做真正能触发发放的动作。
+                "今日暂无可领算力：每日 8 点算力在「启动项目」时由平台自动发放，" +
+                    "请先启动一个项目（免费 CPU 档也行），启动后会自动到账"
+            } else if (message.contains("用户信息不完整")) {
+                "账号资料未补全：请先在网页端补全个人资料，再回来领取"
             } else {
                 throw error
             }
