@@ -3,6 +3,7 @@ package com.local.comfyuimobile.data
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -72,6 +73,8 @@ data class StoredSettings(
     val quickWorkflowPath: String = "",
     /** 用户自建的提示词预设（v0.2.54）。内置预设不入库，由代码内置。 */
     val customPresets: List<PromptPreset> = emptyList(),
+    /** AI 助手的命令执行权限等级（v0.2.59）：1=每条都问 / 2=仅危险命令 / 3=不问。 */
+    val commandPermissionLevel: Int = 2,
     // v0.1.88：AI 提示词助手所用的外部大模型配置。
     val llmConfig: LlmConfig = LlmConfig(),
     // v0.1.90：AI Studio 平台账号（Cookie 即凭证）。
@@ -102,6 +105,7 @@ class AppPreferences(private val context: Context) {
         val quickBatchSettings = stringPreferencesKey("quick_batch_settings")
         val quickWorkflowPath = stringPreferencesKey("quick_workflow_path")
         val customPresets = stringPreferencesKey("custom_prompt_presets")
+        val commandPermissionLevel = intPreferencesKey("command_permission_level")
         val llmConfig = stringPreferencesKey("llm_config")
         val aiStudioAccounts = stringPreferencesKey("ai_studio_accounts")
         val aiStudioActiveId = stringPreferencesKey("ai_studio_active_id")
@@ -134,6 +138,7 @@ class AppPreferences(private val context: Context) {
             quickSeedModeByWorkflow = decodeQuickBatchSettings(preferences[Keys.quickBatchSettings].orEmpty()).second,
             quickWorkflowPath = preferences[Keys.quickWorkflowPath].orEmpty(),
             customPresets = decodeCustomPresets(preferences[Keys.customPresets].orEmpty()),
+            commandPermissionLevel = (preferences[Keys.commandPermissionLevel] ?: 2).coerceIn(1, 3),
             llmConfig = decodeLlmConfig(preferences[Keys.llmConfig].orEmpty()),
             aiStudioAccounts = decodeAiStudioAccounts(preferences[Keys.aiStudioAccounts].orEmpty()),
             aiStudioActiveId = preferences[Keys.aiStudioActiveId].orEmpty(),
@@ -274,6 +279,10 @@ class AppPreferences(private val context: Context) {
             root.put(workflowPath, JSONObject().put("batchCount", batchCount).put("seedMode", seedMode))
             preferences[Keys.quickBatchSettings] = root.toString()
         }
+    }
+
+    suspend fun setCommandPermissionLevel(level: Int) {
+        context.dataStore.edit { it[Keys.commandPermissionLevel] = level.coerceIn(1, 3) }
     }
 
     suspend fun saveCustomPresets(presets: List<PromptPreset>) {

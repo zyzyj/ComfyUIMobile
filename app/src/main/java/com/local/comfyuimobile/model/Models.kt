@@ -265,6 +265,15 @@ data class AppUiState(
     /** 已拉取的大模型列表（v0.2.56）；空表示未拉取或拉取失败。 */
     val llmModels: List<String> = emptyList(),
     val llmModelsLoading: Boolean = false,
+    /**
+     * AI 助手的命令执行权限等级（v0.2.59）。
+     *
+     * 1 = 每条都问（最保守）；2 = 仅危险命令问（默认）；3 = 不问直接执行。
+     * 用户自己选，因为不同人对“哪些命令危险”的容忍度不同。
+     */
+    val commandPermissionLevel: Int = 2,
+    /** 命令是否正在执行（用于禁用按钮，避免重复提交）。 */
+    val assistantCommandRunning: Boolean = false,
     val quickWorkflowName: String? = null,
     val quickFields: List<ParameterField> = emptyList(),
     val quickEnabledParams: List<String> = emptyList(),

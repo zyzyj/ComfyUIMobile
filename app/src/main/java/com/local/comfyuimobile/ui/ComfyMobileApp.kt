@@ -468,22 +468,37 @@ private fun MoreScreen(onOpen: (MainPage) -> Unit) {
  * 安全边界：AI 永远不直接执行命令。危险命令（删除/覆盖/卸载）在界面上单独标红，
  * 需要再点一次确认。详见 TerminalCommandSafety 的注释。
  */
+/**
+ * v0.2.59：AI 助手页。
+ *
+ * 本轮改动：
+ *  - 顶栏加「模型配置」入口（以前要去设置里找，两步跳转）
+ *  - 加命令权限等级切换（1/2/3），取代“每条都要手点”
+ *  - 修执行按钮不可点：以前 enabled 只看终端连接，未连时按钮置灰但界面不说为什么
+ */
 @Composable
-private fun AiAssistantScreen(state: AppUiState, viewModel: MainViewModel) {
+private fun AiAssistantScreen(
+    state: AppUiState,
+    viewModel: MainViewModel,
+    onOpenModelConfig: () -> Unit,
+) {
     val messages by viewModel.assistantMessages.collectAsStateWithLifecycle()
     val pending by viewModel.pendingCommands.collectAsStateWithLifecycle()
-    var input by remember { mutableStateOf("" ) }
+    var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val configured = state.llmConfig.isConfigured()
     val terminalConnected = state.aiStudio.consoleConnected
+    val level = state.commandPermissionLevel
+    val running = state.assistantCommandRunning
     // 新消息到达时滚到底部，否则用户看不到最新回复。
     LaunchedEffect(messages.size, pending.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
     }
 
     Column(Modifier.fillMaxSize()) {
+        // —— 头部：身份 + 配置入口 ——
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(Icons.Outlined.Bolt, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
@@ -492,12 +507,12 @@ private fun AiAssistantScreen(state: AppUiState, viewModel: MainViewModel) {
                 Text("AI 助手", style = MaterialTheme.typography.titleMedium)
                 Text(
                     when {
-                        !configured -> "未配置大模型（设置 → AI 提示词助手）"
-                        terminalConnected -> "终端已连接·可直接执行命令"
-                        else -> "终端未连接（仅能对话，无法执行命令）"
+                        !configured -> "未配置大模型·点右侧去配置"
+                        terminalConnected -> "终端已连接"
+                        else -> "终端未连接（不能执行命令）"
                     },
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (terminalConnected) MaterialTheme.colorScheme.primary
+                    color = if (configured && terminalConnected) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -506,7 +521,48 @@ private fun AiAssistantScreen(state: AppUiState, viewModel: MainViewModel) {
                     Icon(Icons.Outlined.Delete, "清空对话")
                 }
             }
+            TextButton(onClick = onOpenModelConfig) {
+                Icon(Icons.Outlined.Settings, null, Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("模型配置")
+            }
         }
+
+        // —— 权限等级 ——
+        // 放在头部而非配置弹窗里：这是每次使用都可能想调一下的开关，
+        // 埋进弹窗反而麻烦。
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text("命令权限", style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.width(2.dp))
+            listOf(1, 2, 3).forEach { value ->
+                val selected = level == value
+                val label = TerminalCommandSafety.levelLabel(value)
+                val padding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                if (selected) {
+                    Button(
+                        onClick = { viewModel.setCommandPermissionLevel(value) },
+                        contentPadding = padding,
+                        modifier = Modifier.height(30.dp),
+                    ) { Text(label, style = MaterialTheme.typography.labelSmall) }
+                } else {
+                    OutlinedButton(
+                        onClick = { viewModel.setCommandPermissionLevel(value) },
+                        contentPadding = padding,
+                        modifier = Modifier.height(30.dp),
+                    ) { Text(label, style = MaterialTheme.typography.labelSmall) }
+                }
+            }
+        }
+        Text(
+            TerminalCommandSafety.levelDescription(level),
+            style = MaterialTheme.typography.labelSmall,
+            color = if (level >= 3) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
 
         if (messages.isEmpty()) {
             Column(
@@ -548,8 +604,11 @@ private fun AiAssistantScreen(state: AppUiState, viewModel: MainViewModel) {
         }
 
         // 待确认命令：模型刚给出的建议。
+        // 是否需要确认由 TerminalCommandSafety.requiresConfirmation 统一判定
+        // （1 级全都问 / 2 级只问危险 / 3 级不问；3 级时命令已自动执行）。
         pending.forEach { item ->
             var confirming by remember(item.id) { mutableStateOf(false) }
+            val confirmRequired = TerminalCommandSafety.requiresConfirmation(item.command, level)
             Surface(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
                 color = if (item.dangerous) MaterialTheme.colorScheme.errorContainer
@@ -566,13 +625,22 @@ private fun AiAssistantScreen(state: AppUiState, viewModel: MainViewModel) {
                         Spacer(Modifier.width(6.dp))
                         Text(
                             when {
-                                item.dangerous -> "危险命令·确认后执行"
+                                item.dangerous -> "危险命令"
                                 item.install -> "安装/下载"
                                 item.readOnly -> "只读命令"
                                 else -> "命令"
                             },
                             style = MaterialTheme.typography.labelMedium,
                         )
+                        Spacer(Modifier.weight(1f))
+                        // 未连接终端时把原因写在卡片上，而不是只把按钮置灰
+                        if (!terminalConnected) {
+                            Text(
+                                "终端未连接",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
                     }
                     Text(
                         item.command,
@@ -585,17 +653,27 @@ private fun AiAssistantScreen(state: AppUiState, viewModel: MainViewModel) {
                                     confirming = false
                                     viewModel.executeAssistantCommand(item)
                                 },
+                                enabled = terminalConnected && !running,
                             ) { Text("我确认，执行") }
                             OutlinedButton(onClick = { confirming = false }) { Text("取消") }
                         } else {
                             Button(
                                 onClick = {
-                                    // 危险命令多点一次：防手滑把 rm 跑出去。
-                                    if (item.dangerous) confirming = true
+                                    // 需要确认时多点一次；否则直接执行。
+                                    if (confirmRequired) confirming = true
                                     else viewModel.executeAssistantCommand(item)
                                 },
-                                enabled = terminalConnected,
-                            ) { Text(if (item.dangerous) "执行（需确认）" else "执行") }
+                                enabled = terminalConnected && !running,
+                            ) {
+                                Text(
+                                    when {
+                                        !terminalConnected -> "执行"
+                                        running -> "执行中…"
+                                        confirmRequired -> "执行（需确认）"
+                                        else -> "执行"
+                                    },
+                                )
+                            }
                             OutlinedButton(onClick = viewModel::dismissPendingCommands) { Text("跳过") }
                         }
                     }
@@ -686,6 +764,8 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
     var resultSource by rememberSaveable { mutableStateOf(ResultSource.LOCAL) }
     var resultLayout by rememberSaveable { mutableStateOf(ResultLayout.ALBUMS) }
     var resultAlbumId by rememberSaveable { mutableStateOf<String?>(null) }
+    /** v0.2.59：AI 模型配置弹窗（挂在 AI 助手页，不再只从设置进）。 */
+    var showModelConfig by remember { mutableStateOf(false) }
     // 切页统一走这里：底栏切主页面清空栈，子页入栈以便返回。
     fun navigateTo(target: MainPage) {
         if (target == page) return
@@ -734,6 +814,7 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
         SettingsScreen(
             state = state,
             viewModel = viewModel,
+            snackbar = snackbar,
             onBack = { settings = false },
             onOpenStorage = {
                 settings = false
@@ -895,7 +976,11 @@ private fun ConnectedScaffold(
                         MainPage.MORE -> MoreScreen(
                             onOpen = { target -> onPushPage(target) },
                         )
-                        MainPage.AI_ASSISTANT -> AiAssistantScreen(state, viewModel)
+                        MainPage.AI_ASSISTANT -> AiAssistantScreen(
+                            state = state,
+                            viewModel = viewModel,
+                            onOpenModelConfig = { showModelConfig = true },
+                        )
                         MainPage.RESULTS -> ResultScreen(
                             state = state,
                             viewModel = viewModel,
@@ -927,6 +1012,42 @@ private fun ConnectedScaffold(
             }
         }
     }
+    // v0.2.59：AI 模型配置弹窗——从 AI 助手页的「模型配置」进入。
+    if (showModelConfig) {
+        LlmConfigDialog(state = state, viewModel = viewModel, onDismiss = { showModelConfig = false })
+    }
+}
+
+/**
+ * v0.2.59：AI 模型配置弹窗。
+ *
+ * 从设置页搬到这里（AI 助手页）——配置的核心目的就是让 AI 能用，放在用它的人手边
+ * 比藏在设置里更符合直觉。设置页仍保留一份（不熟悉新入口的人不至于找不着）。
+ */
+@Composable
+private fun LlmConfigDialog(state: AppUiState, viewModel: MainViewModel, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("AI 模型配置") },
+        text = {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                LlmSettingsSection(
+                    state = state,
+                    viewModel = viewModel,
+                    expanded = true,
+                    onToggle = {},
+                    onSave = viewModel::saveLlmConfig,
+                    onSaveCustomPresets = viewModel::saveCustomPresets,
+                    onTest = viewModel::testLlmConnection,
+                    hideHeader = true,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
+    )
 }
 
 @Composable
@@ -4112,6 +4233,8 @@ private fun LlmSettingsSection(
     onSave: (LlmConfig) -> Unit,
     onSaveCustomPresets: (List<PromptPreset>) -> Unit,
     onTest: (LlmConfig) -> Unit,
+    /** 在弹窗里用时隐藏"AI 提示词助手 / 收起"那一行（弹窗自己有标题）。 */
+    hideHeader: Boolean = false,
 ) {
     val config = state.llmConfig
     var baseUrl by remember(config) { mutableStateOf(config.baseUrl) }
@@ -4132,19 +4255,21 @@ private fun LlmSettingsSection(
         model != config.model || presetId != config.presetId || temperature != config.temperature
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("AI 提示词助手", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    if (config.isConfigured()) "已配置 · ${config.model}"
-                    else "未配置 —— 配好后参数页与快捷页会出现 AI 按钮",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        if (!hideHeader) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("AI 提示词助手", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        if (config.isConfigured()) "已配置 · ${config.model}"
+                        else "未配置 —— 配好后参数页与快捷页会出现 AI 按钮",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = onToggle) { Text(if (expanded) "收起" else "配置") }
             }
-            TextButton(onClick = onToggle) { Text(if (expanded) "收起" else "配置") }
         }
-        if (expanded) {
+        if (expanded || hideHeader) {
             Text(
                 "填任意 OpenAI 兼容端点即可（OpenAI / DeepSeek / 智谱 / 硅基流动 / 中转站 / 本地 ollama 都行）。" +
                     "地址只用于请求大模型，不会带上 ComfyUI 的登录 Cookie。",
@@ -4579,20 +4704,43 @@ private fun MissingNodesCard(missing: List<String>) {
  * 设置项以前是一条条线性往下堆（截图里一屏堆了 8 组，只能靠横线分隔，
  * 分不清哪里到哪里）。这里改成「一张玻璃卡 = 一个分组」：标题在卡内、
  * 左侧一条强调竖条，卡片之间留 10dp——层级一眼可辨，也贴合液态玻璃的观感。
+ *
+ * v0.2.59：竖条改为图标徽标（圆角方块底 + 图标），比纯色竖条更能区分分组；
+ * 标题字号提到 bodyLarge 并加粗，扫读时更容易定位。
  */
 @Composable
-private fun SettingsSection(title: String, content: @Composable () -> Unit) {
+private fun SettingsSection(
+    title: String,
+    icon: ImageVector? = null,
+    content: @Composable () -> Unit,
+) {
     GlassCard(modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box(
-                    Modifier
-                        .width(3.dp)
-                        .height(15.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(MaterialTheme.colorScheme.primary),
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (icon != null) {
+                    Box(
+                        Modifier
+                            .size(26.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(icon, null, Modifier.size(15.dp), tint = MaterialTheme.colorScheme.primary)
+                    }
+                } else {
+                    Box(
+                        Modifier
+                            .width(3.dp)
+                            .height(15.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(MaterialTheme.colorScheme.primary),
+                    )
+                }
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
-                Text(title, style = MaterialTheme.typography.titleSmall)
             }
             content()
         }
@@ -4659,6 +4807,7 @@ private fun AppSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
 private fun SettingsScreen(
     state: AppUiState,
     viewModel: MainViewModel,
+    snackbar: SnackbarHostState,
     onBack: () -> Unit,
     onOpenStorage: (() -> Unit)? = null,
 ) {
@@ -4685,6 +4834,10 @@ private fun SettingsScreen(
     LaunchedEffect(Unit) { viewModel.refreshLocalDraftCount() }
     // v0.2.55：设置是整页，返回键要能退回去。
     BackHandler(enabled = true) { onBack() }
+    // v0.2.59：设置页是**独立整页**（v0.2.55 改的），它把内层 Scaffold 整个替换掉了，
+    // 而 SnackbarHost 原来是挂在那个 Scaffold 上的——于是设置页里触发的提示
+    // （如「测试连接」结果）找不到宿主，只能排队等退出设置页后才弹出来，
+    // 看起来就像“点了没反应”。这里把同一个 snackbar 宿主再接一份。
     Scaffold(
         containerColor = Color.Transparent,
         topBar = {
@@ -4704,6 +4857,7 @@ private fun SettingsScreen(
                 },
             )
         },
+        snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         SettingsContent(
             state = state,
@@ -4791,7 +4945,7 @@ private fun SettingsContent(
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         // —— 服务器 ——
-        SettingsSection("服务器") {
+        SettingsSection("服务器", icon = Icons.Outlined.Computer) {
             Text(
                 state.activeServer?.baseUrl ?: "尚未连接",
                 style = MaterialTheme.typography.bodyMedium,
@@ -4827,7 +4981,7 @@ private fun SettingsContent(
         }
 
         // —— AI Studio ——
-        SettingsSection("AI Studio") {
+        SettingsSection("AI Studio", icon = Icons.Outlined.Bolt) {
             Text(
                 "账号在「账号」页登录与管理",
                 style = MaterialTheme.typography.bodySmall,
@@ -4853,7 +5007,7 @@ private fun SettingsContent(
         )
 
         // —— 图片保存 ——
-        SettingsSection("图片保存") {
+        SettingsSection("图片保存", icon = Icons.Outlined.Download) {
             Text(
                 if (state.saveFolderUri != null) {
                     "已选择自定义目录，生成结果将保存到所选文件夹"
@@ -4892,7 +5046,7 @@ private fun SettingsContent(
         }
 
         // —— 本地作品白名单 ——
-        SettingsSection("本地作品保存白名单") {
+        SettingsSection("本地作品保存白名单", icon = Icons.Outlined.Favorite) {
             Text(
                 "按输出部件类型对所有工作流生效，不绑定单个工作流。只保存本 App 提交的任务；电脑浏览器提交的任务不会进入本地。",
                 style = MaterialTheme.typography.bodySmall,
@@ -4944,7 +5098,7 @@ private fun SettingsContent(
         }
 
         // —— 本地草稿 ——
-        SettingsSection("本地草稿") {
+        SettingsSection("本地草稿", icon = Icons.Outlined.Save) {
             SettingsToggleRow(
                 title = "保存本地草稿",
                 subtitle = "关闭后打开工作流直接读取服务器版本，不再保存或恢复未保存修改",
@@ -4970,7 +5124,7 @@ private fun SettingsContent(
         }
 
         // —— 空间管理 ——
-        SettingsSection("空间管理") {
+        SettingsSection("空间管理", icon = Icons.Outlined.Memory) {
             Text(
                 "查看 App 的内存与磁盘占用明细，并逐项清理本地作品、缓存、日志",
                 style = MaterialTheme.typography.bodySmall,
@@ -4984,7 +5138,7 @@ private fun SettingsContent(
         }
 
         // —— 诊断日志 ——
-        SettingsSection("诊断日志") {
+        SettingsSection("诊断日志", icon = Icons.Outlined.FileOpen) {
             SettingsToggleRow(
                 title = "记录运行和闪退日志",
                 subtitle = "不记录提示词、工作流正文或生成图片",
@@ -5002,7 +5156,7 @@ private fun SettingsContent(
         }
 
         // —— 软件更新 ——
-        SettingsSection("软件更新") {
+        SettingsSection("软件更新", icon = Icons.Outlined.Refresh) {
             OutlinedButton(onClick = { viewModel.checkUpdate() }, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Outlined.Refresh, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
