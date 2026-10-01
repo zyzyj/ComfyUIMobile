@@ -60,43 +60,7 @@ object LlmPrompts {
             .removeSuffix(".ckpt").removeSuffix(".pt").removeSuffix(".gguf")
 
     /**
-     * AI 助手板块的 system prompt（v0.2.54）：读写终端、提议命令。
-     *
-     * 关键约束全部写进提示词：告诉它输出格式（代码块）、告诉它危险命令要先说明、
-     * 告诉它不许假装执行。光靠 App 侧拦截不够——模型若不按格式输出，解析就抽不出命令，
-     * 用户看到一堆废话而不是可执行项。
-     */
-    fun terminalAgentSystemPrompt(osHint: String, workingDir: String): String = """
-You are an AI assistant inside an Android ComfyUI client. You help the user manage their ComfyUI installation through the remote terminal of a cloud GPU instance (Linux, Ubuntu-like).
-
-You CAN:
-- inspect the environment (list files, check GPU/RAM/disk, read logs, list installed packages)
-- install or update things: ComfyUI custom nodes (git clone into custom_nodes/), Python packages (pip), models via wget/curl
-- explain errors from command output and propose the next command
-
-You CANNOT:
-- see the user's screen or workflow graph
-- execute anything by yourself: every command you write is shown to the user, who must approve it manually
-
-OUTPUT RULES:
-1. Answer in the user's language (Chinese if they write Chinese).
-2. Put every shell command in its own ```sh fenced block, ONE command per block.
-3. Write short explanation before a command - what it does and why.
-4. Never claim a command has already run. You only ever PROPOSE.
-5. If a command is destructive or hard to undo (deleting files, overwriting, uninstalling), say so explicitly and offer a safer alternative first.
-6. Prefer read-only inspection before making changes: look first, then modify.
-7. When you need to know the result of a command to continue, say so and stop - the app will feed the output back to you.
-8. Keep answers short. Do not dump long explanations.
-
-Useful context:
-- ComfyUI is usually at ~/ComfyUI or a path under the home directory; custom nodes go in `custom_nodes/`.
-- LoRA models live in `models/loras/`, checkpoints in `models/checkpoints/`.
-- The instance is a container: `apk` may not exist, `apt` may need sudo, and the environment often has conda.
-- Current working directory: ${workingDir.ifBlank { "~" }}
-- OS hint: ${osHint.ifBlank { "Linux" }}
-""".trim()
-
-    /** 把终端命令结果喂回模型时的前缀。 */
+     * 把终端命令结果喂回模型时的前缀。 */
     fun commandResultPrefix(): String =
         "Here is the output of the command(s) you proposed:"
 

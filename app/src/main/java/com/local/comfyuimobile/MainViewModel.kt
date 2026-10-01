@@ -93,6 +93,7 @@ import com.local.comfyuimobile.network.ExecutionNodeResolver
 import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.network.LanScanner
 import com.local.comfyuimobile.network.LlmPrompts
+import com.local.comfyuimobile.network.TerminalPlaybook
 import com.local.comfyuimobile.network.NodeAvailability
 import com.local.comfyuimobile.network.LlmRepository
 import com.local.comfyuimobile.network.ResultParser
@@ -3017,10 +3018,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val reply = runCatching {
                 llm.chat(
                     config = config,
-                    systemPrompt = LlmPrompts.terminalAgentSystemPrompt(
-                        osHint = "Linux (cloud container)",
-                        workingDir = "~",
-                    ),
+                    // v0.2.60：换成内置工作守则（五阶段流程）+ 真实环境事实。
+                    // 以前只给一句“优先侦察”的软建议，AI 会一上来就装东西。
+                    systemPrompt = assistantSystemPrompt(),
                     userMessage = buildAssistantUserMessage(history, prompt),
                 )
             }.getOrElse { error ->
@@ -3062,6 +3062,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }.also { job ->
             job.invokeOnCompletion { if (assistantJob === job) assistantJob = null }
         }
+    }
+
+    /**
+     * 拼出 AI 助手的 system prompt（v0.2.60）。
+     *
+     * 把 App 已知的环境事实（项目名 / 算力档位 / ComfyUI 地址与连接状态 / 终端状态）
+     * 直接写进去，让 AI 不用浪费一轮去探——这些 App 自己就知道。
+     */
+    private fun assistantSystemPrompt(): String {
+        val panel = _state.value.aiStudio
+        val runningProject = panel.projects.firstOrNull { it.projectId == panel.environmentReadyProjectId }
+            ?: panel.projects.firstOrNull { it.running }
+        val facts = TerminalPlaybook.EnvironmentFacts(
+            projectName = runningProject?.name.orEmpty(),
+            gpuLabel = runningProject?.runningGpuLabel.orEmpty(),
+            comfyUiUrl = panel.comfyUiUrl.orEmpty(),
+            comfyUiConnected = _state.value.status == ConnectionStatus.CONNECTED,
+            terminalConnected = panel.consoleConnected,
+        )
+        return TerminalPlaybook.systemPrompt(facts)
     }
 
     /**
@@ -3199,7 +3219,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val reply = runCatching {
                 llm.chat(
                     config = config,
-                    systemPrompt = LlmPrompts.terminalAgentSystemPrompt("Linux (cloud container)", "~"),
+                    // 与首轮同一份守则；环境事实重新取一次（命令可能改了状态）。
+                    systemPrompt = assistantSystemPrompt(),
                     userMessage = buildAssistantUserMessage(_assistantMessages.value, followUp),
                 )
             }.getOrElse { error ->
