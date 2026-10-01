@@ -579,14 +579,22 @@ private fun AiAssistantScreen(
                 )
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    "描述你想干什么，AI 会给出命令、由你确认后再执行。",
+                    "描述你想干什么，AI 会先侦察环境、再给命令。",
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "例：帮我看看 ComfyUI 装了哪些插件 / 下载 ComfyUI-Manager / 磁盘还剩多少",
+                    "内置流程：侦察 → 诊断 → 计划 → 执行 → 验证\n" +
+                        "（会先看 GPU/磁盘/服务状态，不会一上来就装东西）",
                     style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "例：帮我看看 ComfyUI 装了哪些插件 / 下载 ComfyUI-Manager / 磁盘还剩多少",
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
                 )
