@@ -326,6 +326,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         serverInput = resolvedServerInput,
                         llmConfig = stored.llmConfig,
                         customPresets = stored.customPresets,
+                        commandPermissionLevel = stored.commandPermissionLevel,
                         aiStudio = _state.value.aiStudio.copy(
                             accounts = stored.aiStudioAccounts,
                             // v0.2.46：账号字段跟 serverInput 一样需要"内存领先磁盘"的
@@ -3052,6 +3053,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     install = TerminalCommandSafety.isInstall(command),
                 )
             }
+            // v0.2.59：权限等级 3（无需询问）时自动执行。语义严格按用户设定：
+            // 1=每条都问 / 2=仅危险命令问 / 3=不问。所以 3 级下危险命令也直接执行。
+            // 执行前会先把命令写进对话，用户事后总能看到跑了什么（可追溯）。
+            if (_state.value.commandPermissionLevel >= 3) {
+                _pendingCommands.value.forEach { executeAssistantCommand(it) }
+            }
         }.also { job ->
             job.invokeOnCompletion { if (assistantJob === job) assistantJob = null }
         }
@@ -3122,16 +3129,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         viewModelScope.launch {
-            val result = awaitCommandResult(pending.command, token, baseline)
-            _assistantMessages.update {
-                it + TerminalChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    role = TerminalMessageRole.SYSTEM_NOTE,
-                    text = result.forModel(600),
-                )
+            // v0.2.59：标记“有命令在跑”，界面据此禁用执行按钮，避免重复提交。
+            _state.update { it.copy(assistantCommandRunning = true) }
+            try {
+                val result = awaitCommandResult(pending.command, token, baseline)
+                _assistantMessages.update {
+                    it + TerminalChatMessage(
+                        id = UUID.randomUUID().toString(),
+                        role = TerminalMessageRole.SYSTEM_NOTE,
+                        text = result.forModel(600),
+                    )
+                }
+                // 拿到输出后自动接一轮：让模型解释/接着提案，用户不用自己描述结果。
+                askAssistantFollowUp(result)
+            } finally {
+                _state.update { it.copy(assistantCommandRunning = false) }
             }
-            // 拿到输出后自动接一轮：让模型解释/接着提案，用户不用自己描述结果。
-            askAssistantFollowUp(result)
         }
     }
 
@@ -3213,6 +3226,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     install = TerminalCommandSafety.isInstall(command),
                 )
             }
+            // v0.2.59：与 askAssistant 一致，3 级（无需询问）时自动往下执行。
+            if (_state.value.commandPermissionLevel >= 3) {
+                _pendingCommands.value.forEach { executeAssistantCommand(it) }
+            }
         }.also { job ->
             job.invokeOnCompletion { if (assistantJob === job) assistantJob = null }
         }
@@ -3253,6 +3270,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
         }.also { job ->
             job.invokeOnCompletion { if (llmModelsJob === job) llmModelsJob = null }
+        }
+    }
+
+    /** 设置 AI 助手的命令执行权限等级（v0.2.59）：1=每条都问 / 2=仅危险命令 / 3=不问。 */
+    fun setCommandPermissionLevel(level: Int) {
+        val clamped = level.coerceIn(1, 3)
+        _state.update { it.copy(commandPermissionLevel = clamped) }
+        viewModelScope.launch {
+            runCatching { preferences.setCommandPermissionLevel(clamped) }
+                .onFailure { AppLogger.error("保存命令权限等级失败", it) }
         }
     }
 

@@ -74,6 +74,49 @@ class TerminalCommandSafetyTest {
         assertFalse(TerminalCommandSafety.isInstall("ls ~/models"))
     }
 
+    // ===== 权限等级（v0.2.59） =====
+
+    @Test
+    fun level1RequiresConfirmationForEverything() {
+        assertTrue(TerminalCommandSafety.requiresConfirmation("ls ~", TerminalCommandSafety.LEVEL_ASK_ALL))
+        assertTrue(TerminalCommandSafety.requiresConfirmation("rm -rf x", TerminalCommandSafety.LEVEL_ASK_ALL))
+    }
+
+    @Test
+    fun level2OnlyAsksForDangerous() {
+        assertEquals(2, TerminalCommandSafety.LEVEL_ASK_DANGEROUS)
+        assertFalse(TerminalCommandSafety.requiresConfirmation("ls ~/models", 2))
+        assertFalse(TerminalCommandSafety.requiresConfirmation("nvidia-smi", 2))
+        assertFalse(TerminalCommandSafety.requiresConfirmation("pip install torch", 2))
+        assertTrue(TerminalCommandSafety.requiresConfirmation("rm -rf ~/models", 2))
+        assertTrue(TerminalCommandSafety.requiresConfirmation("git reset --hard", 2))
+    }
+
+    @Test
+    fun level3NeverAsks() {
+        assertEquals(3, TerminalCommandSafety.LEVEL_ASK_NOTHING)
+        assertFalse(TerminalCommandSafety.requiresConfirmation("ls ~", 3))
+        // 3 级语义就是"不问"，危险命令也不问（用户自己选的）
+        assertFalse(TerminalCommandSafety.requiresConfirmation("rm -rf ~/models", 3))
+    }
+
+    @Test
+    fun levelIsClampedToValidRange() {
+        // 越界值按边界处理，不会抛异常
+        assertEquals(TerminalCommandSafety.LEVEL_ASK_ALL, 1)
+        assertTrue(TerminalCommandSafety.requiresConfirmation("ls", 0))
+        assertTrue(TerminalCommandSafety.requiresConfirmation("ls", -5))
+        assertFalse(TerminalCommandSafety.requiresConfirmation("rm x", 99))
+    }
+
+    @Test
+    fun levelLabelsAndDescriptionsCoverAllLevels() {
+        (1..3).forEach { level ->
+            assertTrue(TerminalCommandSafety.levelLabel(level).isNotBlank())
+            assertTrue(TerminalCommandSafety.levelDescription(level).isNotBlank())
+        }
+    }
+
     // ===== 输出边界标记 =====
 
     @Test

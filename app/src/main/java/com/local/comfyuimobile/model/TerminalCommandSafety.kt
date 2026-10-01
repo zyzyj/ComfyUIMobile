@@ -140,6 +140,36 @@ object TerminalCommandSafety {
     /** 单次最多执行多少条命令：防模型一口气吐二十条把用户点爆。 */
     const val MAX_COMMANDS = 10
 
+    /** 权限等级：1=每条都问 / 2=仅危险命令问 / 3=不问（v0.2.59）。 */
+    const val LEVEL_ASK_ALL = 1
+    const val LEVEL_ASK_DANGEROUS = 2
+    const val LEVEL_ASK_NOTHING = 3
+
+    /** 权限等级的展示文案（设置界面与说明共用一份，避免两处各写一句）。 */
+    fun levelLabel(level: Int): String = when (level.coerceIn(1, 3)) {
+        LEVEL_ASK_ALL -> "每条都问"
+        LEVEL_ASK_DANGEROUS -> "危险才问"
+        else -> "不问"
+    }
+
+    fun levelDescription(level: Int): String = when (level.coerceIn(1, 3)) {
+        LEVEL_ASK_ALL -> "每条命令都要你点「执行」"
+        LEVEL_ASK_DANGEROUS -> "只有危险命令（删除/覆盖/卸载）需要确认"
+        else -> "AI 直接执行，不再询问（命令仍会记在对话里）"
+    }
+
+    /**
+     * 在当前权限等级下，这条命令是否需要用户先确认才能执行（v0.2.59）。
+     *
+     * 1 级：全部需要；2 级：仅危险命令需要；3 级：都不需要。
+     * 纯函数，可单测——权限判定是安全边界，不该散在 UI 里。
+     */
+    fun requiresConfirmation(command: String, level: Int): Boolean = when (level.coerceIn(1, 3)) {
+        LEVEL_ASK_ALL -> true
+        LEVEL_ASK_DANGEROUS -> isDangerous(command)
+        else -> false
+    }
+
     private fun normalize(command: String): String = command.trim().lowercase()
 
     /** 词边界匹配，避免 "rm" 命中 "format" 之类的子串。 */
