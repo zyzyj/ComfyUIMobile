@@ -245,6 +245,7 @@ import com.local.comfyuimobile.model.LoraStrengthSlot
 import com.local.comfyuimobile.model.LoraStrengthTarget
 import com.local.comfyuimobile.model.StrengthPhase
 import com.local.comfyuimobile.model.TerminalChatMessage
+import com.local.comfyuimobile.model.TerminalCommandSafety
 import com.local.comfyuimobile.model.TerminalMessageRole
 import com.local.comfyuimobile.data.WorkflowBrowser
 import com.local.comfyuimobile.data.WorkflowPath
@@ -764,8 +765,6 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
     var resultSource by rememberSaveable { mutableStateOf(ResultSource.LOCAL) }
     var resultLayout by rememberSaveable { mutableStateOf(ResultLayout.ALBUMS) }
     var resultAlbumId by rememberSaveable { mutableStateOf<String?>(null) }
-    /** v0.2.59：AI 模型配置弹窗（挂在 AI 助手页，不再只从设置进）。 */
-    var showModelConfig by remember { mutableStateOf(false) }
     // 切页统一走这里：底栏切主页面清空栈，子页入栈以便返回。
     fun navigateTo(target: MainPage) {
         if (target == page) return
@@ -862,6 +861,8 @@ private fun ConnectedScaffold(
     resultAlbumId: String?,
     onResultAlbumChange: (String?) -> Unit,
 ) {
+    /** v0.2.59：AI 模型配置弹窗（挂在 AI 助手页，不再只从设置进）。 */
+    var showModelConfig by remember { mutableStateOf(false) }
     Scaffold(
         topBar = {
             // v0.1.91：账号/控制台页显示页面标题（它们不是「连接到某台 ComfyUI」
