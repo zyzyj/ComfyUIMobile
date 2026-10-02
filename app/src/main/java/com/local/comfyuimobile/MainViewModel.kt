@@ -3301,8 +3301,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _assistantMessages.update {
                     it + TerminalChatMessage(
                         id = UUID.randomUUID().toString(),
-                        role = TerminalMessageRole.SYSTEM_NOTE,
-                        text = result.forModel(600),
+                        role = TerminalMessageRole.TERMINAL_OUTPUT,
+                        text = result.forDisplay(),
                     )
                 }
                 // 拿到输出后自动接一轮：让模型解释/接着提案，用户不用自己描述结果。
