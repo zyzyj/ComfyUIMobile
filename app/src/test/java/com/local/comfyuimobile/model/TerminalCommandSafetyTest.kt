@@ -261,6 +261,56 @@ class TerminalCommandSafetyTest {
         assertEquals(3, window.exitCode)
     }
 
+    // ===== 自动执行白名单（v0.2.64）=====
+
+    @Test
+    fun levelTwoAutoRunsReadOnlyAndInstall() {
+        // 用户抱怨的原话："不是危险才问的模式吗？为什么这种命令都要询问？"
+        // （被问的是 `ls ~/ComfyUI/custom_nodes`）。这条锁住：只读命令在 2 级下自动执行。
+        assertEquals(2, TerminalCommandSafety.LEVEL_ASK_DANGEROUS)
+        assertTrue(TerminalCommandSafety.autoRunnable("ls ~/ComfyUI/custom_nodes", 2))
+        assertTrue(TerminalCommandSafety.autoRunnable("nvidia-smi", 2))
+        assertTrue(TerminalCommandSafety.autoRunnable("df -h ~", 2))
+        assertTrue(TerminalCommandSafety.autoRunnable("pip install comfyui-manager", 2))
+        assertTrue(TerminalCommandSafety.autoRunnable("git clone https://x/y.git", 2))
+    }
+
+    @Test
+    fun levelTwoStillAsksForUnclassifiedCommands() {
+        // 白名单语义：判不准的一律落回人工确认，而不是"不在危险名单里就放行"。
+        // 反例是 `python -c "shutil.rmtree(...)"` 这类：既非只读也非危险，黑名单会漏放。
+        assertFalse(TerminalCommandSafety.autoRunnable("python -c \"import shutil; shutil.rmtree('m')\"", 2))
+        assertFalse(TerminalCommandSafety.autoRunnable("rm -rf ~/models", 2))
+        assertFalse(TerminalCommandSafety.autoRunnable("mv a b", 2))
+        assertFalse(TerminalCommandSafety.autoRunnable("./run.sh", 2))
+    }
+
+    @Test
+    fun levelOneNeverAutoRuns() {
+        assertFalse(TerminalCommandSafety.autoRunnable("ls ~", 1))
+        assertFalse(TerminalCommandSafety.autoRunnable("nvidia-smi", 1))
+    }
+
+    @Test
+    fun levelThreeAutoRunsEverythingExceptCatastrophic() {
+        assertTrue(TerminalCommandSafety.autoRunnable("ls ~", 3))
+        assertTrue(TerminalCommandSafety.autoRunnable("rm -rf ~/models/loras", 3))
+        assertTrue(TerminalCommandSafety.autoRunnable("python -c \"x\"", 3))
+        // 灾难性命令：任何档位都不自动执行
+        assertFalse(TerminalCommandSafety.autoRunnable("rm -rf /", 3))
+        assertFalse(TerminalCommandSafety.autoRunnable("reboot", 3))
+    }
+
+    @Test
+    fun levelLabelsMatchRealBehaviour() {
+        // 名字必须与放行行为一致——2 级原名「危险才问」时说一套做一套，
+        // 用户看到 `ls` 也要手点就质疑了。
+        assertEquals("每条都问", TerminalCommandSafety.levelLabel(1))
+        assertEquals("只读与安装", TerminalCommandSafety.levelLabel(2))
+        assertEquals("不问", TerminalCommandSafety.levelLabel(3))
+        assertTrue(TerminalCommandSafety.levelDescription(2).contains("自动执行"))
+    }
+
     // ===== 灾难性命令熔断（v0.2.62）=====
 
     @Test

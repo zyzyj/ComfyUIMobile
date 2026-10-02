@@ -41,6 +41,7 @@ import com.local.comfyuimobile.model.AiStudioAccount
 import com.local.comfyuimobile.model.AiStudioProject
 import com.local.comfyuimobile.model.AiStudioSchedule
 import com.local.comfyuimobile.model.AiStudioState
+import com.local.comfyuimobile.model.AssistantContext
 import com.local.comfyuimobile.model.StorageBucket
 import com.local.comfyuimobile.model.StorageCleanTarget
 import com.local.comfyuimobile.model.StorageStats
@@ -3160,17 +3161,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     install = TerminalCommandSafety.isInstall(command),
                 )
             }
-            // v0.2.61：3 级下命令排队自动执行，新建议要**追加**（否则上一批还在队列里的
-            // 命令会从界面消失，用户既看不到也跳不过）；1/2 级下新回复取代上一轮建议。
-            _pendingCommands.value =
-                if (_state.value.commandPermissionLevel >= 3) _pendingCommands.value + newPending
-                else newPending
-            // v0.2.59：权限等级 3（无需询问）时自动执行。语义严格按用户设定：
-            // 1=每条都问 / 2=仅危险命令问 / 3=不问。所以 3 级下危险命令也直接执行。
-            // 执行前会先把命令写进对话，用户事后总能看到跑了什么（可追溯）。
-            //
-            // v0.2.61：改为**按顺序逐条执行**（见 enqueueAutoRun）。
-            enqueueAutoRun(newPending)
+            routeCommands(newPending)
         }.also { job ->
             job.invokeOnCompletion {
                 if (assistantJob === job) {
@@ -3227,28 +3218,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * 把最近几轮对话 + 命令输出拼成一条 user 消息。
+     * 把最近几轮对话 + 命令输出拼成一条 user 消息（v0.2.64 改为按 token 预算压缩）。
      *
      * OpenAI 兼容接口支持多轮，但本仓库的 [LlmRepository.chat] 只收单条 user 消息，
      * 所以在这里把历史折叠成文本——足够模型理解上下文，且不用改网络层。
-     * 只取最近 [ASSISTANT_HISTORY_TURNS] 轮，避免上下文无限增长。
+     *
+     * 以前是「取最近 8 条、每条截 600 字」这种按条数的做法：终端输出的长度差异极大
+     * （`ls` 几十字、`pip install` 几百行），按条数切根本控制不住体积，超了就直接
+     * 请求失败。现在改为按 token 预算压缩，并在压缩时给界面留个提示。
      */
-    private fun buildAssistantUserMessage(history: List<TerminalChatMessage>, prompt: String): String =
-        buildString {
-            val recent = history.takeLast(ASSISTANT_HISTORY_TURNS)
-            if (recent.size > 1) {
-                append("Conversation so far:\n")
-                recent.dropLast(1).forEach { message ->
-                    val speaker = when (message.role) {
-                        TerminalMessageRole.USER -> "User"
-                        TerminalMessageRole.ASSISTANT -> "You"
-                        TerminalMessageRole.SYSTEM_NOTE -> "System"
-                    }
-                    append("$speaker: ").append(message.text.take(600)).append("\n\n")
-                }
+    private fun buildAssistantUserMessage(history: List<TerminalChatMessage>, prompt: String): String {
+        val transcript = AssistantContext.buildTranscript(history, prompt)
+        if (transcript.compacted) {
+            // 让用户知道发生了什么——否则他会以为 AI「忘了」前面聊过的事。
+            val parts = buildList {
+                if (transcript.omittedOutputs > 0) add("${transcript.omittedOutputs} 条较早的命令输出")
+                if (transcript.omittedTurns > 0) add("${transcript.omittedTurns} 条更早的对话")
             }
-            append("User: ").append(prompt)
+            _assistantMessages.update {
+                it + TerminalChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    role = TerminalMessageRole.SYSTEM_NOTE,
+                    text = "对话变长了，已省略${parts.joinToString("与")}以留出上下文空间" +
+                        "（最近的对话与结果都还在）。",
+                )
+            }
         }
+        return transcript.text
+    }
 
     /**
      * 执行一条 AI 提议的命令：加边界标记后发到终端，等输出回传，再把结果喂回对话。
@@ -3323,21 +3320,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * 3 级权限：把一批新命令排进自动执行队列并启动（v0.2.61）。
+     * 把模型新给出的命令**分流**（v0.2.64）。
+     *
+     * 这一步是权限档位真正的落点：
+     *  - 档位允许自动执行的（只读/安装，或「不问」下的普通命令）→ 进自动执行队列；
+     *  - 其余（危险、灾难性、以及无法分类的）→ 留在界面上等用户点「执行」。
+     *
+     * 以前分批分得不对：「危险才问」档位下**所有**命令都还要手点一下，档位形同虚设，
+     * 用户看到 `ls` 也要点就质疑"这不是危险才问吗"。现在按 [TerminalCommandSafety.autoRunnable]
+     * 判定——它是白名单式的，判不准的一律落回人工确认。
+     *
+     * 追加还是取代：能看到队列的档位（有自动执行）用追加，否则新回复取代上一轮建议。
+     */
+    private fun routeCommands(commands: List<PendingCommand>) {
+        val level = _state.value.commandPermissionLevel
+        // 终端没连接时不能自动执行；此时**全都留在界面上**等用户连上再点——
+        // 否则可自动执行的那批会被摘掉却没人执行，等于静默消失。
+        val canAutoRun = _state.value.aiStudio.consoleConnected
+        val (autoReady, needsConfirm) = commands.partition {
+            canAutoRun && TerminalCommandSafety.autoRunnable(it.command, level)
+        }
+        _pendingCommands.value =
+            if (autoReady.isNotEmpty()) _pendingCommands.value + needsConfirm
+            else needsConfirm
+        enqueueAutoRun(autoReady)
+    }
+
+    /**
+     * 把一批命令排进自动执行队列并启动（v0.2.61，v0.2.64 去掉档位判断）。
      *
      * 为什么需要队列：终端是**串行**的，一批命令必须一条跑完再发下一条。
      * 以前是 forEach 一口气全发——后一条在前一条还没跑完时就发出去了，
      * 两条命令的输出会串在一起，模型据此判断就会出错。
+     *
+     * 能不能自动执行由调用方（[routeCommands]）判定，这里只负责排队与推进。
      */
     private fun enqueueAutoRun(commands: List<PendingCommand>) {
-        val level = _state.value.commandPermissionLevel
-        if (level < 3) return
+        if (commands.isEmpty()) return
         if (!_state.value.aiStudio.consoleConnected) return
-        // v0.2.62 熔断器：仍需确认的命令（灾难性操作）**不自动执行**，留在界面上等用户点。
-        // 这是「不问」权限也越不过的闸——参照 Claude Code：关键路径的 rm 永不自动放行。
-        autoRunQueue = autoRunQueue + commands.filterNot {
-            TerminalCommandSafety.requiresConfirmation(it.command, level)
-        }
+        autoRunQueue = autoRunQueue + commands
         startNextAutoCommand()
     }
 
@@ -3349,7 +3370,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private fun startNextAutoCommand() {
         val level = _state.value.commandPermissionLevel
-        if (level < 3) return
         if (assistantCommandJob?.isActive == true) return
         // v0.2.62 熔断：连续失败到上限就不再自动往下跑（对齐 Cline 的 --retries 默认 3）。
         // 队列一并清掉，否则下次触发（如新回复）又会把它翻出来接着失败。
@@ -3370,8 +3390,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         while (true) {
             val next = autoRunQueue.firstOrNull() ?: return
             autoRunQueue = autoRunQueue.drop(1)
-            // 双保险：队列里万一混进需要确认的命令，也不发（留给用户在界面上点）。
-            if (TerminalCommandSafety.requiresConfirmation(next.command, level)) continue
+            // 双保险：队列里万一混进不该自动执行的命令，也不发（留给用户在界面上点）。
+            if (!TerminalCommandSafety.autoRunnable(next.command, level)) continue
             if (!_state.value.aiStudio.consoleConnected) {
                 autoRunQueue = emptyList()
                 return
@@ -3470,13 +3490,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     install = TerminalCommandSafety.isInstall(command),
                 )
             }
-            // v0.2.61：与 askAssistant 同样的追加/取代语义。
-            _pendingCommands.value =
-                if (_state.value.commandPermissionLevel >= 3) _pendingCommands.value + newPending
-                else newPending
-            // v0.2.59：与 askAssistant 一致，3 级（无需询问）时自动往下执行。
-            // v0.2.61：同样逐条串行（见 enqueueAutoRun）。
-            enqueueAutoRun(newPending)
+            routeCommands(newPending)
         }.also { job ->
             job.invokeOnCompletion {
                 if (assistantJob === job) {
@@ -7022,8 +7036,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val TERMINAL_MAX_LINES = 2_000
         /** v0.2.54：AI 助手单条命令的等待上限。装包/下载可能很慢，给足 10 分钟。 */
         const val ASSISTANT_COMMAND_TIMEOUT_MS = 10 * 60_000L
-        /** v0.2.54：喂回模型的对话轮数。太多会挤爆上下文（每轮都带终端输出）。 */
-        const val ASSISTANT_HISTORY_TURNS = 8
         /**
          * v0.2.62：连续失败多少条命令后暂停自动执行（对齐 Cline 的 `--retries` 默认 3）。
          *
