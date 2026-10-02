@@ -2943,9 +2943,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _assistantMessages = MutableStateFlow<List<TerminalChatMessage>>(emptyList())
     val assistantMessages: StateFlow<List<TerminalChatMessage>> = _assistantMessages.asStateFlow()
     private var assistantJob: Job? = null
+    /** 命令执行的协程（v0.2.61）：与对话请求分开，清空对话时要能取消它。 */
+    private var assistantCommandJob: Job? = null
+    /**
+     * 3 级权限下本批还没轮到的命令（v0.2.61）。
+     * 终端是串行的，只能一条跑完再发下一条。
+     */
+    private var autoRunQueue: List<PendingCommand> = emptyList()
     /** 待用户确认的命令（界面渲染确认按钮）与它们的风险标注。 */
     private val _pendingCommands = MutableStateFlow<List<PendingCommand>>(emptyList())
     val pendingCommands: StateFlow<List<PendingCommand>> = _pendingCommands.asStateFlow()
+
+    /**
+     * 排队等发送的用户消息（v0.2.61）。
+     *
+     * v0.2.58 修了“上一条在跑时静默丢弃”，但只说了一句“稍后一起发送”——
+     * **实际根本没有队列**，注释里的承诺永远不会兑现（用户会发现消息石沉大海）。
+     * 这里补上真正的队列：上一条完成后自动把排队的下一条发出去。
+     */
+    private val _queuedAssistantPrompts = MutableStateFlow<List<String>>(emptyList())
+    val queuedAssistantPrompts: StateFlow<List<String>> = _queuedAssistantPrompts.asStateFlow()
 
     /** 一条待确认的命令 + 风险标注。 */
     data class PendingCommand(
@@ -2957,15 +2974,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     fun clearAssistantConversation() {
+        // v0.2.61：先清队列再 cancel。cancel 可能同步触发 assistantJob 的完成回调，
+        // 那时若队列还有内容，会把消息重新发出去（刚清空又冒出来）。
+        _queuedAssistantPrompts.value = emptyList()
+        autoRunQueue = emptyList()
         assistantJob?.cancel()
         assistantJob = null
+        // v0.2.61：命令执行的协程也要一起取消，否则清空对话后它仍会在后台跑完、
+        // 又把输出写回刚清空的列表（还会把 running 标记留着）。
+        assistantCommandJob?.cancel()
+        assistantCommandJob = null
         _assistantMessages.value = emptyList()
         _pendingCommands.value = emptyList()
+        _state.update { it.copy(assistantCommandRunning = false) }
     }
 
-    /** 丢弃待执行命令（用户点“跳过”）。 */
-    fun dismissPendingCommands() {
-        _pendingCommands.value = emptyList()
+    /** 只丢弃某一条待执行命令（v0.2.61）。以前 UI 上每条都有「跳过」但清的是全部。 */
+    fun dismissPendingCommand(id: String) {
+        _pendingCommands.value = _pendingCommands.value.filterNot { it.id == id }
+        // 自动执行队列里也要移除，否则 3 级下点了「跳过」它照样会跑（v0.2.61）。
+        autoRunQueue = autoRunQueue.filterNot { it.id == id }
     }
 
     /**
@@ -2988,20 +3016,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
-        // v0.2.58：上一条还在等回复时不能静默丢弃。以前这里直接 return，用户点了发送
-        // 却看不到任何反应（消息没进列表、也没有提示），只能反复点。现在把用户这条话
-        // 照常入列，再补一句系统说明，让界面明确"在排队"。
+        // v0.2.58：上一条还在等回复时不能静默丢弃。现在把用户这条话入列，并由
+        // 本轮结束后自动发下一条（v0.2.61 补上真正的队列）。
         if (assistantJob?.isActive == true) {
             val queued = TerminalChatMessage(
                 id = UUID.randomUUID().toString(),
                 role = TerminalMessageRole.USER,
                 text = prompt,
             )
+            _queuedAssistantPrompts.update { it + prompt }
             _assistantMessages.update {
                 it + queued + TerminalChatMessage(
                     id = UUID.randomUUID().toString(),
                     role = TerminalMessageRole.SYSTEM_NOTE,
-                    text = "上一条还在等大模型回复，这条已收到，稍后一起发送\n（AI 助手一次只处理一轮，避免命令与输出串台）",
+                    text = "上一条还在等大模型回复，这条已排队；上一条结束后会自动发出",
                 )
             }
             return
@@ -3012,7 +3040,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             text = prompt,
         )
         _assistantMessages.update { it + userMessage }
+        // v0.2.61：新问题等于放弃上一轮剩下未执行的建议，自动执行队列一并作废。
         _pendingCommands.value = emptyList()
+        autoRunQueue = emptyList()
         assistantJob = viewModelScope.launch {
             val history = _assistantMessages.value
             val reply = runCatching {
@@ -3044,7 +3074,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     commands = commands,
                 )
             }
-            _pendingCommands.value = commands.map { command ->
+            val newPending = commands.map { command ->
                 PendingCommand(
                     id = UUID.randomUUID().toString(),
                     command = command,
@@ -3053,14 +3083,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     install = TerminalCommandSafety.isInstall(command),
                 )
             }
+            // v0.2.61：3 级下命令排队自动执行，新建议要**追加**（否则上一批还在队列里的
+            // 命令会从界面消失，用户既看不到也跳不过）；1/2 级下新回复取代上一轮建议。
+            _pendingCommands.value =
+                if (_state.value.commandPermissionLevel >= 3) _pendingCommands.value + newPending
+                else newPending
             // v0.2.59：权限等级 3（无需询问）时自动执行。语义严格按用户设定：
             // 1=每条都问 / 2=仅危险命令问 / 3=不问。所以 3 级下危险命令也直接执行。
             // 执行前会先把命令写进对话，用户事后总能看到跑了什么（可追溯）。
-            if (_state.value.commandPermissionLevel >= 3) {
-                _pendingCommands.value.forEach { executeAssistantCommand(it) }
-            }
+            //
+            // v0.2.61：改为**按顺序逐条执行**（见 enqueueAutoRun）。
+            enqueueAutoRun(newPending)
         }.also { job ->
-            job.invokeOnCompletion { if (assistantJob === job) assistantJob = null }
+            job.invokeOnCompletion {
+                if (assistantJob === job) assistantJob = null
+                // v0.2.61：本轮正常结束后把队列里的下一条发出去（否则排队消息永远发不出）。
+                // 被取消（如用户清空对话）时不发，否则刚清空又会冒出新消息。
+                if (!job.isCancelled) drainAssistantQueue()
+            }
         }
     }
 
@@ -3126,12 +3166,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         _pendingCommands.value = _pendingCommands.value.filterNot { it.id == pending.id }
+        // v0.2.61：也从自动执行队列摘掉。手动点「执行」时若它还在队列里，稍后会被再跑一次。
+        autoRunQueue = autoRunQueue.filterNot { it.id == pending.id }
         val token = UUID.randomUUID().toString().take(8)
-        val baseline = _state.value.aiStudio.terminalLines.size
         // v0.2.58：sendInput 返回 false 表示没 socket、发送失败。以前忽略返回值，于是失败时
         // 还要按超时等满 10 分钟才报错，用户一直以为命令在跑。现在立即反馈。
         val sent = kernelClient.sendInput(TerminalCommandSafety.wrap(pending.command, token))
         if (!sent) {
+            // v0.2.61：终端断了就放弃整批自动执行，避免后续命令连串失败。
+            autoRunQueue = emptyList()
             _assistantMessages.update {
                 it + TerminalChatMessage(
                     id = UUID.randomUUID().toString(),
@@ -3148,11 +3191,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 text = "（已执行）${pending.command}",
             )
         }
-        viewModelScope.launch {
+        assistantCommandJob = viewModelScope.launch {
             // v0.2.59：标记“有命令在跑”，界面据此禁用执行按钮，避免重复提交。
             _state.update { it.copy(assistantCommandRunning = true) }
             try {
-                val result = awaitCommandResult(pending.command, token, baseline)
+                val result = awaitCommandResult(pending.command, token)
                 _assistantMessages.update {
                     it + TerminalChatMessage(
                         id = UUID.randomUUID().toString(),
@@ -3165,7 +3208,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } finally {
                 _state.update { it.copy(assistantCommandRunning = false) }
             }
+        }.also { job ->
+            job.invokeOnCompletion {
+                if (assistantCommandJob === job) assistantCommandJob = null
+                // v0.2.61：本条跑完再推进队列里的下一条；被取消（如用户清空对话）时不再往后发。
+                if (!job.isCancelled) startNextAutoCommand()
+            }
         }
+    }
+
+    /**
+     * 3 级权限：把一批新命令排进自动执行队列并启动（v0.2.61）。
+     *
+     * 为什么需要队列：终端是**串行**的，一批命令必须一条跑完再发下一条。
+     * 以前是 forEach 一口气全发——后一条在前一条还没跑完时就发出去了，
+     * 两条命令的输出会串在一起，模型据此判断就会出错。
+     */
+    private fun enqueueAutoRun(commands: List<PendingCommand>) {
+        if (_state.value.commandPermissionLevel < 3) return
+        if (!_state.value.aiStudio.consoleConnected) return
+        autoRunQueue = autoRunQueue + commands
+        startNextAutoCommand()
+    }
+
+    /**
+     * 取下一条待自动执行的命令并发出（v0.2.61）。
+     *
+     * 已有一条在跑时直接返回，保证串行；队列空了就停。
+     * 终端断开时放弃整批：命令发不出去，继续推进只会连串报错。
+     */
+    private fun startNextAutoCommand() {
+        if (_state.value.commandPermissionLevel < 3) return
+        if (assistantCommandJob?.isActive == true) return
+        val next = autoRunQueue.firstOrNull() ?: return
+        if (!_state.value.aiStudio.consoleConnected) {
+            autoRunQueue = emptyList()
+            return
+        }
+        autoRunQueue = autoRunQueue.drop(1)
+        executeAssistantCommand(next)
+    }
+
+    /**
+     * 发出队列里的下一条用户消息（v0.2.61）。
+     *
+     * 由本轮请求结束时调用（见 assistantJob 的 invokeOnCompletion）。没有它，
+     * v0.2.58 那句“稍后一起发送”就只是空话——用户排队的消息会永远发不出去。
+     */
+    private fun drainAssistantQueue() {
+        val next = _queuedAssistantPrompts.value.firstOrNull() ?: return
+        _queuedAssistantPrompts.update { it.drop(1) }
+        askAssistant(next)
     }
 
     /**
@@ -3177,27 +3270,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun awaitCommandResult(
         command: String,
         token: String,
-        baseline: Int,
     ): TerminalCommandResult {
         val deadline = System.currentTimeMillis() + ASSISTANT_COMMAND_TIMEOUT_MS
         while (System.currentTimeMillis() < deadline) {
             delay(400L)
-            val lines = _state.value.aiStudio.terminalLines
-            // 只取本条命令之后新增的行。终端缓冲是滚动的（保留最近 2000 行），
-            // baseline 可能已失效，用 coerceAtMost 兜底避免越界。
-            val fresh = lines.drop(baseline.coerceAtMost(lines.size))
-            val endIndex = fresh.indexOfFirst { TerminalCommandSafety.parseExitCode(it, token) != null }
-            if (endIndex >= 0) {
-                val exitCode = TerminalCommandSafety.parseExitCode(fresh[endIndex], token)
-                // 去掉回显里的 BEGIN/END 标记行，只留真正的输出。
-                val body = fresh.take(endIndex)
-                    .filterNot { it.contains(TerminalCommandSafety.beginMarker(token)) }
-                    .joinToString("\n")
+            // v0.2.61：切窗口的逻辑抽成 TerminalCommandSafety.sliceOutput —— 以前用
+            // 「发送前的行数」下标记起点，终端缓冲裁剪后下标偏移会导致永远找不到结束
+            // 标记（命令早跑完了还要白等满超时）。抽出来后这个回归有单测锁住。
+            val window = TerminalCommandSafety.sliceOutput(
+                lines = _state.value.aiStudio.terminalLines,
+                token = token,
+            )
+            if (window != null) {
                 return TerminalCommandResult(
                     command = command,
-                    output = body,
-                    exitCode = exitCode,
-                    success = exitCode == 0,
+                    output = window.output,
+                    exitCode = window.exitCode,
+                    success = window.exitCode == 0,
                 )
             }
         }
@@ -3238,7 +3327,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     commands = commands,
                 )
             }
-            _pendingCommands.value = commands.map { command ->
+            val newPending = commands.map { command ->
                 PendingCommand(
                     id = UUID.randomUUID().toString(),
                     command = command,
@@ -3247,12 +3336,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     install = TerminalCommandSafety.isInstall(command),
                 )
             }
+            // v0.2.61：与 askAssistant 同样的追加/取代语义。
+            _pendingCommands.value =
+                if (_state.value.commandPermissionLevel >= 3) _pendingCommands.value + newPending
+                else newPending
             // v0.2.59：与 askAssistant 一致，3 级（无需询问）时自动往下执行。
-            if (_state.value.commandPermissionLevel >= 3) {
-                _pendingCommands.value.forEach { executeAssistantCommand(it) }
-            }
+            // v0.2.61：同样逐条串行（见 enqueueAutoRun）。
+            enqueueAutoRun(newPending)
         }.also { job ->
-            job.invokeOnCompletion { if (assistantJob === job) assistantJob = null }
+            job.invokeOnCompletion {
+                if (assistantJob === job) assistantJob = null
+                // v0.2.61：本轮正常结束后把队列里的下一条发出去（否则排队消息永远发不出）。
+                // 被取消（如用户清空对话）时不发，否则刚清空又会冒出新消息。
+                if (!job.isCancelled) drainAssistantQueue()
+            }
         }
     }
 

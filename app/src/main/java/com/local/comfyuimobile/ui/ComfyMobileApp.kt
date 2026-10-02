@@ -683,11 +683,23 @@ private fun AiAssistantScreen(
                                     },
                                 )
                             }
-                            OutlinedButton(onClick = viewModel::dismissPendingCommands) { Text("跳过") }
+                            OutlinedButton(onClick = { viewModel.dismissPendingCommand(item.id) }) { Text("跳过") }
                         }
                     }
                 }
             }
+        }
+
+        // v0.2.61：排队提示。上一条还在跑时发的消息会排在这里，完成后自动发出——
+        // 让用户确信消息没丢（v0.2.58 只有一句“稍后发送”但没有真队列）。
+        val queuedPrompts by viewModel.queuedAssistantPrompts.collectAsStateWithLifecycle()
+        if (queuedPrompts.isNotEmpty()) {
+            Text(
+                "已排队 ${queuedPrompts.size} 条，会在当前回复结束后自动发出",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
         }
 
         Row(

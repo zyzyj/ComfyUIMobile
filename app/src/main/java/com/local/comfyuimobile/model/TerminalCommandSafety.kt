@@ -105,6 +105,31 @@ object TerminalCommandSafety {
     }
 
     /**
+     * 从终端缓冲里切出某条命令的输出（v0.2.61）。
+     *
+     * 为什么不能记"发送前的行数"当起点：终端缓冲只保留最近 TERMINAL_MAX_LINES 行，
+     * 命令执行期间随时可能裁剪，绝对下标会整体偏移——切出的窗口可能漏掉结束标记，
+     * 于是瞬间完成的命令也要白等满超时。token 标记是这条命令独有的，用它在**当前**
+     * 缓冲里现找，天然免疫裁剪。
+     *
+     * 起点取 BEGIN 标记的**最后一次**出现：回显那行（整条 wrap 命令原样）与 echo 打印
+     * 的标记行都含它，后者才是真正的输出起点。找不到标记（回显还没到）时返回 null，
+     * 由调用方决定要不要等下一轮。
+     */
+    fun sliceOutput(lines: List<String>, token: String): CommandOutputWindow? {
+        val beginIndex = lines.indexOfLast { it.contains(beginMarker(token)) }
+        if (beginIndex < 0) return null
+        val fresh = lines.drop(beginIndex + 1)
+        val endIndex = fresh.indexOfFirst { parseExitCode(it, token) != null }
+        if (endIndex < 0) return null
+        val exitCode = parseExitCode(fresh[endIndex], token) ?: return null
+        val body = fresh.take(endIndex)
+            .filterNot { it.contains(beginMarker(token)) || it.contains(endMarker(token)) }
+            .joinToString("\n")
+        return CommandOutputWindow(output = body, exitCode = exitCode)
+    }
+
+    /**
      * 从模型回复里抽出命令行（形如 ```sh 代码块 或 `$ xxx` 行）。
      *
      * 只认明确的代码块/提示符号，不猜普通句子——把说明文字当命令执行是事故来源。

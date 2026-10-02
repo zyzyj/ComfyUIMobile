@@ -176,6 +176,91 @@ class TerminalCommandSafetyTest {
         assertEquals(TerminalCommandSafety.MAX_COMMANDS, commands.size)
     }
 
+    // ===== 输出窗口切分（v0.2.61） =====
+
+    @Test
+    fun sliceOutputFindsBodyBetweenMarkers() {
+        val token = "tok"
+        val lines = listOf(
+            "user@host:~$ echo __AI_tok_BEGIN__ && { ls ~ ; } ; echo __AI_tok_END__ rc=\$?",
+            "__AI_tok_BEGIN__",
+            "ComfyUI",
+            "models",
+            "__AI_tok_END__ rc=0",
+        )
+        val window = TerminalCommandSafety.sliceOutput(lines, token)
+        assertTrue(window != null)
+        assertEquals("ComfyUI\nmodels", window!!.output)
+        assertEquals(0, window.exitCode)
+    }
+
+    @Test
+    fun sliceOutputIgnoresOlderOutputFromSameBuffer() {
+        // 终端缓冲里还留着上一次命令的输出与标记：绝不能误当本次结果。
+        val token = "new"
+        val lines = listOf(
+            "__AI_old_BEGIN__",
+            "旧的输出",
+            "__AI_old_END__ rc=0",
+            "user@host:~$ echo __AI_new_BEGIN__ && { ls ; } ; echo __AI_new_END__ rc=\$?",
+            "__AI_new_BEGIN__",
+            "新输出",
+            "__AI_new_END__ rc=0",
+        )
+        val window = TerminalCommandSafety.sliceOutput(lines, token)!!
+        assertEquals("新输出", window.output)
+        assertFalse("旧输出不能混进来", window.output.contains("旧的输出"))
+    }
+
+    @Test
+    fun sliceOutputSurvivesBufferTrim() {
+        // 关键回归（v0.2.61）：缓冲裁剪后，用「发送前第几行」当起点会整体偏移、
+        // 永远找不到结束标记（命令早跑完了还要白等满超时）。token 标记免疫裁剪。
+        val token = "tok"
+        val noise = (1..1_900).map { "填充行 $it" }
+        val lines = buildList {
+            add("很久以前的输出")
+            addAll(noise) // 这之间 BEGIN 之前的内容全被裁掉
+            add("user@host:~$ echo __AI_tok_BEGIN__ && { ls ; } ; echo __AI_tok_END__ rc=\$?")
+            add("__AI_tok_BEGIN__")
+            add("裁剪后的输出")
+            add("__AI_tok_END__ rc=0")
+        }
+        val window = TerminalCommandSafety.sliceOutput(lines, token)
+        assertTrue("缓冲裁剪后仍要能切出结果", window != null)
+        assertEquals("裁剪后的输出", window!!.output)
+    }
+
+    @Test
+    fun sliceOutputReturnsNullWhenOutputNotFinished() {
+        val token = "tok"
+        // 只有 BEGIN，END 还没到 → 不能当作完成
+        assertNull(
+            TerminalCommandSafety.sliceOutput(
+                listOf("__AI_tok_BEGIN__", "输出到一半"),
+                token,
+            ),
+        )
+        // 回显都还没到 → 也不能当作完成
+        assertNull(TerminalCommandSafety.sliceOutput(listOf("无关内容"), token))
+    }
+
+    @Test
+    fun sliceOutputStripsMarkersFromBody() {
+        val token = "tok"
+        // shell 回显可能把 BEGIN 行也复述一遍，输出里不该带上标记文本
+        val lines = listOf(
+            "__AI_tok_BEGIN__",
+            "__AI_tok_BEGIN__",
+            "真正的输出",
+            "__AI_tok_END__ rc=3",
+        )
+        val window = TerminalCommandSafety.sliceOutput(lines, token)!!
+        assertFalse(window.output.contains("__AI_tok"))
+        assertTrue(window.output.contains("真正的输出"))
+        assertEquals(3, window.exitCode)
+    }
+
     // ===== 命令结果回喂格式 =====
 
     @Test
