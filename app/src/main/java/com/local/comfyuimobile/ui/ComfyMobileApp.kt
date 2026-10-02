@@ -880,10 +880,6 @@ private fun PendingCommandCard(
 private fun AssistantMessageItem(message: TerminalChatMessage) {
     val isUser = message.role == TerminalMessageRole.USER
     val isNote = message.role == TerminalMessageRole.SYSTEM_NOTE
-    val blocks = remember(message.id, message.text) {
-        if (isUser || isNote) listOf(AssistantMarkup.Block(message.text, isCode = false))
-        else AssistantMarkup.parse(message.text)
-    }
 
     if (isNote) {
         // 系统旁注：居中、小字、无气泡。与两侧气泡形成清晰的第三类。
@@ -896,6 +892,19 @@ private fun AssistantMessageItem(message: TerminalChatMessage) {
             )
         }
         return
+    }
+
+    // 命令输出（v0.2.66）：**左对齐的等宽块**，不是居中的旁注。
+    // 以前它与系统旁注同类，于是 `ls` 的列对齐被居中打散、多行输出挤成一团。
+    // 终端输出的列对齐是它承载信息的方式，必须保留——所以横竖都铺满、不换行折行。
+    if (message.role == TerminalMessageRole.TERMINAL_OUTPUT) {
+        TerminalOutputBlock(message.text)
+        return
+    }
+
+    val blocks = remember(message.id, message.text) {
+        if (isUser) listOf(AssistantMarkup.Block(message.text, isCode = false))
+        else AssistantMarkup.parse(message.text)
     }
 
     Row(
@@ -940,6 +949,35 @@ private fun AssistantMessageItem(message: TerminalChatMessage) {
                 }
             }
         }
+    }
+}
+
+/**
+ * 命令输出块（v0.2.66）。
+ *
+ * 与代码块（AI 给的命令）区别开：命令是**待执行**的，输出是**已执行**的结果。
+ * 视觉上刻意不同——输出用浅底、左对齐、可横向滚动。
+ *
+ * 为什么要横向滚动：终端输出的列对齐（`ls -l`、`nvidia-smi`、表格）靠空格排版，
+ * 一旦折行就彻底乱掉、看不出哪列是哪列。宁可让用户横滑，也不要破坏对齐。
+ */
+@Composable
+private fun TerminalOutputBlock(text: String) {
+    val scrollState = rememberScrollState()
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        shape = RoundedCornerShape(10.dp),
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            softWrap = false,
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(scrollState)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+        )
     }
 }
 

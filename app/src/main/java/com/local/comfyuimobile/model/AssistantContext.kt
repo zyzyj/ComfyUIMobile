@@ -92,7 +92,13 @@ object AssistantContext {
         // 第一轮：从最旧的命令输出开始占位
         if (estimateTokens(joined()) > budgetTokens) {
             for (i in history.indices) {
-                if (history[i].role != TerminalMessageRole.SYSTEM_NOTE) continue
+                // 命令输出与系统旁注都是"可牺牲"的（信息密度低、越旧越可能过时），
+                // 但命令输出通常长得多，先动它。
+                if (history[i].role != TerminalMessageRole.TERMINAL_OUTPUT &&
+                    history[i].role != TerminalMessageRole.SYSTEM_NOTE
+                ) {
+                    continue
+                }
                 lines[i] = OMITTED_OUTPUT
                 omittedOutputs++
                 if (estimateTokens(joined()) <= budgetTokens) break
@@ -125,6 +131,7 @@ object AssistantContext {
             TerminalMessageRole.USER -> "User"
             TerminalMessageRole.ASSISTANT -> "You"
             TerminalMessageRole.SYSTEM_NOTE -> "System"
+            TerminalMessageRole.TERMINAL_OUTPUT -> "System"
         }
         return "$speaker: ${text.take(MAX_LINE_CHARS)}"
     }
