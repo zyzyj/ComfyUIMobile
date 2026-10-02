@@ -30,6 +30,58 @@ class WorkflowSnapshotStoreTest {
         assertNull(kotlinx.coroutines.runBlocking { s.read("https://c.example", "workflows/x.json") })
     }
 
+    // ===== v0.2.67：未连接时删除要先能定位到 @local 域 =====
+    //
+    // 真机反馈"没连上 comfyui 前没办法删除工作流"。根因是删除路径取了服务器域
+    // （未连接时为空）就直接 return；而导入在未连接时写的是 @local 域。
+    // 下面两条锁住这个映射关系：作用域为空 → @local；两个域各自独立可删。
+
+    @Test fun blankScopeMapsToLocalScope() {
+        // 与 MainViewModel.snapshotScopeFor 同一规则：空地址用统一的本机域
+        fun scopeFor(serverUrl: String?) = serverUrl.orEmpty().ifBlank { WorkflowSnapshotStore.LOCAL_SCOPE }
+
+        assertEquals(WorkflowSnapshotStore.LOCAL_SCOPE, scopeFor(null))
+        assertEquals(WorkflowSnapshotStore.LOCAL_SCOPE, scopeFor(""))
+        assertEquals("https://a.example", scopeFor("https://a.example"))
+    }
+
+    @Test fun removingLocalScopeLeavesServerScopeIntact() {
+        // 删除要**分别**作用于两个域：只删 @local 不能碰服务器域缓存，
+        // 反之亦然——否则未连接删一次会把连过服务器时的缓存也抹掉。
+        val s = store()
+        kotlinx.coroutines.runBlocking {
+            s.write(WorkflowSnapshotStore.LOCAL_SCOPE, "workflows/x.json", "local-copy")
+            s.write("https://a.example", "workflows/x.json", "server-copy")
+
+            s.remove(WorkflowSnapshotStore.LOCAL_SCOPE, "workflows/x.json")
+
+            assertNull(s.read(WorkflowSnapshotStore.LOCAL_SCOPE, "workflows/x.json"))
+            assertEquals("server-copy", s.read("https://a.example", "workflows/x.json"))
+        }
+    }
+
+    @Test fun removingBothScopesClearsEveryCopy() {
+        // MainViewModel 删除时会遍历 [服务器域, @local] 两个作用域——这样
+        // "连过服务器时缓存过、之后未连接又读到" 的工作流也能被清干净。
+        val s = store()
+        kotlinx.coroutines.runBlocking {
+            s.write(WorkflowSnapshotStore.LOCAL_SCOPE, "workflows/x.json", "local-copy")
+            s.write("https://a.example", "workflows/x.json", "server-copy")
+
+            listOf("https://a.example", WorkflowSnapshotStore.LOCAL_SCOPE).forEach { scope ->
+                s.remove(scope, "workflows/x.json")
+            }
+
+            assertNull(s.read(WorkflowSnapshotStore.LOCAL_SCOPE, "workflows/x.json"))
+            assertNull(s.read("https://a.example", "workflows/x.json"))
+            assertTrue(
+                "两个域都清空后列表里不该再出现它",
+                s.list(WorkflowSnapshotStore.LOCAL_SCOPE).none { it.path == "workflows/x.json" } &&
+                    s.list("https://a.example").none { it.path == "workflows/x.json" },
+            )
+        }
+    }
+
     @Test fun writeIsAtomicAndOverwrites() {
         val s = store()
         kotlinx.coroutines.runBlocking {

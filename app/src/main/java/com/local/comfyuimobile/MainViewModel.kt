@@ -2788,7 +2788,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runOperation("快捷工作流加载失败") {
                 _state.update { it.copy(loading = true, error = null) }
-                val serverUrl = _state.value.activeServer?.baseUrl ?: error("尚未连接 ComfyUI 服务器")
+                // v0.2.67：未连接时不再直接失败（真机反馈：连不上服务器就用不了快捷页）。
+                //
+                // 本 App 从 v0.2.43 起就有"本机快照"体系——导入过的工作流正文存在手机里，
+                // 未连接也能读（导入 / 列表 / 读正文都做了 @local 兜底）。但这条路径
+                // 一上来就 `?: error(...)`，把整个快捷页（含批量对比入口）挡在门外：
+                // 日志里的"尚未连接 ComfyUI 服务器"就是这么来的。
+                //
+                // 传空串给 readWorkflowOrGuide → 它会走 readWorkflowWithFallback，
+                // 命中本机快照就直接返回，不命中才给出"回工作流页导入一次"的指引。
+                val serverUrl = _state.value.activeServer?.baseUrl.orEmpty()
                 val raw = readWorkflowOrGuide(serverUrl, entry)
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(rawJson = raw, workflowPath = entry.path)
@@ -4810,32 +4819,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 只有在“服务器本来支持云端存储、但这次删除真失败”时才报错。
      */
     fun deleteWorkflowByPath(path: String, name: String) {
-        val serverUrl = _state.value.activeServer?.baseUrl ?: return
+        // v0.2.67：未连接也能删（真机反馈：「没有连上 comfyui 前没有办法删除工作流」）。
+        //
+        // 以前第一行是 `?: return`——没连服务器就直接静默什么都不做，对话框关掉、
+        // 工作流还在，用户以为点坏了。但导入等路径从 v0.2.43 起就支持本机快照，
+        // 删除理应同样能在未连接时清掉本机那份。
+        //
+        // 未连接时作用域取 `@local`（与导入写入时一致）；同时把服务器域也清一遍，
+        // 因为一个工作流可能在「连过服务器」时缓存过、之后又在未连接时被读到。
+        val serverUrl = _state.value.activeServer?.baseUrl.orEmpty()
         viewModelScope.launch {
             runOperation("删除工作流失败") {
                 flushCurrentDraft()
-                WorkflowContentCache.remove(serverUrl, path)
-                runCatching { workflowSnapshots.remove(serverUrl, path) }
-                    .onFailure { AppLogger.error("删除本地工作流快照失败：$path", it) }
-                runCatching { workflowDrafts.delete(serverUrl, path) }
-                    .onFailure { AppLogger.error("删除本地工作流草稿失败：$path", it) }
-                preferences.removeRecentWorkflow(path)
-                val cloudDeleting = bridge?.serverWorkflowStoreAvailable == true
-                val cloudError = runCatching { client.deleteWorkflow(path) }.exceptionOrNull()
-                    ?.also { if (it is CancellationException) throw it }
-                if (cloudError != null && cloudDeleting && !isUserdataUnavailable(cloudError)) {
-                    // 服务器本支持云端存储，这次删除却真失败了——不能假装成功。
-                    throw cloudError
+                val scopes = listOf(snapshotScopeFor(serverUrl), WorkflowSnapshotStore.LOCAL_SCOPE).distinct()
+                for (scope in scopes) {
+                    WorkflowContentCache.remove(scope, path)
+                    runCatching { workflowSnapshots.remove(scope, path) }
+                        .onFailure { AppLogger.error("删除本地工作流快照失败：$path（域=$scope）", it) }
+                    runCatching { workflowDrafts.delete(scope, path) }
+                        .onFailure { AppLogger.error("删除本地工作流草稿失败：$path（域=$scope）", it) }
                 }
-                if (cloudError != null) {
-                    AppLogger.warn("云端删除不可用，已只清理本机工作流：$path", cloudError)
+                preferences.removeRecentWorkflow(path)
+                // 未连接时不去碰服务器：没有地址，且本来也读不到。
+                if (serverUrl.isNotBlank()) {
+                    val cloudDeleting = bridge?.serverWorkflowStoreAvailable == true
+                    val cloudError = runCatching { client.deleteWorkflow(path) }.exceptionOrNull()
+                        ?.also { if (it is CancellationException) throw it }
+                    if (cloudError != null && cloudDeleting && !isUserdataUnavailable(cloudError)) {
+                        // 服务器本支持云端存储，这次删除却真失败了——不能假装成功。
+                        throw cloudError
+                    }
+                    if (cloudError != null) {
+                        AppLogger.warn("云端删除不可用，已只清理本机工作流：$path", cloudError)
+                    }
                 }
                 _state.update {
                     it.copy(
                         previewWorkflow = it.previewWorkflow?.takeUnless { wf -> wf.entry.path == path },
                         selectedWorkflow = it.selectedWorkflow?.takeUnless { sel -> sel.entry.path == path },
                         fields = if (it.selectedWorkflow?.entry?.path == path) emptyList() else it.fields,
-                        notice = "已删除 $name",
+                        notice = if (serverUrl.isBlank()) "已从本机删除 $name" else "已删除 $name",
                     )
                 }
                 refreshWorkflowsInternal()
