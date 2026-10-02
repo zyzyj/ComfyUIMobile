@@ -286,6 +286,8 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.launch
 import kotlin.random.Random
+import androidx.compose.foundation.layout.ColumnScope
+import com.local.comfyuimobile.model.AssistantMarkup
 
 private const val IME_RELOCATION_SUPPRESSION_MILLIS = 700L
 
@@ -310,7 +312,7 @@ private enum class MainPage(val label: String, val icon: ImageVector, val inBott
     // 以下不进底栏，从「更多」或页面内进入。
     CONSOLE("控制台", Icons.Outlined.Computer, inBottomBar = false),
     TASKS("任务", Icons.AutoMirrored.Outlined.List, inBottomBar = false),
-    AI_ASSISTANT("AI 助手", Icons.Outlined.Bolt, inBottomBar = false),
+    AI_ASSISTANT("智能助手", Icons.Outlined.Bolt, inBottomBar = false),
     PARAMETERS("参数", Icons.Outlined.Tune, inBottomBar = false),
     // v0.2.36：空间管理页。从设置进入。
     STORAGE("空间管理", Icons.Outlined.Memory, inBottomBar = false),
@@ -425,7 +427,7 @@ fun ComfyMobileApp(viewModel: MainViewModel, bridge: ComfyBridge) {
 @Composable
 private fun MoreScreen(onOpen: (MainPage) -> Unit) {
     val entries = listOf(
-        Triple(MainPage.AI_ASSISTANT, "让 AI 帮你管服务器：下载插件、找模型、看日志", "AI 助手"),
+        Triple(MainPage.AI_ASSISTANT, "帮你管服务器：下载插件、找模型、看日志", "智能助手"),
         Triple(MainPage.CONSOLE, "云端终端：执行命令、启动 ComfyUI", "控制台"),
         Triple(MainPage.TASKS, "服务器任务队列与历史", "任务"),
     )
@@ -460,139 +462,44 @@ private fun MoreScreen(onOpen: (MainPage) -> Unit) {
     }
 }
 
-/**
- * v0.2.54：AI 助手板块。
- *
- * 两件事：① 帮你写提示词（直接写入参数页/快捷页的字段）；② 管服务器——你描述需求，
- * AI 给出命令，**你确认后**才在云端终端执行，输出自动回喂给 AI 接着分析。
- *
- * 安全边界：AI 永远不直接执行命令。危险命令（删除/覆盖/卸载）在界面上单独标红，
- * 需要再点一次确认。详见 TerminalCommandSafety 的注释。
- */
-/**
- * v0.2.59：AI 助手页。
- *
- * 本轮改动：
- *  - 顶栏加「模型配置」入口（以前要去设置里找，两步跳转）
- *  - 加命令权限等级切换（1/2/3），取代“每条都要手点”
- *  - 修执行按钮不可点：以前 enabled 只看终端连接，未连时按钮置灰但界面不说为什么
- */
 @Composable
 private fun AiAssistantScreen(
     state: AppUiState,
     viewModel: MainViewModel,
-    onOpenModelConfig: () -> Unit,
+    contentPadding: PaddingValues = PaddingValues(),
 ) {
     val messages by viewModel.assistantMessages.collectAsStateWithLifecycle()
     val pending by viewModel.pendingCommands.collectAsStateWithLifecycle()
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
-    val configured = state.llmConfig.isConfigured()
     val terminalConnected = state.aiStudio.consoleConnected
     val level = state.commandPermissionLevel
     val running = state.assistantCommandRunning
     val thinking = state.assistantThinking
     val failedPrompt by viewModel.assistantFailedPrompt.collectAsStateWithLifecycle()
+    val queuedPrompts by viewModel.queuedAssistantPrompts.collectAsStateWithLifecycle()
     // 新消息到达时滚到底部，否则用户看不到最新回复。
+    // v0.2.63：待确认命令接在列表末尾，滚动目标要把它们算进去，
+    // 否则模型刚给出命令时界面停在上一行、用户以为没出命令。
     LaunchedEffect(messages.size, pending.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+        if (pending.isNotEmpty()) listState.animateScrollToItem(messages.size + pending.size)
     }
 
-    Column(Modifier.fillMaxSize()) {
-        // —— 头部：身份 + 配置入口 ——
-        Row(
-            Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Outlined.Bolt, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.width(8.dp))
-            Column(Modifier.weight(1f)) {
-                Text("AI 助手", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    when {
-                        !configured -> "未配置大模型·点右侧去配置"
-                        terminalConnected -> "终端已连接"
-                        else -> "终端未连接（不能执行命令）"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (configured && terminalConnected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (messages.isNotEmpty()) {
-                IconButton(onClick = viewModel::clearAssistantConversation) {
-                    Icon(Icons.Outlined.Delete, "清空对话")
-                }
-            }
-            // v0.2.62：有任何进行中的动作就显示「停止」（对齐 Claude Code 的 Esc 中断）。
-            // 以前发了问题只能干等，长请求（大模型偶发要几十秒）期间用户不知道能不能取消。
-            if (thinking || running) {
-                TextButton(onClick = viewModel::stopAssistant) {
-                    Icon(Icons.Outlined.Close, null, Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("停止")
-                }
-            }
-            TextButton(onClick = onOpenModelConfig) {
-                Icon(Icons.Outlined.Settings, null, Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("模型配置")
-            }
-        }
-
-        // —— 权限等级 ——
-        // 放在头部而非配置弹窗里：这是每次使用都可能想调一下的开关，
-        // 埋进弹窗反而麻烦。
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Text("命令权限", style = MaterialTheme.typography.labelMedium)
-            Spacer(Modifier.width(2.dp))
-            listOf(1, 2, 3).forEach { value ->
-                val selected = level == value
-                val label = TerminalCommandSafety.levelLabel(value)
-                val padding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 0.dp)
-                if (selected) {
-                    Button(
-                        onClick = { viewModel.setCommandPermissionLevel(value) },
-                        contentPadding = padding,
-                        modifier = Modifier.height(30.dp),
-                    ) { Text(label, style = MaterialTheme.typography.labelSmall) }
-                } else {
-                    OutlinedButton(
-                        onClick = { viewModel.setCommandPermissionLevel(value) },
-                        contentPadding = padding,
-                        modifier = Modifier.height(30.dp),
-                    ) { Text(label, style = MaterialTheme.typography.labelSmall) }
-                }
-            }
-        }
-        Text(
-            TerminalCommandSafety.levelDescription(level),
-            style = MaterialTheme.typography.labelSmall,
-            color = if (level >= 3) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 12.dp),
+    // v0.2.63：整页从「三层堆叠的表头 + 列表 + 卡片 + 输入框」精简为
+    // 「一句话状态行 + 可滚动消息 + 输入框」。以前页内又有标题、又有权限说明、
+    // 又有命令卡片区，中间的可读区域被压得很扁。
+    Column(Modifier.fillMaxSize().padding(contentPadding)) {
+        // 状态行：一行说完「能不能用 + 权限 + 在忙什么」。
+        // 运行/思考时进度与停止按钮都在这一行，不再各占一行。
+        AssistantStatusRow(
+            state = state,
+            level = level,
+            thinking = thinking,
+            running = running,
+            onStop = viewModel::stopAssistant,
         )
 
-        // v0.2.62：进行中的状态条。以前没有任何反馈，用户以为卡死了。
-        if (thinking || running) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (running) "正在执行命令，等待终端输出…" else "正在等大模型回复…",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-        }
-
-        // v0.2.62：上一条提问失败了，给一个「重试」——不用把话重新打一遍。
         if (failedPrompt != null && !thinking && !running) {
             Surface(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
@@ -600,7 +507,7 @@ private fun AiAssistantScreen(
                 shape = RoundedCornerShape(12.dp),
             ) {
                 Row(
-                    Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    Modifier.padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
@@ -613,145 +520,57 @@ private fun AiAssistantScreen(
             }
         }
 
-        if (messages.isEmpty()) {
-            Column(
-                Modifier.fillMaxWidth().weight(1f).padding(24.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Icon(
-                    Icons.Outlined.Bolt,
-                    null,
-                    Modifier.size(36.dp),
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
-                )
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "描述你想干什么，AI 会先侦察环境、再给命令。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "内置流程：侦察 → 诊断 → 计划 → 执行 → 验证\n" +
-                        "（会先看 GPU/磁盘/服务状态，不会一上来就装东西）",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "例：帮我看看 ComfyUI 装了哪些插件 / 下载 ComfyUI-Manager / 磁盘还剩多少",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
-            }
+        // 注意两个条件：只按 messages 判断的话，一旦出现「有命令待确认但没有对话消息」
+        // （清空后残留、或外部注入），命令卡片就永远渲染不出来。
+        if (messages.isEmpty() && pending.isEmpty()) {
+            AssistantEmptyState(viewModel)
         } else {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxWidth().weight(1f),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(messages, key = { it.id }) { message ->
                     AssistantMessageCard(message)
                 }
-            }
-        }
-
-        // 待确认命令：模型刚给出的建议。
-        // 是否需要确认由 TerminalCommandSafety.requiresConfirmation 统一判定
-        // （1 级全都问 / 2 级只问危险 / 3 级不问；3 级时命令已自动执行）。
-        pending.forEach { item ->
-            var confirming by remember(item.id) { mutableStateOf(false) }
-            val confirmRequired = TerminalCommandSafety.requiresConfirmation(item.command, level)
-            Surface(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                color = if (item.dangerous) MaterialTheme.colorScheme.errorContainer
-                else MaterialTheme.colorScheme.secondaryContainer,
-                shape = RoundedCornerShape(12.dp),
-            ) {
-                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            if (item.dangerous) Icons.Outlined.Warning else Icons.Outlined.PlayArrow,
-                            null,
-                            Modifier.size(16.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
+                // v0.2.63：待确认命令**接在对话流末尾**（以前是脱离对话的独立卡片区，
+                // 悬在输入框上方、把可视区域又切掉一块）。放进列表后它跟着消息一起滚动，
+                // 上下文关系也更清楚：命令就是那条回复的一部分。
+                if (pending.isNotEmpty()) {
+                    item(key = "pending-header") {
                         Text(
-                            when {
-                                item.dangerous -> "危险命令"
-                                item.install -> "安装/下载"
-                                item.readOnly -> "只读命令"
-                                else -> "命令"
-                            },
-                            style = MaterialTheme.typography.labelMedium,
+                            "AI 建议的命令",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp, bottom = 2.dp),
                         )
-                        Spacer(Modifier.weight(1f))
-                        // 未连接终端时把原因写在卡片上，而不是只把按钮置灰
-                        if (!terminalConnected) {
-                            Text(
-                                "终端未连接",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.error,
-                            )
-                        }
                     }
-                    Text(
-                        item.command,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (confirming) {
-                            Button(
-                                onClick = {
-                                    confirming = false
-                                    viewModel.executeAssistantCommand(item)
-                                },
-                                enabled = terminalConnected && !running,
-                            ) { Text("我确认，执行") }
-                            OutlinedButton(onClick = { confirming = false }) { Text("取消") }
-                        } else {
-                            Button(
-                                onClick = {
-                                    // 需要确认时多点一次；否则直接执行。
-                                    if (confirmRequired) confirming = true
-                                    else viewModel.executeAssistantCommand(item)
-                                },
-                                enabled = terminalConnected && !running,
-                            ) {
-                                Text(
-                                    when {
-                                        !terminalConnected -> "执行"
-                                        running -> "执行中…"
-                                        confirmRequired -> "执行（需确认）"
-                                        else -> "执行"
-                                    },
-                                )
-                            }
-                            OutlinedButton(onClick = { viewModel.dismissPendingCommand(item.id) }) { Text("跳过") }
-                        }
+                    items(pending, key = { it.id }) { item ->
+                        PendingCommandCard(
+                            item = item,
+                            level = level,
+                            terminalConnected = terminalConnected,
+                            running = running,
+                            viewModel = viewModel,
+                        )
                     }
                 }
             }
         }
 
-        // v0.2.61：排队提示。上一条还在跑时发的消息会排在这里，完成后自动发出——
-        // 让用户确信消息没丢（v0.2.58 只有一句“稍后发送”但没有真队列）。
-        val queuedPrompts by viewModel.queuedAssistantPrompts.collectAsStateWithLifecycle()
         if (queuedPrompts.isNotEmpty()) {
             Text(
-                "已排队 ${queuedPrompts.size} 条，会在当前回复结束后自动发出",
+                "已排队 ${queuedPrompts.size} 条",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp),
+                modifier = Modifier.padding(horizontal = 14.dp),
             )
         }
 
+        // 输入行：贴底，不额外加卡片背景，减少视觉噪音。
         Row(
-            Modifier.fillMaxWidth().padding(12.dp),
+            Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 10.dp),
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -761,6 +580,7 @@ private fun AiAssistantScreen(
                 modifier = Modifier.weight(1f),
                 minLines = 1,
                 maxLines = 4,
+                shape = RoundedCornerShape(22.dp),
                 placeholder = { Text("想做什么？") },
             )
             Button(
@@ -770,49 +590,251 @@ private fun AiAssistantScreen(
                     viewModel.askAssistant(text)
                 },
                 enabled = input.isNotBlank(),
+                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
             ) { Text("发送") }
         }
     }
 }
 
+/**
+ * 一行状态：模型与终端的可用状态 + 权限等级 + 进行中的动作（v0.2.63）。
+ *
+ * 以前这些分散在四个地方（页内大标题、副标题一行、权限说明一行、进度一行），
+ * 加起来占掉屏幕上部近 1/3。压成一行后，主页面留给真正的对话内容。
+ */
 @Composable
-private fun AssistantMessageCard(message: TerminalChatMessage) {
-    val isUser = message.role == TerminalMessageRole.USER
-    val isNote = message.role == TerminalMessageRole.SYSTEM_NOTE
+private fun AssistantStatusRow(
+    state: AppUiState,
+    level: Int,
+    thinking: Boolean,
+    running: Boolean,
+    onStop: () -> Unit,
+) {
+    val configured = state.llmConfig.isConfigured()
+    val terminalConnected = state.aiStudio.consoleConnected
+    Row(
+        Modifier.fillMaxWidth().padding(start = 14.dp, end = 6.dp, top = 2.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(8.dp).clip(CircleShape).background(
+                when {
+                    !configured -> MaterialTheme.colorScheme.outline
+                    terminalConnected -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.outline
+                },
+            ),
+        )
+        Spacer(Modifier.width(8.dp))
+        val status = when {
+            !configured -> "未配置大模型"
+            thinking -> "思考中…"
+            running -> "执行命令中…"
+            terminalConnected -> "终端已连接 · ${TerminalCommandSafety.levelLabel(level)}"
+            else -> "终端未连接，不能执行命令"
+        }
+        Text(
+            status,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (configured && terminalConnected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        if (thinking || running) {
+            CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+            TextButton(onClick = onStop) { Text("停止") }
+        }
+    }
+}
+
+/** 空对话时的引导：给例子，不说流程（v0.2.63）。 */
+@Composable
+private fun ColumnScope.AssistantEmptyState(viewModel: MainViewModel) {
+    Column(
+        Modifier.fillMaxWidth().weight(1f).padding(horizontal = 24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            Icons.Outlined.Bolt,
+            null,
+            Modifier.size(32.dp),
+            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "有什么要处理的？",
+            style = MaterialTheme.typography.titleMedium,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "它会先自己看一眼环境，再给命令；执行前都经过你确认。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(14.dp))
+        // 示例直接点一下就能发出去，比干看一行提示有用。
+        listOf(
+            "看看 GPU 和磁盘还够不够用",
+            "下载 ComfyUI-Manager",
+            "看看装了哪些插件",
+        ).forEach { example ->
+            OutlinedButton(
+                onClick = { viewModel.askAssistant(example) },
+                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                shape = RoundedCornerShape(12.dp),
+            ) { Text(example, style = MaterialTheme.typography.bodySmall) }
+        }
+    }
+}
+
+/** 一条待确认命令（v0.2.63 从页内独立卡片区抽出来）。 */
+@Composable
+private fun PendingCommandCard(
+    item: MainViewModel.PendingCommand,
+    level: Int,
+    terminalConnected: Boolean,
+    running: Boolean,
+    viewModel: MainViewModel,
+) {
+    var confirming by remember(item.id) { mutableStateOf(false) }
+    val confirmRequired = TerminalCommandSafety.requiresConfirmation(item.command, level)
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = when {
-            isUser -> MaterialTheme.colorScheme.primaryContainer
-            isNote -> MaterialTheme.colorScheme.surfaceVariant
-            else -> MaterialTheme.colorScheme.surface
-        },
+        color = if (item.dangerous) MaterialTheme.colorScheme.errorContainer
+        else MaterialTheme.colorScheme.secondaryContainer,
         shape = RoundedCornerShape(12.dp),
-        tonalElevation = if (isUser || isNote) 0.dp else 2.dp,
     ) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                when {
-                    isUser -> "你"
-                    isNote -> "系统"
-                    else -> "AI"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            // 命令块用等宽字体，普通文字用正文字体，与终端保持一致的视觉语言。
-            if (isNote) {
-                Text(
-                    message.text,
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    if (item.dangerous) Icons.Outlined.Warning else Icons.Outlined.PlayArrow,
+                    null,
+                    Modifier.size(16.dp),
                 )
-            } else {
-                Text(message.text, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    when {
+                        item.dangerous -> "危险命令"
+                        item.install -> "安装/下载"
+                        item.readOnly -> "只读命令"
+                        else -> "命令"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                Spacer(Modifier.weight(1f))
+                if (!terminalConnected) {
+                    Text(
+                        "终端未连接",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+            Text(
+                item.command,
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (confirming) {
+                    Button(
+                        onClick = {
+                            confirming = false
+                            viewModel.executeAssistantCommand(item)
+                        },
+                        enabled = terminalConnected && !running,
+                    ) { Text("我确认，执行") }
+                    OutlinedButton(onClick = { confirming = false }) { Text("取消") }
+                } else {
+                    Button(
+                        onClick = {
+                            // 需要确认时多点一次；否则直接执行。
+                            if (confirmRequired) confirming = true
+                            else viewModel.executeAssistantCommand(item)
+                        },
+                        enabled = terminalConnected && !running,
+                    ) {
+                        Text(if (confirmRequired) "执行（需确认）" else "执行")
+                    }
+                    OutlinedButton(onClick = { viewModel.dismissPendingCommand(item.id) }) { Text("跳过") }
+                }
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * 一条对话消息（v0.2.63 改为按块渲染）。
+ *
+ * 以前整段文字直接塞进一个 Text，模型写的 ```sh 围栏与 `**加粗**` 都原样露在界面上
+ * （真机截图可见）。现在代码块单独用等宽+底色渲染，正文去掉强调标记。
+ */
+@Composable
+private fun AssistantMessageCard(message: TerminalChatMessage) {
+    val isUser = message.role == TerminalMessageRole.USER
+    val isNote = message.role == TerminalMessageRole.SYSTEM_NOTE
+    // 用户与系统提示不做 markdown 处理：那是我们自己写的话，保证原样。
+    val blocks = remember(message.id, message.text) {
+        if (isUser || isNote) listOf(AssistantMarkup.Block(message.text, isCode = false))
+        else AssistantMarkup.parse(message.text)
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = when {
+            isUser -> MaterialTheme.colorScheme.primaryContainer
+            isNote -> MaterialTheme.colorScheme.surfaceVariant
+            else -> Color.Transparent
+        },
+        shape = RoundedCornerShape(14.dp),
+        tonalElevation = 0.dp,
+    ) {
+        Column(
+            Modifier.padding(if (isUser || isNote) 10.dp else 2.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (isNote) {
+                Text(
+                    "系统",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            blocks.forEachIndexed { index, block ->
+                if (block.isCode) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = if (isSystemInDarkTheme()) {
+                            Color(0xFF0C1418)
+                        } else {
+                            Color(0xFF10181C)
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                    ) {
+                        Text(
+                            block.text,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                                color = Color(0xFFD8E6E6),
+                            ),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                        )
+                    }
+                } else {
+                    Text(
+                        block.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        // AI 的第一块（通常是开场句）稍微加重，便于扫读
+                        fontWeight = if (!isUser && !isNote && index == 0) FontWeight.Medium else null,
+                    )
+                }
+            }
+        }
+    }
+}
+
+
 @Composable
 private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: SnackbarHostState) {
     // v0.2.53：默认首页改为「账号」。
@@ -897,6 +919,7 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
             onNavigate = { navigateTo(it) },
             onOpenSettings = { settings = true },
             onPushPage = { pushPage(it) },
+            onBack = { goBack() },
             resultSource = resultSource,
             onResultSourceChange = { resultSource = it; resultAlbumId = null },
             resultLayout = resultLayout,
@@ -922,6 +945,8 @@ private fun ConnectedScaffold(
     onNavigate: (MainPage) -> Unit,
     onOpenSettings: () -> Unit,
     onPushPage: (MainPage) -> Unit,
+    /** v0.2.63：子页面顶栏的返回箭头走它（与系统返回键同一条路）。 */
+    onBack: () -> Unit,
     resultSource: ResultSource,
     onResultSourceChange: (ResultSource) -> Unit,
     resultLayout: ResultLayout,
@@ -939,11 +964,25 @@ private fun ConnectedScaffold(
             // 双层结构。
             TopAppBar(
                 title = {
-                    when (page) {
-                        MainPage.ACCOUNT -> Text("账号", style = MaterialTheme.typography.titleMedium)
-                        MainPage.CONSOLE -> Text("控制台", style = MaterialTheme.typography.titleMedium)
-                        MainPage.STORAGE -> Text("空间管理", style = MaterialTheme.typography.titleMedium)
-                        else -> Column {
+                    // v0.2.63：子页面顶栏直接显示**页名**，并由左侧返回箭头退出。
+                    //
+                    // 以前子页面（控制台/任务/智能助手/参数/空间管理）顶栏仍显示
+                    // 「服务器状态」，页面里再自己写一个大标题——两层表头上下叠着，
+                    // 屏幕上部被吃掉近 1/3，也是用户说"太拥挤"的直接来源。
+                    // 现在子页面只有一层：页名 + 返回。
+                    val subPageTitle: String? = when (page) {
+                        MainPage.ACCOUNT -> null
+                        MainPage.CONSOLE -> "控制台"
+                        MainPage.STORAGE -> "空间管理"
+                        MainPage.AI_ASSISTANT -> "智能助手"
+                        MainPage.TASKS -> "任务"
+                        MainPage.PARAMETERS -> "参数"
+                        else -> null
+                    }
+                    if (subPageTitle != null) {
+                        Text(subPageTitle, style = MaterialTheme.typography.titleMedium)
+                    } else {
+                        Column {
                             Text(state.activeServer?.name.orEmpty(), style = MaterialTheme.typography.titleMedium)
                             Text(
                                 if (state.activeJobId != null && state.generationProgress != 1f &&
@@ -961,16 +1000,79 @@ private fun ConnectedScaffold(
                     }
                 },
                 navigationIcon = {
-                    if (page != MainPage.ACCOUNT && page != MainPage.CONSOLE) {
+                    val subPageTitle: String? = when (page) {
+                        MainPage.CONSOLE -> "控制台"
+                        MainPage.STORAGE -> "空间管理"
+                        MainPage.AI_ASSISTANT -> "智能助手"
+                        MainPage.TASKS -> "任务"
+                        MainPage.PARAMETERS -> "参数"
+                        else -> null
+                    }
+                    if (subPageTitle != null) {
+                        // v0.2.63：子页面用返回箭头退出（父页面由 ConnectedApp 的返回栈决定）。
+                        // 用项目已验证可用的 ChevronLeft，不冒险引新图标。
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.Outlined.ChevronLeft, "返回")
+                        }
+                    } else if (page != MainPage.ACCOUNT) {
                         Icon(Icons.Outlined.Wifi, null, Modifier.padding(start = 12.dp), tint = MaterialTheme.colorScheme.secondary)
                     }
                 },
                 actions = {
-                    // ComfyUI 服务入口：圆形电脑图标（在「设置」左边）。点击向下展开
-                    // 「刷新 / 连接 / 断开」——它把原来顶栏那两个旧图标（切换服务器、
-                    // 重新连接）的职责一并接管了，所以下面不再单独放它们。
-                    ComfyServiceChip(state, viewModel, onSwitchServer = { onNavigate(MainPage.ACCOUNT) })
-                    IconButton(onClick = onOpenSettings) { Icon(Icons.Outlined.Settings, "设置") }
+                    if (page == MainPage.AI_ASSISTANT) {
+                        // v0.2.63：智能助手页的操作放顶栏（以前是页内独立一行，
+                        // 与权限、进度各占一行叠在消息上方）。
+                        //
+                        // 命令权限以前是常驻的一行（标题+三个按钮+一行说明，共占三行），
+                        // 而它是个"设一次就不常改"的开关。收进下拉菜单：一次点击可达，
+                        // 不使用时完全不占高度。
+                        var levelMenu by remember { mutableStateOf(false) }
+                        Box {
+                            TextButton(onClick = { levelMenu = true }) {
+                                Text(
+                                    TerminalCommandSafety.levelLabel(state.commandPermissionLevel),
+                                    style = MaterialTheme.typography.labelLarge,
+                                )
+                                Icon(Icons.Outlined.ArrowDropDown, null, Modifier.size(16.dp))
+                            }
+                            DropdownMenu(expanded = levelMenu, onDismissRequest = { levelMenu = false }) {
+                                listOf(1, 2, 3).forEach { value ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text(TerminalCommandSafety.levelLabel(value))
+                                                Text(
+                                                    TerminalCommandSafety.levelDescription(value),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                        },
+                                        onClick = {
+                                            levelMenu = false
+                                            viewModel.setCommandPermissionLevel(value)
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        // 有没有对话消息要问 ViewModel——它不在 AppUiState 里。
+                        val hasMessages by viewModel.assistantMessages.collectAsStateWithLifecycle()
+                        if (hasMessages.isNotEmpty()) {
+                            IconButton(onClick = viewModel::clearAssistantConversation) {
+                                Icon(Icons.Outlined.Delete, "清空对话")
+                            }
+                        }
+                        IconButton(onClick = { showModelConfig = true }) {
+                            Icon(Icons.Outlined.Settings, "模型配置")
+                        }
+                    } else {
+                        // ComfyUI 服务入口：圆形电脑图标（在「设置」左边）。点击向下展开
+                        // 「刷新 / 连接 / 断开」——它把原来顶栏那两个旧图标（切换服务器、
+                        // 重新连接）的职责一并接管了，所以下面不再单独放它们。
+                        ComfyServiceChip(state, viewModel, onSwitchServer = { onNavigate(MainPage.ACCOUNT) })
+                        IconButton(onClick = onOpenSettings) { Icon(Icons.Outlined.Settings, "设置") }
+                    }
                 },
             )
         },
@@ -983,6 +1085,9 @@ private fun ConnectedScaffold(
                     Color.White.copy(alpha = 0.62f)
                 },
                 tonalElevation = 0.dp,
+                // v0.2.63：默认 80dp 在手机上偏高，五个标签加上图标后占掉不少内容高度。
+                // 收到 68dp 并把图标放到 22dp，视觉更轻、内容区更高。
+                modifier = Modifier.height(68.dp),
             ) {
                 MainPage.bottomBarEntries.forEach { target ->
                     NavigationBarItem(
@@ -996,7 +1101,7 @@ private fun ConnectedScaffold(
                                 MainPage.CONSOLE, MainPage.TASKS, MainPage.AI_ASSISTANT,
                             )),
                         onClick = { onNavigate(target) },
-                        icon = { Icon(target.icon, null) },
+                        icon = { Icon(target.icon, null, Modifier.size(22.dp)) },
                         label = { Text(target.label, style = MaterialTheme.typography.labelSmall) },
                         colors = NavigationBarItemDefaults.colors(
                             // 选中：青绿强调色 + 淡青底标；未选中：中性灰。
@@ -1048,7 +1153,6 @@ private fun ConnectedScaffold(
                         MainPage.AI_ASSISTANT -> AiAssistantScreen(
                             state = state,
                             viewModel = viewModel,
-                            onOpenModelConfig = { showModelConfig = true },
                         )
                         MainPage.RESULTS -> ResultScreen(
                             state = state,

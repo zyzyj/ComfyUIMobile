@@ -105,7 +105,41 @@ class TerminalPlaybookTest {
         assertTrue(disconnected.contains("命令无法执行"))
     }
 
-    // ===== 环境块不产生噪音 =====
+    // ===== 说话方式（v0.2.63）=====
+
+    @Test
+    fun playbookForbidsReportingTheWorkflow() {
+        // 用户反馈「回答太呆板」的直接原因：模型把五步流程念给用户听。
+        // 这条约束一旦被删，AI 又会开始汇报「我先侦察再诊断然后计划…」。
+        val text = prompt()
+        assertTrue("应禁止汇报流程", text.contains("不要汇报流程"))
+        assertTrue("应明确别把顺序说出来", text.contains("别把顺序说出来"))
+    }
+
+    @Test
+    fun playbookGivesGreetingExample() {
+        // 光说"要自然"没用，必须给例子——模型对示例的遵守度远高于形容词。
+        val text = prompt()
+        assertTrue("应有打招呼的示例", text.contains("打招呼就这么回"))
+        assertTrue("示例要简短", text.contains("在的，有什么要处理的？"))
+    }
+
+    @Test
+    fun playbookForbidsEchoingUserAndOverFormatting() {
+        val text = prompt()
+        assertTrue("应禁止复述用户的话", text.contains("不要复述用户刚说过的话"))
+        assertTrue("应禁止滥用小标题与加粗", text.contains("不要滥用小标题"))
+    }
+
+    @Test
+    fun playbookShowsGoodAndBadAnswerStyle() {
+        val text = prompt()
+        // 好例子与坏例子都要有：对比比单向说明更能压住"公文体"
+        assertTrue("应给出简洁好例子", text.contains("磁盘还余 42G"))
+        assertTrue("应给出啰嗦坏例子", text.contains("根据我的侦察结果"))
+    }
+
+    // ===== 环境块不产生噪音 ====
 
     @Test
     fun environmentBlockOmitsBlankOptionalLines() {
