@@ -215,13 +215,15 @@ object TerminalCommandSafety {
     /** 权限等级的展示文案（设置界面与说明共用一份，避免两处各写一句）。 */
     fun levelLabel(level: Int): String = when (level.coerceIn(1, 3)) {
         LEVEL_ASK_ALL -> "每条都问"
-        LEVEL_ASK_DANGEROUS -> "危险才问"
+        // v0.2.64：原名「危险才问」与行为不符（那时每条都还要手点一下）。
+        // 现在档位真的会放行命令，名字必须说清放行的是什么。
+        LEVEL_ASK_DANGEROUS -> "只读与安装"
         else -> "不问"
     }
 
     fun levelDescription(level: Int): String = when (level.coerceIn(1, 3)) {
         LEVEL_ASK_ALL -> "每条命令都要你点「执行」"
-        LEVEL_ASK_DANGEROUS -> "只有危险命令（删除/覆盖/卸载）需要确认"
+        LEVEL_ASK_DANGEROUS -> "只读、安装、下载类命令自动执行；删除/覆盖等仍需确认"
         else -> "AI 直接执行，不再询问；灾难性操作仍会要求确认（命令仍会记在对话里）"
     }
 
@@ -238,6 +240,34 @@ object TerminalCommandSafety {
             LEVEL_ASK_ALL -> true
             LEVEL_ASK_DANGEROUS -> isDangerous(command)
             else -> false
+        }
+    }
+
+    /**
+     * 在当前权限等级下，这条命令是否可以**自动执行**（不必用户点「执行」）。
+     *
+     * 为什么要有它（v0.2.64 修）：以前档位只决定"要不要再点一次确认"，**所有命令**
+     * 都还得用户先点一下「执行」——于是「危险才问」与「每条都问」在体感上没有区别，
+     * 用户看到 `ls` 也要点，直接质疑"这不是危险才问吗"。档位名与行为对不上。
+     *
+     * 放行规则用的是**白名单**而不是"不在危险名单里就放行"：
+     * `python -c "import shutil; shutil.rmtree('~/models')"` 这类命令既不在危险名单、
+     * 也不是只读，黑名单思路会静默自动执行它。危险名单是启发式的，判错的方向必须偏保守——
+     * 宁可多问一次，不可漏放一次。
+     *
+     * 各档位：
+     *  - 1 每条都问：一律不自动执行
+     *  - 2 只读与安装：只读命令、安装/下载类自动执行（这正是用户的主要诉求：
+     *    看状态、装插件）；其它（含无法分类的）仍然要确认
+     *  - 3 不问：除灾难性命令外都自动执行
+     */
+    fun autoRunnable(command: String, level: Int): Boolean {
+        if (isCatastrophic(command)) return false
+        return when (level.coerceIn(1, 3)) {
+            LEVEL_ASK_ALL -> false
+            LEVEL_ASK_DANGEROUS ->
+                (isReadOnly(command) || isInstall(command)) && !isDangerous(command)
+            else -> true
         }
     }
 
