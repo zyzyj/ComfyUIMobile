@@ -36,6 +36,7 @@ import com.local.comfyuimobile.data.WorkflowDraftStore
 import com.local.comfyuimobile.data.WorkflowFormat
 import com.local.comfyuimobile.data.WorkflowContentCache
 import com.local.comfyuimobile.data.WorkflowSnapshotStore
+import com.local.comfyuimobile.model.AiStudioProjectPolicy
 import com.local.comfyuimobile.model.AppUiState
 import com.local.comfyuimobile.model.AiStudioAccount
 import com.local.comfyuimobile.model.AiStudioProject
@@ -1180,16 +1181,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (_state.value.aiStudio.activeAccountId != account.id) return@launch
                 _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "终端重连中…")) }
                 // 终端名可能因项目重启而失效，重连前重新确认一次。
-                val fresh = runCatching {
+                val listed = runCatching {
                     kernelClient.listTerminals(account, endpoint).firstOrNull()
                         ?: kernelClient.createTerminal(account, endpoint)
-                }.getOrNull()
+                }
+                val fresh = listed.getOrNull()
                 if (fresh != null) {
                     // 等待期间可能又断开/切账号，开新 socket 前再校一次代次。
                     if (generation != terminalConnectGeneration) return@launch
                     // openTerminalSocket 会重置 terminalManualClose；若这次又失败，
                     // 它会再调 scheduleTerminalReconnect，但那时本 job 已结束，不会被挡。
                     openTerminalSocket(account, endpoint, fresh, current + 1)
+                    return@launch
+                }
+                // v0.2.68：以前这里是静默的（getOrNull 把异常吞了），于是"一直重连不上"
+                // 在日志里完全看不出来——排查真机问题时只能靠猜。失败原因必须留痕。
+                val cause = listed.exceptionOrNull()
+                if (cause != null) {
+                    AppLogger.warn("终端重连失败（第 ${current + 1} 次）：${cause.message.orEmpty()}", cause)
+                }
+                // v0.2.68：连续失败很多次后，基本可以判定"机器已经没了"（平台回收 / 项目
+                // 被停），而不是网络抖动。再无限重试下去，只会让保活通知永远挂在通知栏、
+                // 状态永远停在"重连中"。到这一步主动收场，把判断依据交给用户。
+                if (current + 1 >= TERMINAL_RECONNECT_GIVE_UP_ATTEMPTS) {
+                    AppLogger.warn("终端连续 ${current + 1} 次重连失败，停止重试并清理连接")
+                    teardownTerminal(
+                        "终端重连失败：云端实例可能已被回收（连续 ${current + 1} 次失败）。" +
+                            "请刷新项目状态确认，必要时重新启动环境。",
+                    )
                     return@launch
                 }
                 current += 1
@@ -1419,27 +1438,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(aiStudio = it.aiStudio.copy(terminalLines = emptyList())) }
     }
 
-    /** 控制台：断开终端（主动断开，不再自动重连）。 */
-    fun aiStudioDisconnectConsole() {
+    /**
+     * 项目被平台回收后收拾终端与保活（v0.2.68）。
+     *
+     * 与 [aiStudioDisconnectConsole] 的区别：那个是用户主动点「断开」，这个是机器没了
+     * 之后的被动清理。两者都要做同一件事——停重连、清保活、把状态标成断开——
+     * 所以共用 [teardownTerminal]。
+     *
+     * 只在当前终端确实属于这个项目时才动：多项目切换时不要把别的项目也拆了。
+     */
+    private fun releaseTerminalAfterProjectStopped(projectId: String) {
+        val endpoint = kernelEndpoint ?: return
+        // 判断这次终端是不是跑在刚停掉的那个项目上：endpoint 的路径里带 projectId
+        // （形如 /bj-cpu-01/user/<uid>/<pid>/）。
+        if (!endpoint.basePath.contains(projectId) && !endpoint.baseUrl.contains(projectId)) return
+        AppLogger.info("项目 $projectId 已停止：终端随之失效，清理连接与保活")
+        teardownTerminal("项目已停止，终端连接已失效")
+    }
+
+    /**
+     * 拆掉终端连接：停重连、关 socket、撤保活，并把状态标成断开（v0.2.68）。
+     *
+     * 抽出这个是因为「用户主动断开」与「项目被回收」要走完全相同的收尾流程——
+     * 以前只有前者写了收尾，后者什么都没做，于是保活通知留在了通知栏上。
+     */
+    private fun teardownTerminal(message: String) {
         terminalManualClose = true
         terminalReconnectJob?.cancel()
-        // v0.2.51：作废当前连接代次，旧 socket 的迟到回调会被丢弃（见 openTerminalSocket）。
+        terminalReconnectJob = null
+        // 作废连接代次：旧 socket 的迟到回调会被丢弃（见 openTerminalSocket）。
         terminalConnectGeneration += 1
         kernelClient.closeTerminal()
         kernelEndpoint = null
         terminalKeepAlive = false
+        autoConnectAttempted = false
         syncKeepAlive()
         _state.update {
             it.copy(
                 aiStudio = it.aiStudio.copy(
                     consoleConnected = false,
-                    message = "已断开终端",
+                    message = message,
                     // 实例已回收，旧地址必然不可达。留着会让用户反复点「探测」
                     // 得到误导性失败，所以一并清掉（重连终端后会重新算出来）。
                     comfyUiUrl = null,
                 ),
             )
         }
+    }
+
+    /** 控制台：断开终端（主动断开，不再自动重连）。 */
+    fun aiStudioDisconnectConsole() {
+        teardownTerminal("已断开终端")
     }
 
     /**
@@ -1543,6 +1592,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // v0.2.46：拉列表期间可能已经切了账号，别把旧账号的项目写进新面板。
                     if (!isActiveAiStudioAccount(account.id)) return@launch
                     AppLogger.info("AI Studio 项目列表：${page.projects.size} 个（共 ${page.total}）")
+                    // v0.2.68：刷新列表是**发现"项目被平台回收"的主要路径**（用户点刷新、
+                    // 或面板自动刷新）。以前这里只把列表换掉，完全不比对"谁从运行变停了"，
+                    // 于是机器没了 App 却毫无反应：终端一直重连、保活通知一直挂着。
+                    // 现在先比出刚刚停掉的项目，再更新列表。
+                    val nowStopped = AiStudioProjectPolicy.justStopped(
+                        before = _state.value.aiStudio.projects,
+                        after = page.projects,
+                    )
                     _state.update {
                         it.copy(
                             aiStudio = it.aiStudio.copy(
@@ -1552,6 +1609,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 lastRawResponse = aiStudio.lastRawResponse,
                             ),
                         )
+                    }
+                    nowStopped.forEach { stoppedId ->
+                        AppLogger.info("项目 $stoppedId 已从运行变为停止（列表刷新发现）")
+                        releaseTerminalAfterProjectStopped(stoppedId)
+                        _state.update { current ->
+                            val studio = current.aiStudio
+                            current.copy(
+                                aiStudio = studio.copy(
+                                    environmentReadyProjectId = studio.environmentReadyProjectId
+                                        ?.takeIf { id -> id != stoppedId },
+                                    projects = studio.projects.map { item ->
+                                        if (item.projectId == stoppedId) item.copy(runningGpuLabel = "") else item
+                                    },
+                                ),
+                            )
+                        }
                     }
                     // 冷启动时 environmentReadyProjectId 是空的，运行中的项目会被
                     // 当成"正在启动环境…"一直转圈。这里后台补确认一次（不调 enter，
@@ -1724,6 +1797,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             // 停止方向：running=false 就是真的停了。
             AppLogger.info("AI Studio 项目状态已更新：$projectId running=${project.running}")
+            // v0.2.68：机器被平台收回时，**必须把挂在它上面的东西一起收走**。
+            //
+            // 真机反馈：启动 GPU 后没启 ComfyUI，挂后台一段时间，刷新发现项目已停止，
+            // 但通知栏还挂着「已连接 AI Studio 终端 · 保持连接中」——因为这里以前只改
+            // 了几个 UI 字段，既没断终端、也没撤保活。而终端重连是 `while(true)` 无限重试
+            // （见 scheduleTerminalReconnect），机器没了它就永远在那儿重试，通知永远撤不掉。
+            //
+            // 机器都没了，终端 socket 必然不可达：直接当作"服务端强制断开"处理。
+            releaseTerminalAfterProjectStopped(projectId)
             _state.update {
                 val studio = it.aiStudio
                 it.copy(
@@ -7070,8 +7152,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val CONSOLE_ROWS = 40
         /** 控制台终端断线重连退避（毫秒）。最后一次失败后不再自动重试，提示手动重连。 */
         val TERMINAL_RECONNECT_DELAYS_MS = longArrayOf(2_000L, 5_000L, 10_000L, 20_000L)
-        /** 终端重连退避封顶；超过后一直按这个间隔重试（不再放弃）。 */
+        /** 终端重连退避封顶；超过后一直按这个间隔重试。 */
         const val TERMINAL_RECONNECT_MAX_MS = 30_000L
+        /**
+         * v0.2.68：连续失败多少次后放弃重连。
+         *
+         * 退避封顶 30 秒，所以 8 次约等于 3.5 分钟——足以区分"网络抖动"与"机器没了"。
+         * 以前是无限重试：机器被平台回收后它就永远转下去，保活通知也永远撤不掉。
+         */
+        const val TERMINAL_RECONNECT_GIVE_UP_ATTEMPTS = 8
         /** ComfyUI 启动完成时终端会打印的特征行（命中即尝试自动连接）。 */
         val COMFY_READY_HINTS = listOf("To see the GUI go to", "Starting server")
         /** 自动连接前的探测次数：刚打印就绪日志时端口可能还没 listen。 */
