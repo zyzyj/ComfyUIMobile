@@ -14,6 +14,13 @@ data class LlmConfig(
     /** 选中的提示词预设 id。v0.2.54 起改用字符串，以支持用户自建预设。 */
     val presetId: String = PromptPresets.DEFAULT_PRESET_ID,
     val temperature: Float = DEFAULT_TEMPERATURE,
+    /**
+     * 单条回复的 token 上限（v0.2.70）。0 表示不限制。
+     *
+     * 默认 0 是为了不打扰写提示词的场景（长短由模型自己决定）；
+     * 终端助手会显式传 助手专用的上限（见 LlmProtocol），把命令埋进长文里是常见毛病。
+     */
+    val maxTokens: Int = 0,
 ) {
     /**
      * 接口地址与模型名齐全即视为可用。

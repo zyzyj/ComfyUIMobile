@@ -91,10 +91,41 @@ object LlmProtocol {
     }
 
     fun buildRequestBody(config: LlmConfig, systemPrompt: String, userMessage: String): String =
+        buildRequestBody(
+            config = config,
+            systemPrompt = systemPrompt,
+            userMessage = userMessage,
+            // 不传即用配置值（写提示词走这条路）。
+            temperature = null,
+            maxTokens = null,
+        )
+
+    /**
+     * 拼 chat 请求体。
+     *
+     * [temperature] / [maxTokens] 传 null 表示"用配置里那份"——写提示词走这条。
+     * 终端助手会显式传更低的值，原因见 [ASSISTANT_TEMPERATURE] 与 [ASSISTANT_MAX_TOKENS]。
+     */
+    fun buildRequestBody(
+        config: LlmConfig,
+        systemPrompt: String,
+        userMessage: String,
+        temperature: Float?,
+        maxTokens: Int?,
+    ): String =
         JSONObject()
             .put("model", config.model.trim())
-            .put("temperature", LlmConfig.normalizeTemperature(config.temperature).toDouble())
+            .put(
+                "temperature",
+                LlmConfig.normalizeTemperature(temperature ?: config.temperature).toDouble(),
+            )
             .put("stream", false)
+            .apply {
+                val limit = maxTokens ?: config.maxTokens
+                // v0.2.70：给个上限。以前完全不限制，模型偶尔会洋洋洒洒写一大篇——
+                // 既烧 token，又把真正要执行的命令埋在长文里。
+                if (limit > 0) put("max_tokens", limit)
+            }
             .put(
                 "messages",
                 JSONArray().apply {
@@ -105,6 +136,25 @@ object LlmProtocol {
                 },
             )
             .toString()
+
+    /**
+     * 终端助手用的 temperature：**明显低于**写提示词（配置里的 0.9）。
+     *
+     * 两个场景对"随机性"的需求是相反的：
+     *  - 写提示词要创意，0.9 合适；
+     *  - 生成运维命令要**可预期**——同一个问题每次给同一条命令才好核对，
+     *    0.9 会让模型偶尔冒出没 Asked 的"创新"命令（如换个包管理器、多加个参数）。
+     * 0.2 足够稳定，又不会死板到只会套模板。
+     */
+    const val ASSISTANT_TEMPERATURE = 0.2f
+
+    /**
+     * 终端助手回复的 token 上限（v0.2.70）。
+     *
+     * 守则本来就要求"回答简短、一次一条命令"，1024 token 绰绰有余；
+     * 顺带挡住模型把命令埋进长篇解释里。
+     */
+    const val ASSISTANT_MAX_TOKENS = 1_024
 
     fun authHeader(config: LlmConfig): String? = authHeader(config.apiKey)
 

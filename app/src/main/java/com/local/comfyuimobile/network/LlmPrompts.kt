@@ -59,11 +59,6 @@ object LlmPrompts {
             .removeSuffix(".safetensors").removeSuffix(".sft")
             .removeSuffix(".ckpt").removeSuffix(".pt").removeSuffix(".gguf")
 
-    /**
-     * 把终端命令结果喂回模型时的前缀。 */
-    fun commandResultPrefix(): String =
-        "Here is the output of the command(s) you proposed:"
-
     /** 把用户的意图和当前提示词拼成一次 user 消息。 */
     fun userPrompt(mode: AiAssistMode, current: String, idea: String): String =
         buildString {

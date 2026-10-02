@@ -36,13 +36,37 @@ class LlmRepository {
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    suspend fun chat(config: LlmConfig, systemPrompt: String, userMessage: String): String {
+    suspend fun chat(config: LlmConfig, systemPrompt: String, userMessage: String): String =
+        chat(config, systemPrompt, userMessage, temperature = null, maxTokens = null)
+
+    /**
+     * @param temperature 覆盖配置里的值；null 表示用配置值。
+     * @param maxTokens 回复长度上限；null 表示用配置值。
+     *
+     * 终端助手会传 [LlmProtocol.ASSISTANT_TEMPERATURE] 与 [LlmProtocol.ASSISTANT_MAX_TOKENS]：
+     * 生成运维命令要稳定、要短，跟写提示词的需求是反的。
+     */
+    suspend fun chat(
+        config: LlmConfig,
+        systemPrompt: String,
+        userMessage: String,
+        temperature: Float?,
+        maxTokens: Int?,
+    ): String {
         if (!config.isConfigured()) throw LlmException("还没有配置大模型接口：请到设置里填接口地址和模型名")
         val request = Request.Builder()
             .url(LlmProtocol.chatEndpoint(config.baseUrl))
             .addHeader("Content-Type", "application/json")
             .apply { LlmProtocol.authHeader(config)?.let { addHeader("Authorization", it) } }
-            .post(LlmProtocol.buildRequestBody(config, systemPrompt, userMessage).toRequestBody(jsonMedia))
+            .post(
+                LlmProtocol.buildRequestBody(
+                    config = config,
+                    systemPrompt = systemPrompt,
+                    userMessage = userMessage,
+                    temperature = temperature,
+                    maxTokens = maxTokens,
+                ).toRequestBody(jsonMedia),
+            )
             .build()
         return withContext(Dispatchers.IO) {
             awaitCall(request).use { response ->
