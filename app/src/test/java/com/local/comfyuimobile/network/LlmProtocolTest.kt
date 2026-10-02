@@ -164,6 +164,50 @@ class LlmProtocolTest {
         assertEquals(2.0, body.getDouble("temperature"), 0.001)
     }
 
+    // ===== v0.2.70：终端助手用更保守的生成参数 =====
+
+    @Test
+    fun `助手参数覆盖配置里的温度`() {
+        // 写提示词用配置值（默认 0.9），但生成运维命令要稳定 —— 必须能显式压低。
+        val body = JSONObject(
+            LlmProtocol.buildRequestBody(
+                config = LlmConfig(baseUrl = "https://x", model = "m", temperature = 0.9f),
+                systemPrompt = "SYS",
+                userMessage = "U",
+                temperature = LlmProtocol.ASSISTANT_TEMPERATURE,
+                maxTokens = LlmProtocol.ASSISTANT_MAX_TOKENS,
+            ),
+        )
+        assertEquals(
+            LlmProtocol.ASSISTANT_TEMPERATURE.toDouble(),
+            body.getDouble("temperature"),
+            0.001,
+        )
+        assertEquals(LlmProtocol.ASSISTANT_MAX_TOKENS, body.getInt("max_tokens"))
+    }
+
+    @Test
+    fun `助手温度明显低于写提示词的默认值`() {
+        assertTrue(
+            "命令生成要可预期，温度必须低于写提示词的默认值",
+            LlmProtocol.ASSISTANT_TEMPERATURE < LlmConfig.DEFAULT_TEMPERATURE,
+        )
+    }
+
+    @Test
+    fun `不传参数时用配置值且不带 max_tokens`() {
+        // 写提示词的场景：长短由模型决定，不要凭空加限制（部分中转站不认这个字段）
+        val body = JSONObject(
+            LlmProtocol.buildRequestBody(
+                LlmConfig(baseUrl = "https://x", model = "m", temperature = 0.7f),
+                "SYS",
+                "U",
+            ),
+        )
+        assertEquals(0.7, body.getDouble("temperature"), 0.001)
+        assertTrue("默认不该带 max_tokens", !body.has("max_tokens"))
+    }
+
     @Test
     fun `apiKey 为空时不发 Authorization`() {
         assertEquals(null, LlmProtocol.authHeader(LlmConfig(baseUrl = "https://x", model = "m")))
