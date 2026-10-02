@@ -344,6 +344,14 @@ class AiStudioClient {
                     // window.aiStudio 就提交了（登录页已修），已存的旧账号重新登录即可。
                     if (resp.code == 403 && account.bdToken.isBlank()) {
                         "${action}失败：该账号缺少平台令牌（登录时未取到 bdToken），平台拒绝了这个操作。请到「账号」页重新登录一次（多账号请用「添加账号」重登后切换）。"
+                    } else if (resp.code == 403) {
+                        // v0.2.69：403 不再是"一定是凭据坏了"。
+                        // 实测（两个账号一致）：项目列表与签到都成功、Cookie 有效，但
+                        // /studio/resource/* 与 /studio/project/cluster/* 一律 403——
+                        // 这是平台侧对该接口的权限限制（需网页端登录态），App 改不动。
+                        // 以前只说"没有权限"，用户会以为是登录失效、反复重登，白折腾。
+                        "${action}失败：平台拒绝了此接口（HTTP 403）。算力卡与可用档位接口由网页端控制权限，" +
+                            "App 端目前取不到——请在 AI Studio 网页端操作（不影响项目列表、终端与生图）。"
                     } else {
                         "${action}失败：HTTP ${resp.code}"
                     },

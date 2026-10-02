@@ -36,6 +36,7 @@ import com.local.comfyuimobile.data.WorkflowDraftStore
 import com.local.comfyuimobile.data.WorkflowFormat
 import com.local.comfyuimobile.data.WorkflowContentCache
 import com.local.comfyuimobile.data.WorkflowSnapshotStore
+import com.local.comfyuimobile.model.AiStudioAccountOrder
 import com.local.comfyuimobile.model.AiStudioProjectPolicy
 import com.local.comfyuimobile.model.AppUiState
 import com.local.comfyuimobile.model.AiStudioAccount
@@ -803,47 +804,70 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * 每日自动签到 + 领算力（打开 App / 切账号时自动跑一次）。
+     * 每日自动签到 + 领算力（打开 App 时跑一次，**覆盖所有已登录账号**）。
+     *
+     * v0.2.69 修：以前只对**当前选中**的账号跑。用户加第二个账号后，那个"后台账号"
+     * 永远不会被签到——而断签会让连续签到天数从 1 重头算，恰恰是这个功能最该避免的。
+     * 现在遍历所有已存账号，串行执行，单个账号失败不影响其它账号。
      *
      * 平台能拿到的积分就两类：① 每日签到（连续签到递增，断签重头）；
      * ② 一次性任务（完善资料/公开项目/模型/数据集/报名课程）——后者必须
      * 真实创作内容，脚本代劳会被风控，不做。所以"自动获取积分"的边界就是
      * 签到 + 领每日算力，这两件小事漏一天就断签，自动化的价值正在这里。
      *
-     * 幂等：平台用 `isFinishSign` 告诉我们今天签过没有，签过就直接跳过；
-     * 这样不管是每次冷启动还是切账号，都不会重复发请求。
+     * 幂等：平台用 `isFinishSign` 告诉我们今天签过没有，签过就直接跳过，
+     * 所以重复冷启动也不会重复发请求。
      */
     fun aiStudioAutoDailyTasks() {
         if (!autoDailyTasksEnabled) return
-        val account = _state.value.aiStudio.activeAccount() ?: return
+        // 拿快照：执行期间用户可能切账号，遍历过程中不要被改动。
+        val accounts = _state.value.aiStudio.accounts.toList()
+        if (accounts.isEmpty()) return
         if (aiStudioActionJob?.isActive == true) return
         aiStudioActionJob = viewModelScope.launch {
-            // 先查今天的签到状态（同时把积分/算力刷新一遍，一举两得）。
-            val (points, signedToday) = runCatching { aiStudio.fetchPointsInfo(account) }
-                .getOrDefault(null to null)
-            val alreadySigned = signedToday == true
-            if (!alreadySigned) {
-                runCatching { aiStudio.signIn(account) }
-                    .onSuccess {
-                        AppLogger.info("每日自动签到成功：${account.displayName()}")
+            val activeId = _state.value.aiStudio.activeAccountId
+            // 先跑当前账号（它的积分要显示在面板上），再跑其余账号。
+            val ordered = AiStudioAccountOrder.activeFirst(accounts, activeId)
+            for (account in ordered) {
+                runDailyTasksFor(account, isActive = account.id == activeId)
+            }
+        }
+    }
+
+    /**
+     * 为单个账号跑一次签到 + 领算力（v0.2.69）。
+     *
+     * 失败一律只告警、不中断其它账号：这是"顺手薅积分"的功能，
+     * 一个账号出问题不该让另一个账号也跟着断签。
+     */
+    private suspend fun runDailyTasksFor(account: AiStudioAccount, isActive: Boolean) {
+        // 先查今天的签到状态（同时把积分/算力刷新一遍，一举两得）。
+        val (points, signedToday) = runCatching { aiStudio.fetchPointsInfo(account) }
+            .getOrDefault(null to null)
+        if (signedToday == true) {
+            AppLogger.info("每日自动签到：${account.displayName()} 今天已签过，跳过")
+        } else {
+            runCatching { aiStudio.signIn(account) }
+                .onSuccess {
+                    AppLogger.info("每日自动签到成功：${account.displayName()}")
+                    if (isActive) {
                         _state.update { it.copy(aiStudio = it.aiStudio.copy(signedInToday = true)) }
                     }
-                    .onFailure { error ->
-                        if (error is CancellationException) throw error
-                        AppLogger.warn("每日自动签到失败（不影响其它功能）", error)
-                    }
-            } else {
-                AppLogger.info("每日自动签到：今天已签过，跳过")
-            }
-            // 领每日算力：平台把"今日已领过"当正常结果返回，不会报错。
-            runCatching { aiStudio.receiveResource(account) }
-                .onSuccess { AppLogger.info("每日自动领算力：$it") }
+                }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
-                    AppLogger.warn("每日自动领算力失败（不影响其它功能）", error)
+                    AppLogger.warn("每日自动签到失败（${account.displayName()}，不影响其它功能）", error)
                 }
-            if (alreadySigned || points != null) return@launch
-            // 两者都没结果时，静默刷新一次资源面板。
+        }
+        // 领每日算力：平台把"今日已领过"当正常结果返回，不会报错。
+        runCatching { aiStudio.receiveResource(account) }
+            .onSuccess { AppLogger.info("每日自动领算力（${account.displayName()}）：$it") }
+            .onFailure { error ->
+                if (error is CancellationException) throw error
+                AppLogger.warn("每日自动领算力失败（${account.displayName()}，不影响其它功能）", error)
+            }
+        // 只有当前账号需要刷新面板（后台账号的数据不显示，不必多刷一次）。
+        if (isActive && signedToday != true && points == null) {
             aiStudioRefreshAccount()
         }
     }
@@ -878,6 +902,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         invalidateAiStudioRefresh()
         aiStudioDisconnectConsole()
         kernelClient.clearProjectCookies()
+        // v0.2.69：档位列表也要清。它绑定在具体项目上，切账号后旧账号的档位会
+        // 留在新面板里——要么显示成上一个账号的型号，要么因为加载失败一直停在
+        // 「没有读到可用档位」。清掉后新账号会重新拉一次。
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(schedules = emptyList(), schedulesLoaded = false)) }
     }
 
     /**
