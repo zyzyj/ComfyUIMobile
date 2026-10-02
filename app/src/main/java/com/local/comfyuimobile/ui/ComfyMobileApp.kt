@@ -1678,9 +1678,19 @@ private fun WorkflowScreen(state: AppUiState, viewModel: MainViewModel, onOpenPa
     if (moveDialog) NameDialog("移动到文件夹", dialogText, { moveDialog = false }) { viewModel.moveWorkflow(it); moveDialog = false }
     if (deleteDialog) ConfirmDialog("删除工作流", "将从 ComfyUI 服务器永久删除 ${state.previewWorkflow?.entry?.name}。", { deleteDialog = false }) { viewModel.deleteWorkflow(); deleteDialog = false }
     deletePathTarget?.let { target ->
+        // v0.2.67：文案要与实际行为一致。以前一律写"从服务器永久删除"，
+        // 但未连接时删的只是本机那份（服务器根本没连上）。
+        val connected = state.activeServer != null
         ConfirmDialog(
             "删除工作流",
-            "将从 ComfyUI 服务器永久删除 ${target.name}。无法打开/识别的工作流也可以这样清理。",
+            buildString {
+                if (connected) {
+                    append("将从 ComfyUI 服务器永久删除 ${target.name}")
+                } else {
+                    append("当前未连接服务器，将只从本机删除 ${target.name}")
+                }
+                append("。无法打开/识别的工作流也可以这样清理。")
+            },
             { deletePathTarget = null },
         ) {
             viewModel.deleteWorkflowByPath(target.path, target.name)
