@@ -36,7 +36,11 @@ class TerminalPlaybookTest {
         assertTrue("守则应要求先侦察", text.contains("侦察"))
         assertTrue("应明确 nvidia-smi（查 GPU）", text.contains("nvidia-smi"))
         assertTrue("应查磁盘余量", text.contains("df -h"))
-        assertTrue("应查 ComfyUI 是否已在跑", text.contains("comfy"))
+        // 守则里的实际写法是 `ps aux | grep -i "[c]omfy"` —— [c] 是防 grep 自匹配
+        // 的惯用技巧（不加的话 grep 进程本身也会被列出来）。所以不能按字面量查 "comfy"，
+        // 改查命令与意图关键词。
+        assertTrue("应查 ComfyUI 是否已在跑", text.contains("ps aux"))
+        assertTrue("应说明查的是是否已在运行", text.contains("已在运行"))
     }
 
     @Test

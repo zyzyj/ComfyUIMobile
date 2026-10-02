@@ -104,6 +104,14 @@ jobs:
           keyPassword=comfyuimobile
           EOF
 
+      - name: 跑单元测试
+        # v0.2.62：以前只构建、不跑测试 —— 44 个测试文件仅被编译，从未执行，
+        # 于是“断言与实现不符”长期潜伏（已发现 TerminalCommandSafety 的 find -delete
+        # 断言失败）。测试不跑等于没有，这里补上。
+        run: |
+          set -o pipefail
+          ./gradlew :app:testDebugUnitTest --stacktrace 2>&1 | tee /tmp/gradle-test.log
+
       - name: 构建 Debug APK
         # pipefail：让 Gradle 的失败退出码穿过 tee 管道，否则失败会被伪装成成功
         run: |
@@ -121,8 +129,18 @@ jobs:
         with:
           name: gradle-logs
           path: |
+            /tmp/gradle-test.log
             /tmp/gradle-debug.log
             /tmp/gradle-release.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: 上传测试报告（失败诊断用）
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: app/build/reports/tests/
           if-no-files-found: ignore
           retention-days: 30
 

@@ -92,12 +92,19 @@ class ApiPromptBuilderTest {
     }
 
     @Test
-    fun injectsBatchSizeIntoBothSamplerAndLatent() {
+    fun injectsBatchSizeIntoLatentSourceOnly() {
+        // v0.2.62 修正：本测试原断言「79（KSamplerAdvanced）也要有 batch_size」，
+        // 但 v0.1.71 已对照官方 nodes.py 核实——KSampler 系列没有 batch_size 输入，
+        // 写进去只会在 history 与 PNG 元数据里留下垃圾字段（服务端静默忽略）。
+        // 注入目标只有 latent 源节点，这里断言真实且正确的行为。
         val result = ApiPromptBuilder.applyFields(base, emptyList(), 4)
         val prompt = JSONObject(result.promptJson)
         assertTrue(result.batchApplied)
-        assertEquals(4, prompt.getJSONObject("79").getJSONObject("inputs").getInt("batch_size"))
         assertEquals(4, prompt.getJSONObject("74").getJSONObject("inputs").getInt("batch_size"))
+        assertFalse(
+            "采样器不该被写入 batch_size",
+            prompt.getJSONObject("79").getJSONObject("inputs").has("batch_size"),
+        )
     }
 
     @Test

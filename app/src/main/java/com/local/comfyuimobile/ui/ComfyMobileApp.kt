@@ -491,6 +491,8 @@ private fun AiAssistantScreen(
     val terminalConnected = state.aiStudio.consoleConnected
     val level = state.commandPermissionLevel
     val running = state.assistantCommandRunning
+    val thinking = state.assistantThinking
+    val failedPrompt by viewModel.assistantFailedPrompt.collectAsStateWithLifecycle()
     // 新消息到达时滚到底部，否则用户看不到最新回复。
     LaunchedEffect(messages.size, pending.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
@@ -520,6 +522,15 @@ private fun AiAssistantScreen(
             if (messages.isNotEmpty()) {
                 IconButton(onClick = viewModel::clearAssistantConversation) {
                     Icon(Icons.Outlined.Delete, "清空对话")
+                }
+            }
+            // v0.2.62：有任何进行中的动作就显示「停止」（对齐 Claude Code 的 Esc 中断）。
+            // 以前发了问题只能干等，长请求（大模型偶发要几十秒）期间用户不知道能不能取消。
+            if (thinking || running) {
+                TextButton(onClick = viewModel::stopAssistant) {
+                    Icon(Icons.Outlined.Close, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("停止")
                 }
             }
             TextButton(onClick = onOpenModelConfig) {
@@ -564,6 +575,43 @@ private fun AiAssistantScreen(
             color = if (level >= 3) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 12.dp),
         )
+
+        // v0.2.62：进行中的状态条。以前没有任何反馈，用户以为卡死了。
+        if (thinking || running) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (running) "正在执行命令，等待终端输出…" else "正在等大模型回复…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+
+        // v0.2.62：上一条提问失败了，给一个「重试」——不用把话重新打一遍。
+        if (failedPrompt != null && !thinking && !running) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "上一条请求失败了",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = viewModel::retryLastAssistantRequest) { Text("重试") }
+                }
+            }
+        }
 
         if (messages.isEmpty()) {
             Column(

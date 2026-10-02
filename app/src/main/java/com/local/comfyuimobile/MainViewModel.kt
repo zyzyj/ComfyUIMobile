@@ -2950,6 +2950,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 终端是串行的，只能一条跑完再发下一条。
      */
     private var autoRunQueue: List<PendingCommand> = emptyList()
+    /**
+     * 连续失败计数（v0.2.62）——对齐 Cline 的 `--retries`（默认 3）。
+     *
+     * 3 级自动执行是「AI 提命令 → 执行 → 结果喂回 → AI 再提命令」的闭环。环境一旦
+     * 有问题（缺依赖、路径不对、权限不足），每一步都失败但闭环照转，会一直烧 token。
+     * 连续失败到上限就停下，交由用户看一眼再决定——比让它自己转一晚上好。
+     */
+    private var consecutiveCommandFailures = 0
     /** 待用户确认的命令（界面渲染确认按钮）与它们的风险标注。 */
     private val _pendingCommands = MutableStateFlow<List<PendingCommand>>(emptyList())
     val pendingCommands: StateFlow<List<PendingCommand>> = _pendingCommands.asStateFlow()
@@ -2963,6 +2971,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private val _queuedAssistantPrompts = MutableStateFlow<List<String>>(emptyList())
     val queuedAssistantPrompts: StateFlow<List<String>> = _queuedAssistantPrompts.asStateFlow()
+
+    /**
+     * 上一次请求失败的原始提问（v0.2.62），非空时界面给一个「重试」按钮。
+     *
+     * 以前失败后只能在输入框里把话重打一遍——用户刚说完需求、AI 断了网，
+     * 重打一遍体验很差（对齐 Claude Code 的「重试上一轮」）。
+     */
+    private val _assistantFailedPrompt = MutableStateFlow<String?>(null)
+    val assistantFailedPrompt: StateFlow<String?> = _assistantFailedPrompt.asStateFlow()
 
     /** 一条待确认的命令 + 风险标注。 */
     data class PendingCommand(
@@ -2984,9 +3001,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 又把输出写回刚清空的列表（还会把 running 标记留着）。
         assistantCommandJob?.cancel()
         assistantCommandJob = null
+        consecutiveCommandFailures = 0
+        _assistantFailedPrompt.value = null
         _assistantMessages.value = emptyList()
         _pendingCommands.value = emptyList()
-        _state.update { it.copy(assistantCommandRunning = false) }
+        _state.update { it.copy(assistantCommandRunning = false, assistantThinking = false) }
+    }
+
+    /**
+     * 停止当前一切进行中的动作（v0.2.62）——对齐 Claude Code 的 Esc 中断。
+     *
+     * 覆盖三件事：等大模型回复、等命令输出、队列里还没发的消息。
+     * 用户点了「停止」就是不想继续了，队列必须一起清掉，否则停了又自己动。
+     *
+     * 注意：命令若已发到云端终端，取消的只是本地等待——远端可能还在跑。
+     * 所以提示里说清楚怎么真正中断它（控制台有 Ctrl+C），不能假装已经停了。
+     */
+    fun stopAssistant() {
+        val busy = assistantJob?.isActive == true || assistantCommandJob?.isActive == true
+        val hadQueue = _queuedAssistantPrompts.value.isNotEmpty() || autoRunQueue.isNotEmpty()
+        if (!busy && !hadQueue) return
+        _queuedAssistantPrompts.value = emptyList()
+        autoRunQueue = emptyList()
+        assistantJob?.cancel()
+        assistantJob = null
+        assistantCommandJob?.cancel()
+        assistantCommandJob = null
+        consecutiveCommandFailures = 0
+        _state.update { it.copy(assistantCommandRunning = false, assistantThinking = false) }
+        _assistantMessages.update {
+            it + TerminalChatMessage(
+                id = UUID.randomUUID().toString(),
+                role = TerminalMessageRole.SYSTEM_NOTE,
+                text = "已停止。若命令已发到终端，它可能仍在云端运行——" +
+                    "需要中断请到「更多 → 控制台」按 Ctrl+C。",
+            )
+        }
+    }
+
+    /**
+     * 重试上一次失败的请求（v0.2.62）。
+     *
+     * 做法是**先把那条用户消息之后的内容截掉**再重发：否则重试会在对话里
+     * 叠出第二条一模一样的提问，上下文越滚越乱。
+     */
+    fun retryLastAssistantRequest() {
+        if (assistantJob?.isActive == true) return
+        val messages = _assistantMessages.value
+        val lastUserIndex = messages.indexOfLast { it.role == TerminalMessageRole.USER }
+        if (lastUserIndex < 0) return
+        val prompt = messages[lastUserIndex].text
+        _assistantMessages.value = messages.take(lastUserIndex)
+        _assistantFailedPrompt.value = null
+        askAssistant(prompt)
     }
 
     /** 只丢弃某一条待执行命令（v0.2.61）。以前 UI 上每条都有「跳过」但清的是全部。 */
@@ -3043,7 +3110,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // v0.2.61：新问题等于放弃上一轮剩下未执行的建议，自动执行队列一并作废。
         _pendingCommands.value = emptyList()
         autoRunQueue = emptyList()
+        consecutiveCommandFailures = 0
+        _assistantFailedPrompt.value = null
         assistantJob = viewModelScope.launch {
+            // v0.2.62：标记「思考中」——界面据此显示进度与停止按钮。
+            // 清除放在 invokeOnCompletion（它覆盖正常结束与取消两种情况），
+            // 且用任务身份比对，避免上一轮的收尾把新一轮的标记误清掉。
+            _state.update { it.copy(assistantThinking = true) }
             val history = _assistantMessages.value
             val reply = runCatching {
                 llm.chat(
@@ -3056,11 +3129,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }.getOrElse { error ->
                 if (error is CancellationException) throw error
                 AppLogger.error("AI 助手请求失败", error)
+                // v0.2.62：记下失败的那句话，界面给「重试」（不用重打一遍）。
+                _assistantFailedPrompt.value = prompt
                 _assistantMessages.update {
                     it + TerminalChatMessage(
                         id = UUID.randomUUID().toString(),
                         role = TerminalMessageRole.SYSTEM_NOTE,
-                        text = "请求失败：${error.message ?: error.javaClass.simpleName}",
+                        text = "请求失败：${error.message ?: error.javaClass.simpleName}\n" +
+                            "可点上方「重试」重发这条提问。",
                     )
                 }
                 return@launch
@@ -3074,6 +3150,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     commands = commands,
                 )
             }
+            appendTruncationNote(reply)
             val newPending = commands.map { command ->
                 PendingCommand(
                     id = UUID.randomUUID().toString(),
@@ -3096,11 +3173,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             enqueueAutoRun(newPending)
         }.also { job ->
             job.invokeOnCompletion {
-                if (assistantJob === job) assistantJob = null
+                if (assistantJob === job) {
+                    assistantJob = null
+                    _state.update { it.copy(assistantThinking = false) }
+                }
                 // v0.2.61：本轮正常结束后把队列里的下一条发出去（否则排队消息永远发不出）。
-                // 被取消（如用户清空对话）时不发，否则刚清空又会冒出新消息。
+                // 被取消（如用户清空对话/点了停止）时不发，否则刚清空又会冒出新消息。
                 if (!job.isCancelled) drainAssistantQueue()
             }
+        }
+    }
+
+    /**
+     * 模型一次给的建议超过 [TerminalCommandSafety.MAX_COMMANDS] 时补一句说明（v0.2.62）。
+     *
+     * 以前是静默截断：模型给了 15 条，界面只列 10 条，用户完全不知道还有 5 条被丢了
+     * （甚至可能以为工具坏了）。这里明确告知差多少、怎么办。
+     */
+    private fun appendTruncationNote(reply: String) {
+        val total = TerminalCommandSafety.parseAllCommands(reply).size
+        if (total <= TerminalCommandSafety.MAX_COMMANDS) return
+        val dropped = total - TerminalCommandSafety.MAX_COMMANDS
+        _assistantMessages.update {
+            it + TerminalChatMessage(
+                id = UUID.randomUUID().toString(),
+                role = TerminalMessageRole.SYSTEM_NOTE,
+                text = "这条回复里共有 $total 条命令，超出单次上限" +
+                    "（${TerminalCommandSafety.MAX_COMMANDS} 条），只列出了前 " +
+                    "${TerminalCommandSafety.MAX_COMMANDS} 条，还有 $dropped 条未显示。" +
+                    "可以让它把剩下的分批再发一遍。",
+            )
         }
     }
 
@@ -3196,6 +3298,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(assistantCommandRunning = true) }
             try {
                 val result = awaitCommandResult(pending.command, token)
+                // v0.2.62：连续失败计数（成功清零）。配合 startNextAutoCommand 的熔断，
+                // 防止「失败 → 再试 → 再失败」的闭环无限烧 token。
+                if (result.success) consecutiveCommandFailures = 0 else consecutiveCommandFailures++
                 _assistantMessages.update {
                     it + TerminalChatMessage(
                         id = UUID.randomUUID().toString(),
@@ -3225,9 +3330,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 两条命令的输出会串在一起，模型据此判断就会出错。
      */
     private fun enqueueAutoRun(commands: List<PendingCommand>) {
-        if (_state.value.commandPermissionLevel < 3) return
+        val level = _state.value.commandPermissionLevel
+        if (level < 3) return
         if (!_state.value.aiStudio.consoleConnected) return
-        autoRunQueue = autoRunQueue + commands
+        // v0.2.62 熔断器：仍需确认的命令（灾难性操作）**不自动执行**，留在界面上等用户点。
+        // 这是「不问」权限也越不过的闸——参照 Claude Code：关键路径的 rm 永不自动放行。
+        autoRunQueue = autoRunQueue + commands.filterNot {
+            TerminalCommandSafety.requiresConfirmation(it.command, level)
+        }
         startNextAutoCommand()
     }
 
@@ -3238,15 +3348,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 终端断开时放弃整批：命令发不出去，继续推进只会连串报错。
      */
     private fun startNextAutoCommand() {
-        if (_state.value.commandPermissionLevel < 3) return
+        val level = _state.value.commandPermissionLevel
+        if (level < 3) return
         if (assistantCommandJob?.isActive == true) return
-        val next = autoRunQueue.firstOrNull() ?: return
-        if (!_state.value.aiStudio.consoleConnected) {
-            autoRunQueue = emptyList()
+        // v0.2.62 熔断：连续失败到上限就不再自动往下跑（对齐 Cline 的 --retries 默认 3）。
+        // 队列一并清掉，否则下次触发（如新回复）又会把它翻出来接着失败。
+        if (consecutiveCommandFailures >= MAX_CONSECUTIVE_COMMAND_FAILURES) {
+            if (autoRunQueue.isNotEmpty()) {
+                autoRunQueue = emptyList()
+                _assistantMessages.update {
+                    it + TerminalChatMessage(
+                        id = UUID.randomUUID().toString(),
+                        role = TerminalMessageRole.SYSTEM_NOTE,
+                        text = "连续 $consecutiveCommandFailures 条命令失败，已暂停自动执行" +
+                            "（避免反复失败空烧 token）。请先看看上面的报错，处理后再发下一步。",
+                    )
+                }
+            }
             return
         }
-        autoRunQueue = autoRunQueue.drop(1)
-        executeAssistantCommand(next)
+        while (true) {
+            val next = autoRunQueue.firstOrNull() ?: return
+            autoRunQueue = autoRunQueue.drop(1)
+            // 双保险：队列里万一混进需要确认的命令，也不发（留给用户在界面上点）。
+            if (TerminalCommandSafety.requiresConfirmation(next.command, level)) continue
+            if (!_state.value.aiStudio.consoleConnected) {
+                autoRunQueue = emptyList()
+                return
+            }
+            executeAssistantCommand(next)
+            return
+        }
     }
 
     /**
@@ -3305,6 +3437,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (assistantJob?.isActive == true) return
         val followUp = "${LlmPrompts.commandResultPrefix()}\n\n${result.forModel()}"
         assistantJob = viewModelScope.launch {
+            _state.update { it.copy(assistantThinking = true) }
             val reply = runCatching {
                 llm.chat(
                     config = config,
@@ -3327,6 +3460,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     commands = commands,
                 )
             }
+            appendTruncationNote(reply)
             val newPending = commands.map { command ->
                 PendingCommand(
                     id = UUID.randomUUID().toString(),
@@ -3345,9 +3479,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             enqueueAutoRun(newPending)
         }.also { job ->
             job.invokeOnCompletion {
-                if (assistantJob === job) assistantJob = null
+                if (assistantJob === job) {
+                    assistantJob = null
+                    _state.update { it.copy(assistantThinking = false) }
+                }
                 // v0.2.61：本轮正常结束后把队列里的下一条发出去（否则排队消息永远发不出）。
-                // 被取消（如用户清空对话）时不发，否则刚清空又会冒出新消息。
+                // 被取消（如用户清空对话/点了停止）时不发，否则刚清空又会冒出新消息。
                 if (!job.isCancelled) drainAssistantQueue()
             }
         }
@@ -6887,6 +7024,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val ASSISTANT_COMMAND_TIMEOUT_MS = 10 * 60_000L
         /** v0.2.54：喂回模型的对话轮数。太多会挤爆上下文（每轮都带终端输出）。 */
         const val ASSISTANT_HISTORY_TURNS = 8
+        /**
+         * v0.2.62：连续失败多少条命令后暂停自动执行（对齐 Cline 的 `--retries` 默认 3）。
+         *
+         * 3 级自动执行是闭环（AI 提命令 → 执行 → 结果喂回 → 再提），环境有问题时
+         * 每步都失败但环照转。到上限就停，交由用户看一眼再决定。
+         */
+        const val MAX_CONSECUTIVE_COMMAND_FAILURES = 3
         /** 上报给远端 PTY 的行数。列数由界面实测宽度决定（见 aiStudioResizeConsole）。 */
         const val CONSOLE_ROWS = 40
         /** 控制台终端断线重连退避（毫秒）。最后一次失败后不再自动重试，提示手动重连。 */
