@@ -29,6 +29,14 @@ data class TerminalChatMessage(
     val timestamp: Long = System.currentTimeMillis(),
 )
 
+/**
+ * 从终端缓冲里切出的一条命令的输出与退出码（v0.2.61）。
+ */
+data class CommandOutputWindow(
+    val output: String,
+    val exitCode: Int,
+)
+
 /** 一条命令的执行结果，会作为后续对话的上下文。 */
 data class TerminalCommandResult(
     val command: String,
