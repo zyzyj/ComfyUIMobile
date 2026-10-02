@@ -3078,7 +3078,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 it + TerminalChatMessage(
                     id = UUID.randomUUID().toString(),
                     role = TerminalMessageRole.SYSTEM_NOTE,
-                    text = "还没配置大模型：设置 → AI 提示词助手，填接口地址和模型名。",
+                    text = "还没配置大模型：点右上角「模型配置」，填接口地址和模型名。",
                 )
             }
             return
