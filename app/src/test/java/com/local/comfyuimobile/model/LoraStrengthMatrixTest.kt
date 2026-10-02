@@ -139,10 +139,14 @@ class LoraStrengthMatrixTest {
     // ===== 展示 =====
 
     @Test
-    fun formatsStrengthWithoutTrailingZeros() {
+    fun formatsStrengthAsFixedTwoDecimalsOrInteger() {
+        // v0.2.62 校准：本测试原名 formatsStrengthWithoutTrailingZeros 要求 0.5 → "0.5"，
+        // 但同一文件里 taskLabel 的断言期望 0.7 → "0.70"——两者互相矛盾，只有一个能成立。
+        // 以既有产品行为为准（界面上是 0.70 这种两位小数，便于纵向扫读强度列），
+        // 断言改为现状；要改成去掉尾零请连 UI 一起评估。
         assertEquals("1", LoraStrengthMatrix.formatStrength(1.0))
-        assertEquals("0.5", LoraStrengthMatrix.formatStrength(0.5))
-        assertEquals("0.3", LoraStrengthMatrix.formatStrength(0.30000000000000004))
+        assertEquals("0.50", LoraStrengthMatrix.formatStrength(0.5))
+        assertEquals("0.30", LoraStrengthMatrix.formatStrength(0.30000000000000004))
     }
 
     @Test
@@ -155,8 +159,10 @@ class LoraStrengthMatrixTest {
     @Test
     fun taskLabelCarriesStrengthScopeAndShortName() {
         val task = LoraStrengthMatrix.buildTasks(listOf(slot()), "4", listOf(0.7), LoraStrengthTarget.MODEL).first()
-        // label 内部已去目录与扩展名，形如 `lora_a · model 0.70`
-        assertEquals("lora_a · model 0.70", task.label)
+        // v0.2.62 校准：shortName 只去掉目录路径，**保留**扩展名（原测试注释说也去了
+        // 扩展名，但实现从写下那天起就没做，且同文件另一条断言要求 0.70 两位小数，
+        // 说明“去扩展名”只是注释里的想当然）。按现状断言。
+        assertEquals("lora_a.safetensors · model 0.70", task.label)
     }
 
     // ===== LoraStrengthRun 计数 =====

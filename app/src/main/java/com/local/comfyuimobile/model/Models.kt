@@ -274,6 +274,13 @@ data class AppUiState(
     val commandPermissionLevel: Int = 2,
     /** 命令是否正在执行（用于禁用按钮，避免重复提交）。 */
     val assistantCommandRunning: Boolean = false,
+    /**
+     * 是否正在等大模型回复（v0.2.62）。
+     *
+     * 以前请求期间界面没有任何反馈——用户不知道是在等回复还是卡死了，
+     * 只能反复点发送。现在据此显示进度与「停止」按钮（对齐 Claude Code 的 Esc 中断）。
+     */
+    val assistantThinking: Boolean = false,
     val quickWorkflowName: String? = null,
     val quickFields: List<ParameterField> = emptyList(),
     val quickEnabledParams: List<String> = emptyList(),

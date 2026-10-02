@@ -261,6 +261,95 @@ class TerminalCommandSafetyTest {
         assertEquals(3, window.exitCode)
     }
 
+    // ===== 灾难性命令熔断（v0.2.62）=====
+
+    @Test
+    fun flagsCatastrophicDeletions() {
+        assertTrue(TerminalCommandSafety.isCatastrophic("rm -rf /"))
+        assertTrue(TerminalCommandSafety.isCatastrophic("rm -rf /*"))
+        assertTrue(TerminalCommandSafety.isCatastrophic("rm -rf ~"))
+        assertTrue(TerminalCommandSafety.isCatastrophic("rm -rf ~/*"))
+        assertTrue(TerminalCommandSafety.isCatastrophic("sudo rm -rf /usr"))
+        assertTrue(TerminalCommandSafety.isCatastrophic("rm -rf /usr/bin"))
+        assertTrue(TerminalCommandSafety.isCatastrophic("rm -rf --no-preserve-root /"))
+    }
+
+    @Test
+    fun catastrophicNeedsExplicitRecursion() {
+        // 删单个文件不靠熔断拦（按危险命令确认就够了），否则会把用户逼成无脑点确认
+        assertFalse(TerminalCommandSafety.isCatastrophic("rm ~/notes.txt"))
+        assertFalse(TerminalCommandSafety.isCatastrophic("rm -rf ~/models/loras"))
+        assertFalse(TerminalCommandSafety.isCatastrophic("ls -la ~/models"))
+    }
+
+    @Test
+    fun flagsDiskAndBootHazards() {
+        assertTrue(TerminalCommandSafety.isCatastrophic("mkfs.ext4 /dev/sda1"))
+        assertTrue(TerminalCommandSafety.isCatastrophic("dd if=/dev/zero of=/dev/sda bs=1M"))
+        assertTrue(TerminalCommandSafety.isCatastrophic("reboot"))
+        assertTrue(TerminalCommandSafety.isCatastrophic("shutdown -h now"))
+        assertTrue(TerminalCommandSafety.isCatastrophic(":(){ :|:& };:"))
+    }
+
+    @Test
+    fun flagsRecursivePermissionChangesOnSystemPaths() {
+        assertTrue(TerminalCommandSafety.isCatastrophic("chmod -R 777 /"))
+        assertTrue(TerminalCommandSafety.isCatastrophic("chown -R user:user /etc"))
+        // 改自己项目目录的权限不是灾难
+        assertFalse(TerminalCommandSafety.isCatastrophic("chmod -R 755 ~/models"))
+        assertFalse(TerminalCommandSafety.isCatastrophic("chmod +x run.sh"))
+    }
+
+    @Test
+    fun catastrophicSurvivesLevelThree() {
+        // 核心保证：即使用户选「不问」，灾难性命令也必须确认。
+        assertTrue(TerminalCommandSafety.requiresConfirmation("rm -rf /", 3))
+        assertTrue(TerminalCommandSafety.requiresConfirmation("reboot", 3))
+        // 普通危险命令在 3 级下仍不要求确认（用户明确授予的权限）
+        assertFalse(TerminalCommandSafety.requiresConfirmation("rm -rf ~/models/loras", 3))
+        assertFalse(TerminalCommandSafety.requiresConfirmation("pip install torch", 3))
+    }
+
+    @Test
+    fun catastrophicDoesNotFalsePositiveOnHarmlessCommands() {
+        // 误报会让用户对确认窗口麻木，反而削弱安全边界。这些都该是安全命令。
+        assertFalse(TerminalCommandSafety.isCatastrophic("nvidia-smi"))
+        assertFalse(TerminalCommandSafety.isCatastrophic("ls -la ~"))
+        assertFalse(TerminalCommandSafety.isCatastrophic("ls -la /usr/bin"))
+        assertFalse(TerminalCommandSafety.isCatastrophic("cat /etc/hosts"))
+        assertFalse(TerminalCommandSafety.isCatastrophic("df -h ~"))
+    }
+
+    @Test
+    fun redirectToNullIsNotAWarning() {
+        // `2>/dev/null` 极常见且无害：不能因此把探查命令也算成写操作。
+        assertTrue(TerminalCommandSafety.isReadOnly("nvidia-smi 2>/dev/null"))
+        assertFalse(TerminalCommandSafety.isCatastrophic("nvidia-smi 2>/dev/null"))
+        assertTrue(TerminalCommandSafety.isReadOnly("ls ~ 2>/dev/null"))
+    }
+
+    @Test
+    fun flagsWritesToSystemPaths() {
+        // 覆盖写系统文件的威力不亚于删除，同样要靠熔断拦。
+        assertTrue(TerminalCommandSafety.isCatastrophic("echo x > /etc/hosts"))
+        assertTrue(TerminalCommandSafety.isCatastrophic("echo x >> /usr/local/bin/run"))
+        assertTrue(TerminalCommandSafety.isCatastrophic("cat t.txt | tee /etc/profile"))
+        // 写自己目录不是灾难
+        assertFalse(TerminalCommandSafety.isCatastrophic("echo x > ~/notes.txt"))
+        assertFalse(TerminalCommandSafety.isCatastrophic("echo x > /tmp/out.txt"))
+    }
+
+    // ===== 命令建议超限提示（v0.2.62）=====
+
+    @Test
+    fun parseAllCommandsReportsTrueTotal() {
+        val many = (1..15).joinToString("\n") { "ls ~/dir$it" }
+        val reply = "```sh\n$many\n```"
+        // 截断版只给 MAX_COMMANDS 条；不截断版要给全，调用方才能算出被丢了几个。
+        assertEquals(TerminalCommandSafety.MAX_COMMANDS, TerminalCommandSafety.parseCommands(reply).size)
+        assertEquals(15, TerminalCommandSafety.parseAllCommands(reply).size)
+    }
+
     // ===== 命令结果回喂格式 =====
 
     @Test
