@@ -3630,10 +3630,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // v0.2.70：明确标成「终端输出」而不是当成用户说的话。
         // forModel 的文本里常常含看起来像指令的内容（报错里的 "run: pip install xxx"、
         // usage 提示），不标注的话模型可能把它当用户的新要求去执行。
-        val followUp = buildString {
-            append("终端输出（命令跑出来的原始结果，不是用户的要求）：\n")
-            append(result.forModel())
-        }
+        //
+        // v0.2.73：改用 AssistantContext 的统一前缀。以前这里手写成
+        // 「终端输出（…不是用户的要求）：」，与历史轮/守则的「终端输出:」**格式不一致**
+        // ——同一份 prompt 里两种写法，模型要自己猜是不是同一个标记。
+        val followUp = AssistantContext.wrapCommandResultForPrompt(result.forModel())
         assistantJob = viewModelScope.launch {
             _state.update { it.copy(assistantThinking = true) }
             val reply = runCatching {

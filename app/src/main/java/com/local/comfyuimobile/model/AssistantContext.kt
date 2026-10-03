@@ -23,8 +23,12 @@ object AssistantContext {
     /**
      * 会话历史部分（不含 system prompt）的 token 预算。
      *
-     * 取 6000 是保守值：不少便宜/本地模型只有 8k 窗口，system prompt（守则）已占约
-     * 1200，留出余量才不会一上来就超。宁可早压缩，也不要发了请求才失败。
+     * 取 6000 是保守值：不少便宜/本地模型只有 8k 窗口，而 system prompt（守则全文：
+     * 环境事实 + EXECUTION_ENV + VOICE + 五步 + RESULT_NOTICE + 输出格式）**实测约 2200 token**
+     * （v0.2.73 实测；加 EXECUTION_ENV 之前约 1700，更早的注释写"约 1200"是低估）。
+     * 留出余量才不会一上来就超——宁可早压缩，也不要发了请求才失败。
+     *
+     * 改动守则后请重新实测这个数（临时打印 systemPrompt 长度即可），别让注释漂移。
      */
     const val DEFAULT_TOKEN_BUDGET = 6_000
 
@@ -164,4 +168,25 @@ object AssistantContext {
      * 抽成常量是为了让守则文案能引用它，避免两处各写一遍后漂移（P1 就是这么来的）。
      */
     const val TERMINAL_OUTPUT_SPEAKER = "终端输出"
+
+    /**
+     * 把一条命令结果包装成"当前轮"的用户消息正文（v0.2.73）。
+     *
+     * 为什么要抽出来：这段以前在 `MainViewModel` 里手写，格式是
+     * `终端输出（命令跑出来的原始结果，不是用户的要求）：` —— 与历史轮的
+     * `终端输出: <内容>` **不一致**，而守则承诺的是后者（「凡是标着『终端输出:』
+     * 开头的段落」）。于是模型在同一份 prompt 里看到两种写法，要自己猜是不是同一个标记。
+     *
+     * 现在两条路径共用同一前缀（[prefixForPrompt]），格式统一为 `终端输出:`。
+     */
+    fun wrapCommandResultForPrompt(body: String): String =
+        "${prefixForPrompt()}\n$body"
+
+    /**
+     * 命令输出在 prompt 里的统一前缀（当前轮与历史轮共用）。
+     *
+     * 带冒号、与 `toTranscriptLine()` 拼出的 `终端输出: …` 完全同形——
+     * 模型只需认这一个标记。
+     */
+    fun prefixForPrompt(): String = "$TERMINAL_OUTPUT_SPEAKER:"
 }

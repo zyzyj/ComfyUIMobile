@@ -136,6 +136,15 @@ class WorkflowSnapshotStore internal constructor(private val directory: File) {
         directory.mkdirs()
         val target = fileFor(serverUrl, workflowPath)
         val temporary = File(directory, ".${target.name}.${UUID.randomUUID()}.tmp")
+        // v0.2.73：写入时刻只取一次，同时用于 JSON 里的 updatedAt 与文件的 mtime。
+        //
+        // 为什么要在意这个：pruneNow 按 **mtime** 排序淘汰、listNow 按 JSON 里的
+        // **updatedAt** 排序展示——两个键**不同源**。正常情况二者一致（都是写入时刻），
+        // 但系统时间回拨、外部工具 touch 过文件等情况会让它们分叉，于是可能出现
+        // "prune 删掉了 list 里显示为最新的一条"这种自相矛盾的行为。
+        // 显式把 mtime 设成同一个值，两个键从此同源（旧版本写的文件 mtime 也≈updatedAt，
+        // 不会出现倒退）。
+        val writtenAt = System.currentTimeMillis()
         try {
             temporary.outputStream().bufferedWriter(Charsets.UTF_8).use { writer ->
                 writer.write(
@@ -143,7 +152,7 @@ class WorkflowSnapshotStore internal constructor(private val directory: File) {
                         .put("schema", SCHEMA)
                         .put("serverUrl", normalizeServer(serverUrl))
                         .put("workflowPath", workflowPath)
-                        .put("updatedAt", System.currentTimeMillis())
+                        .put("updatedAt", writtenAt)
                         .put("json", json)
                         .toString(),
                 )
@@ -159,6 +168,9 @@ class WorkflowSnapshotStore internal constructor(private val directory: File) {
             }.getOrElse {
                 Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
+            // 与 updatedAt 同源（见上面 writtenAt 的说明）。设置失败也无所谓：
+            // mtime 会退回文件系统时间，量级上仍然一致。
+            runCatching { target.setLastModified(writtenAt) }
             pruneNow()
         } finally {
             if (temporary.exists()) temporary.delete()
