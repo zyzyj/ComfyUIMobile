@@ -32,9 +32,6 @@ object AssistantContext {
      */
     const val DEFAULT_TOKEN_BUDGET = 6_000
 
-    /** 达到预算的这个比例时，界面提示「上下文偏长」。 */
-    const val NOTICE_RATIO = 0.75
-
     /** 被压缩掉的命令输出在 prompt 里的占位文本。 */
     const val OMITTED_OUTPUT = "[较早的命令输出已省略]"
 
@@ -118,7 +115,11 @@ object AssistantContext {
             }
         }
 
-        // 第二轮：仍超预算就从最旧的整条消息丢起（永远保留最后两条）
+        // 第二轮：仍超预算就从最旧的整条消息丢起。
+        //
+        // `lines.size > 2` 是**刻意的下限**：宁可让这一次请求稍微超预算，也不把对话
+        // 清空——模型至少要看到"最近发生了什么"才能接得上话（只有 1-2 条时
+        // 超预算说明单条就极长，那种情况丢光了反而更糟）。
         while (estimateTokens(joined()) > budgetTokens && lines.size > 2) {
             lines.removeAt(0)
             omittedTurns++
@@ -168,6 +169,20 @@ object AssistantContext {
      * 抽成常量是为了让守则文案能引用它，避免两处各写一遍后漂移（P1 就是这么来的）。
      */
     const val TERMINAL_OUTPUT_SPEAKER = "终端输出"
+
+    /**
+     * 为「跟进轮」准备历史（v0.2.74）。
+     *
+     * 跟进轮会把命令结果作为 followUp 单独传入，而那条结果**同时也已经被追加进了
+     * 消息列表**（`executeAssistantCommand` 先写 `TERMINAL_OUTPUT` 再调 follow-up）。
+     * 若不对历史做处理，同一份结果会进 prompt 两次，且第二次的标签是 `User:`——
+     * 那恰恰是"这是人的要求"的意思，与防间接注入的方向直接冲突。
+     *
+     * 所以丢掉**尾部连续的命令输出**（只丢最后那几条即可——更早的输出本来就该留在
+     * 上下文里，它们是模型理解"前面发生了什么"的依据）。
+     */
+    fun historyForFollowUp(messages: List<TerminalChatMessage>): List<TerminalChatMessage> =
+        messages.dropLastWhile { it.role == TerminalMessageRole.TERMINAL_OUTPUT }
 
     /**
      * 把一条命令结果包装成"当前轮"的用户消息正文（v0.2.73）。

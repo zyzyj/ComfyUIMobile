@@ -1,3 +1,95 @@
+# v0.2.74 — 安全修复：复合命令绕过确认关卡（P0/P1 两条漏洞）
+
+一份安全复审报告指出两条**真漏洞**。我逐条复现确认后修复，并做了对抗性验证。
+
+## P0 · 复合命令绕过人工确认（默认档位下自动执行危险动作）
+
+### 漏洞
+
+`isReadOnly` 只检查了管道 `|`，**漏掉 `&&`、`||`、`;`、`$(`、反引号**。
+而 `isDangerous` 对"只读"直接短路——于是「以只读命令开头」的复合命令被判为只读，
+**默认档位（2）下自动执行、不弹确认**。
+
+### 实测复现（用项目自身代码跑出来，非纸面推演）
+
+```
+isReadOnly=true isDangerous=false autoRunnable(2)=true | ls && rm -rf ~/models
+isReadOnly=true isDangerous=false autoRunnable(2)=true | ls ; shutdown -h now
+isReadOnly=true isDangerous=false autoRunnable(2)=true | ls $( rm -rf ~/models
+isReadOnly=true isDangerous=false autoRunnable(2)=true | nvidia-smi && mkfs.ext4 /dev/sda
+```
+
+**为什么不是纸面风险**：档位 2 的界面承诺是「删除/覆盖等仍需确认」，而这里
+删除、关机、格式化全被静默放行。守则 v0.2.72 起又明确允许"只读探查可一次给两三条"，
+模型写 `ls && du -sh` 这类复合命令是自然行为——只要它把危险动作接在后面就会漏放。
+
+### 修复
+
+`isReadOnly` 改为**按分隔符分段、要求每段都只读**，且首段仍是只读前缀
+（首段检查防的是 `rm -rf x && ls` 反向绕过）。
+
+**对抗性验证时又发现一处漏网**：单 `&`（后台执行）也是分隔符——
+`ls & rm -rf x` 会让两件事都发生，而报告只列了 `&&`/`;`/`$(`/反引号/`|`。
+已一并补上。注意 Kotlin 的 `split(vararg)` 按数组顺序拆，所以双字符的
+`&&`/`||` 必须排在单字符 `&`/`|` 之前。
+
+## P1 · 灾难熔断只看首个 token（档位 3 下漏放）
+
+### 漏洞
+
+`commandVerb` 取整条命令的**首个**非选项 token 当动词，于是 `ls && shutdown -h now`
+的"动词"被判成 `ls`，灾难熔断完全没触发——而档位 3 的界面承诺是
+「灾难性操作**仍会要求确认**」。
+
+### 实测复现
+
+```
+isCatastrophic=false autoRunnable(3)=true | ls && shutdown -h now
+isCatastrophic=false autoRunnable(3)=true | nvidia-smi && shutdown -h now
+isCatastrophic=false autoRunnable(3)=true | df -h && mkfs.ext4 /dev/sda
+```
+
+（`ls && rm -rf /` 以前是被拦住的——`rm` 走 token 匹配、`/` 在关键路径表里。
+**只有基于动词判定的那几类**（shutdown / reboot / mkfs 等）会漏。）
+
+### 修复
+
+`isCatastrophic` 同样按分隔符分段，**对每段递归判定**。
+
+## P2 · 命令结果重复入参，且第二次标签是 `User:`
+
+`executeAssistantCommand` 先把结果以 `TERMINAL_OUTPUT` 写入消息列表，紧接着
+`askAssistantFollowUp` 又把**同一份结果**作为 followUp 传入，而 history 里已包含刚写的那条。
+后果有两个：
+
+1. **token 浪费**：同一份结果付两遍（`forDisplay` 4000 字 + `forModel` 2000 字）。
+2. **削弱反注入**：v0.2.70~2.73 三轮都在做"让模型分清机器输出与用户的话"，
+   而这里同一份输出同时挂在 `终端输出:` 与 **`User:`** 两个标签下——
+   `User:` 恰恰是"这是人的要求"的意思。
+
+**修复**：抽出 `AssistantContext.historyForFollowUp()`，丢掉**尾部连续**的命令输出
+（更早的输出必须保留——它们是模型理解上下文的依据）。保留 followUp 版即可，
+它信息更全（含 `$ command` 与退出码）。
+
+## P3 · 清理
+
+- 删除死常量 `NOTICE_RATIO`（全项目无人引用）。
+- 给 `buildTranscript` 第二轮 `while (... && lines.size > 2)` 补注释：
+  这是**刻意的下限**——宁可让这次请求略超预算，也不把对话清空。
+- 报告提到的 `sliceOutput` 标记伪造风险：token 是随机 UUID、模型不可预知，
+  **实际不可利用**——不投入（与报告结论一致）。
+
+## 验证
+
+- **全部绕过案例变成永久测试**：新增 6 条（复合命令不判只读、以危险命令开头的复合、
+  纯只读复合仍放行、单条命令行为不变、灾难尾部必熔断、灾难不误报）。
+- **回归护栏**：`nvidia-smi 2>/dev/null`、`find ~ -name "*.safetensors"`、
+  `cat a | grep error`、`pip install comfyui-manager` 等 10 条正常命令行为**逐条核对不变**。
+- 误报防护：`grep shutdown /var/log/x` 仍不判灾难（shutdown 是参数不是动词）。
+- 本地全量：**526 个测试通过，0 失败**。
+
+---
+
 # v0.2.73 — 采纳架构审视：三处小修 + 桥接层首个测试
 
 收到一份**全项目架构审视**（不同于前两份的助手专项）。它的定位很清楚：

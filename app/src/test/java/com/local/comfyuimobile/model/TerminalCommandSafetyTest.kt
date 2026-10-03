@@ -283,6 +283,106 @@ class TerminalCommandSafetyTest {
         assertEquals(3, TerminalCommandSafety.nextFailureCount(2, 127))
     }
 
+    // ===== 复合命令不能绕过确认（v0.2.74 安全修复）=====
+    //
+    // 真漏洞：`isReadOnly` 以前只检查管道 `|`，漏掉 `&&` `||` `;` `$(` 反引号。
+    // 于是 `ls && rm -rf ~/models` 因以只读命令开头被判成"只读"，
+    // 而 isDangerous 对只读直接短路 → 默认档位（2）下**自动执行、不弹确认**。
+    // 每一条都实测复现过（复现脚本见 RELEASE_NOTES）。
+
+    @Test
+    fun compoundCommandsWithDestructivePayloadAreNotReadOnly() {
+        listOf(
+            "ls && rm -rf ~/models",
+            "ls ; shutdown -h now",
+            "ls \$( rm -rf ~/models",
+            "ls ` rm -rf ~/models",
+            "cat x && rm -rf ~/models",
+            "ls && mv ~/models /tmp",
+            "ls && kill 1234",
+            "nvidia-smi && mkfs.ext4 /dev/sda",
+            "df -h && mkfs.ext4 /dev/sda",
+            "ls && pip uninstall torch",
+            // 单 `&`（后台执行）也要分段——这条是补完其他分隔符后做对抗性验证才发现的漏网，
+            // 最初的报告里没列到：`ls & rm -rf x` 会让两件事都发生。
+            "ls & rm -rf ~/models",
+        ).forEach { command ->
+            assertFalse("复合命令不能算只读：$command", TerminalCommandSafety.isReadOnly(command))
+            assertFalse("复合命令不能自动执行：$command", TerminalCommandSafety.autoRunnable(command, 2))
+            assertTrue("复合命令应被识别为危险：$command", TerminalCommandSafety.isDangerous(command))
+        }
+    }
+
+    @Test
+    fun compoundCommandStartingWithDangerousPartIsNotReadOnly() {
+        // 反向也要挡住：以危险命令开头的复合命令同样是危险
+        assertFalse(TerminalCommandSafety.isReadOnly("rm -rf x && ls"))
+        assertFalse(TerminalCommandSafety.autoRunnable("rm -rf x && ls", 2))
+    }
+
+    @Test
+    fun safeCompoundCommandsStillWork() {
+        // 回归护栏：纯只读的复合命令不受影响——守则 v0.2.72 起明确允许"只读探查一次给两三条"，
+        // 它们拼成一条时（`ls && du -sh`）仍然要能自动执行。
+        listOf(
+            "ls ~ && du -sh ~/models",
+            "nvidia-smi ; df -h ~",
+            "cat a.txt | grep error",
+            "ls ~ | head -5",
+        ).forEach { command ->
+            assertTrue("纯只读复合命令仍应放行：$command", TerminalCommandSafety.autoRunnable(command, 2))
+        }
+    }
+
+    @Test
+    fun normalSingleCommandsBehaveAsBefore() {
+        // 回归护栏：单条命令的行为一条都不能变（这是修复时最容易踩的地方）
+        assertTrue(TerminalCommandSafety.isReadOnly("nvidia-smi 2>/dev/null"))
+        assertTrue(TerminalCommandSafety.isReadOnly("find ~ -name \"*.safetensors\""))
+        assertTrue(TerminalCommandSafety.autoRunnable("pip install comfyui-manager", 2))
+        assertTrue(TerminalCommandSafety.autoRunnable("git clone https://x/y.git", 2))
+        assertTrue(TerminalCommandSafety.autoRunnable("ls ~/ComfyUI/custom_nodes", 2))
+        assertFalse(TerminalCommandSafety.autoRunnable("rm -rf ~/models", 2))
+    }
+
+    // ===== 灾难熔断要逐段判定（v0.2.74 安全修复）=====
+
+    @Test
+    fun compoundCommandsWithCatastrophicTailAreBlockedAtAnyLevel() {
+        // 真漏洞：`isCatastrophic` 以前只取整条命令的首个 token 当动词，
+        // 于是 `ls && shutdown -h now` 的"动词"被判成 ls，熔断完全不触发。
+        // 而档位 3 的界面承诺是「灾难性操作仍会要求确认」。
+        listOf(
+            "ls && shutdown -h now",
+            "nvidia-smi && shutdown -h now",
+            "df -h && mkfs.ext4 /dev/sda",
+            "ls && reboot",
+            "df -h ; poweroff",
+            "ls && rm -rf ~",
+            "ls && rm -rf /usr/bin",
+        ).forEach { command ->
+            assertTrue("复合命令里的灾难动作必须触发熔断：$command", TerminalCommandSafety.isCatastrophic(command))
+            assertFalse("熔断不受档位影响：$command", TerminalCommandSafety.autoRunnable(command, 3))
+            assertFalse("档位 2 同样不放行：$command", TerminalCommandSafety.autoRunnable(command, 2))
+        }
+    }
+
+    @Test
+    fun catastrophicCompoundDoesNotFalsePositive() {
+        // 回归护栏：不能因为分段判定把正常命令误报成灾难——
+        // 误报会让用户对确认弹窗麻木，反而削弱安全边界。
+        listOf(
+            "nvidia-smi", "ls ~", "cat /etc/hosts", "df -h ~",
+            "grep shutdown /var/log/x",      // 关键：shutdown 是参数不是动词
+            "pip install comfyui-manager",
+            "rm -rf ~/models/loras",         // 有明确子目录：危险但非灾难
+            "chmod -R 755 ~/models",
+            "echo hello",
+        ).forEach { command ->
+            assertFalse("不该误报为灾难：$command", TerminalCommandSafety.isCatastrophic(command))
+        }
+    }
+
     // ===== 自动执行白名单（v0.2.64）=====
 
     @Test

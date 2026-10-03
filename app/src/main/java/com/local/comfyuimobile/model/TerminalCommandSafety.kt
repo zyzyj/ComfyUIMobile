@@ -84,15 +84,49 @@ object TerminalCommandSafety {
         // 被当成只读整体放行——覆盖写文件反而完全不用确认。写到 /dev/null 一类的例外
         // 保留（`nvidia-smi 2>/dev/null` 太常见，且无害）。
         if (hasUnsafeRedirect(normalized)) return false
-        // 管道里若接了写命令（如 `cat x | tee y`），整体不再算只读。
-        if (normalized.contains("|")) {
-            val parts = normalized.split("|").map { it.trim() }
-            if (parts.drop(1).any { part -> isDangerous(part) }) return false
+        // v0.2.74（安全修复）：**整条命令的每一段都必须只读**。
+        //
+        // 以前只检查了管道 `|`，漏掉 `&&`、`||`、`;`、`$(`、反引号——于是
+        // `ls && rm -rf ~/models` 因为以只读命令开头被判成"只读"，
+        // 而 isDangerous 对只读直接短路，默认档位（2）下**自动执行、不弹确认**。
+        // 这是真漏洞：档位 2 的界面承诺是"删除/覆盖等仍需确认"。
+        //
+        // 分段后要求：① 每段都只读（递归判定）② 第一段是只读前缀。
+        // 后者防的是 `rm -rf x && ls`（以危险命令开头）被当成只读。
+        val segments = splitBySeparators(normalized)
+        if (segments.size > 1) {
+            if (segments.any { segment -> !isReadOnly(segment) }) return false
         }
+        val head = segments.firstOrNull()?.trim().orEmpty()
+        if (head.isBlank()) return false
         return READ_ONLY_PREFIXES.any { prefix ->
-            normalized == prefix || normalized.startsWith("$prefix ")
+            head == prefix || head.startsWith("$prefix ")
         }
     }
+
+    /**
+     * 按 shell 的分隔符把命令切成若干段（v0.2.74）。
+     *
+     * 覆盖：`&&`、`||`、`;`、`|`、`$(`、反引号。都是"这条命令里还会跑别的命令"的信号——
+     * 只要其中任意一段不是只读，整条就不能算只读。
+     *
+     * 刻意**不**处理转义与引号（如 `echo 'a;b'` 里的分号）：那需要真正的 shell 解析，
+     * 而这里的方向必须是"宁可多判危险"——把字面量分号也当分隔符，最坏结果是
+     * 一条安全的只读命令多要一次确认，而不是漏放一条危险命令。
+     */
+    private fun splitBySeparators(command: String): List<String> =
+        command.split(*SHELL_SEPARATORS).map { it.trim() }.filter { it.isNotEmpty() }
+
+    /**
+     * 命令分隔符（v0.2.74）。
+     *
+     * 双字符的 `&&` / `||` **必须排在**单字符 `&` / `|` 之前——Kotlin 的
+     * `split(vararg delimiters)` 按数组顺序逐个拆，先拆长的才不会把 `&&` 碎成两个 `&`。
+     *
+     * 单字符 `&` 是"放到后台执行"：`ls & rm -rf x` 会让两件事都发生，必须分段。
+     * （这条是补完 `&&`/`;`/`$(`/反引号之后做对抗性验证才发现的漏网，报告里没列到。）
+     */
+    private val SHELL_SEPARATORS = arrayOf("&&", "||", ";", "|", "&", "\$(", "`")
 
     /**
      * 是否存在“写到真实文件”的重定向（`> f` / `>> f`）。
@@ -304,6 +338,23 @@ object TerminalCommandSafety {
         if (normalized.isBlank()) return false
         if (FORK_BOMB.containsMatchIn(normalized)) return true
         if (writesToSystemPath(normalized)) return true
+
+        // v0.2.74（安全修复）：复合命令要**逐段**判定，不能只看第一段的动词。
+        //
+        // 以前 commandVerb 只在整条命令里取首个非选项 token，于是
+        // `ls && shutdown -h now` 的"动词"被判成 ls，灾难熔断完全没触发——
+        // 而档位 3 的界面承诺是"灾难性操作仍会要求确认"。
+        // 同理漏掉的还有 `nvidia-smi && mkfs.ext4 /dev/sda`、`df -h && mkfs...`。
+        //
+        // 注意 `ls && rm -rf /` 以前是被拦住的（rm 走 token 匹配、/ 在 CRITICAL_EXACT），
+        // 漏的只有"基于动词"的那几类（shutdown / reboot / mkfs 等）。
+        // 这里对每段都跑一次完整判定，两类都覆盖。
+        val segments = splitBySeparators(normalized)
+        if (segments.size > 1) {
+            // 用同一个函数递归判定每一段。段内可能还有嵌套分隔符，
+            // 递归会继续拆——直到每段都不含分隔符为止。
+            return segments.any { isCatastrophic(it) }
+        }
 
         val tokens = normalized.split(' ', '\t').filter { it.isNotBlank() }
         if (tokens.isEmpty()) return false
