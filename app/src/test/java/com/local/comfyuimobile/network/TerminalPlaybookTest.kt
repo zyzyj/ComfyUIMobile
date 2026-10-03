@@ -105,6 +105,74 @@ class TerminalPlaybookTest {
         assertTrue(disconnected.contains("命令无法执行"))
     }
 
+    // ===== 执行环境硬约束（v0.2.72）=====
+    //
+    // 这一节补的是"命令会挂住或结果会错乱"的坑。每条都对应 App 侧一个真实机制：
+    // 卡在交互式输入就白等 10 分钟；后台命令会"假完成"；多行脚本被按行拆碎；
+    // 长输出把结束标记挤出 2000 行缓冲；喂给模型的输出是截断的。
+
+    @Test
+    fun tellsModelCommandsMustFinishOnTheirOwn() {
+        val text = prompt()
+        assertTrue("包管理器要带 -y", text.contains("-y"))
+        assertTrue("不要用需要键盘输入的命令", text.contains("需要键盘输入"))
+        assertTrue("要说明卡住会挂到超时", text.contains("挂到超时"))
+    }
+
+    @Test
+    fun forbidsBackgroundCommands() {
+        // 后台命令让 { } 立刻返回、END 标记带 rc=0 立刻出现 → App 判定"成功但无输出"，
+        // 真实输出流到模型看不到的地方，后续判断全错。
+        val text = prompt()
+        assertTrue("禁止 nohup", text.contains("nohup"))
+        assertTrue("要说明会假完成", text.contains("假完成"))
+        assertTrue("指引去控制台页", text.contains("控制台"))
+    }
+
+    @Test
+    fun requiresSingleLineCommands() {
+        // parseCommands 是按行解析的，多行脚本会被拆成残片
+        val text = prompt()
+        assertTrue("要求单行", text.contains("单行"))
+        assertTrue("点名 heredoc", text.contains("heredoc"))
+        assertTrue("说明是按行解析", text.contains("按行"))
+    }
+
+    @Test
+    fun warnsAboutLongOutputPushOutMarkers() {
+        val text = prompt()
+        assertTrue("要自己限流", text.contains("限流"))
+        assertTrue("点明 2000 行缓冲", text.contains("2000 行"))
+        assertTrue("说明后果是判定超时", text.contains("挤出缓冲"))
+    }
+
+    @Test
+    fun tellsModelOutputIsTruncated() {
+        val text = prompt()
+        assertTrue("要说明输出被截断", text.contains("截断"))
+        assertTrue("点明只保留末尾", text.contains("末尾"))
+    }
+
+    @Test
+    fun statesContainerIdentityAndLocalAddress() {
+        // 容器里通常是 root 且无 sudo；comfyUiUrl 是外部反代入口，
+        // 模型很可能去 curl 那个外网地址，而容器内应走 localhost。
+        val text = prompt()
+        assertTrue("说明是 root", text.contains("root"))
+        assertTrue("不要加 sudo", text.contains("不要加 sudo"))
+        assertTrue("容器内用 localhost", text.contains("localhost"))
+        assertTrue("说明外网地址是反代入口", text.contains("反代入口"))
+    }
+
+    @Test
+    fun reconPhaseAllowsBatchReadOnlyCommands() {
+        // P8：守则一要求"最少覆盖"三项、守则四要求"一次一条"，模型会自己纠结。
+        // 明确：只读探查可多条，写操作严格单条。
+        val text = prompt()
+        assertTrue("写操作要一次一条", text.contains("一次只给一条命令"))
+        assertTrue("只读可以多条", text.contains("只读的探查命令可以一次给两三条"))
+    }
+
     // ===== 命令结果的角色标注（v0.2.70）=====
 
     @Test

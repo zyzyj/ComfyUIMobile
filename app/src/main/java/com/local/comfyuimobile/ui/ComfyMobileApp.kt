@@ -284,6 +284,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.random.Random
 import androidx.compose.foundation.layout.ColumnScope
@@ -611,9 +612,28 @@ private fun AssistantStatusStrip(
     val busy = thinking || running
     if (configured && terminalConnected && !busy) return
 
+    // v0.2.72：等待超过 15 秒后补一句，缓解"卡住了吗"的焦虑。
+    // 推理模型（带 thinking）沉默几十秒是常态，光一句"正在思考…"撑不住；
+    // 补上耗时与"可以点停止"能让人安心（P10）。
+    var waitedSeconds by remember(busy) { mutableStateOf(0) }
+    LaunchedEffect(busy) {
+        waitedSeconds = 0
+        while (busy) {
+            delay(1_000L)
+            waitedSeconds += 1
+        }
+    }
     val (text, tint) = when {
         !configured -> "未配置大模型 · 点右上角齿轮" to MaterialTheme.colorScheme.onSurfaceVariant
-        busy -> (if (running) "正在执行命令…" else "正在思考…") to MaterialTheme.colorScheme.primary
+        busy -> {
+            val base = if (running) "正在执行命令…" else "正在等大模型回复…"
+            val suffix = when {
+                waitedSeconds < 15 -> ""
+                running -> "（已等 ${waitedSeconds} 秒，慢命令属正常，可点停止）"
+                else -> "（已等 ${waitedSeconds} 秒，模型还在推理，可点停止）"
+            }
+            (base + suffix) to MaterialTheme.colorScheme.primary
+        }
         else -> "终端未连接 · 命令无法执行" to MaterialTheme.colorScheme.error
     }
     Surface(

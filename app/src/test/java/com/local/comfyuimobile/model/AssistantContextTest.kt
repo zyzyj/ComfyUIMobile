@@ -23,7 +23,10 @@ class AssistantContextTest {
      * 所以"超预算"要靠**条数**堆出来，不能靠单条造得更大。
      */
     private fun longOutput(tag: String) = msg(
-        TerminalMessageRole.SYSTEM_NOTE,
+        // v0.2.72：这里本该是 TERMINAL_OUTPUT（"命令输出"）。
+        // 以前误用 SYSTEM_NOTE，恰好因为旧实现把两类混在 omittedOutputs 里才没暴露；
+        // P2 分开计数后立刻失败——说明这个辅助函数原来就写错了角色。
+        TerminalMessageRole.TERMINAL_OUTPUT,
         "cmd-$tag\n" + "x".repeat(9_000),
     )
 
@@ -75,6 +78,64 @@ class AssistantContextTest {
         val t = AssistantContext.buildTranscript(history, "继续", budgetTokens = 900)
         assertTrue("确实压缩了", t.compacted)
         assertTrue("压缩后必须回到预算内", t.tokens <= 1_200)
+    }
+
+    // ===== 角色标记（v0.2.72）=====
+
+    @Test
+    fun terminalOutputGetsItsOwnSpeakerNotSystem() {
+        // P1：命令输出以前在历史轮被标成 "System"，与「已排队 N 条」这类旁注
+        // 长得一样——守则承诺的「终端输出标记」在历史轮根本不成立，防注入失效。
+        val history = listOf(
+            msg(TerminalMessageRole.USER, "看下插件"),
+            msg(TerminalMessageRole.TERMINAL_OUTPUT, "$ ls\ncustom_nodes"),
+            msg(TerminalMessageRole.SYSTEM_NOTE, "已排队 1 条"),
+        )
+        val t = AssistantContext.buildTranscript(history, "然后呢")
+        assertTrue("命令输出要有自己的标记", t.text.contains("${AssistantContext.TERMINAL_OUTPUT_SPEAKER}:"))
+        assertTrue("旁注仍是 System", t.text.contains("System: 已排队 1 条"))
+        // 关键：命令输出不能是 "System:"，否则与旁注混淆
+        assertFalse(
+            "命令输出不能与旁注混为同一个 speaker",
+            t.text.contains("System: $ ls"),
+        )
+    }
+
+    @Test
+    fun speakerNameMatchesPlaybookWording() {
+        // 守则文案写的是「终端输出:」开头——两边必须是同一个字符串，
+        // 否则模型收到的标记与我承诺的不一致（P1 的根因就是两处各写一遍）。
+        assertEquals("终端输出", AssistantContext.TERMINAL_OUTPUT_SPEAKER)
+        val playbook = com.local.comfyuimobile.network.TerminalPlaybook.RESULT_NOTICE
+        assertTrue(
+            "守则里必须出现同一个标记",
+            playbook.contains("${AssistantContext.TERMINAL_OUTPUT_SPEAKER}:"),
+        )
+    }
+
+    // ===== 压缩计数分类（v0.2.72）=====
+
+    @Test
+    fun omittedNotesCountedSeparatelyFromOutputs() {
+        // P2：以前旁注被算进 omittedOutputs，界面提示"已省略 N 条命令输出"与实际不符。
+        val history = buildList {
+            repeat(4) { add(longOutput("out$it")) }
+            add(msg(TerminalMessageRole.SYSTEM_NOTE, "已排队 1 条"))
+            add(msg(TerminalMessageRole.SYSTEM_NOTE, "已省略 2 条"))
+            repeat(3) { add(longOutput("recent$it")) }
+        }
+        val t = AssistantContext.buildTranscript(history, "继续", budgetTokens = 900)
+        assertTrue("应触发压缩", t.compacted)
+        assertTrue("命令输出计数应大于 0", t.omittedOutputs > 0)
+        assertTrue("旁注计数应大于 0", t.omittedNotes > 0)
+        // 两类之和才是总占位数
+        val totalOmitted = t.omittedOutputs + t.omittedNotes
+        assertEquals(
+            "总占位数应等于两类之和",
+            totalOmitted,
+            Regex(Regex.escape(AssistantContext.OMITTED_OUTPUT))
+                .findAll(t.text).count(),
+        )
     }
 
     // ===== 压缩：不够才动对话 =====
