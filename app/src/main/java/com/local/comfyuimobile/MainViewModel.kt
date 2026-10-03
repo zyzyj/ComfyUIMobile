@@ -3448,7 +3448,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _assistantMessages.update {
             it + TerminalChatMessage(
                 id = UUID.randomUUID().toString(),
-                role = TerminalMessageRole.USER,
+                // v0.2.75：用独立角色而不是 USER。复用 USER 会让
+                // retryLastAssistantRequest 的 indexOfLast { role == USER }
+                // 命中这句话，重发出去的是"（已执行）xxx"而不是用户的真实问题。
+                role = TerminalMessageRole.EXECUTED_MARK,
                 text = "（已执行）${pending.command}",
             )
         }
@@ -3544,8 +3547,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val level = _state.value.commandPermissionLevel
         if (assistantCommandJob?.isActive == true) return
         // v0.2.62 熔断：连续失败到上限就不再自动往下跑（对齐 Cline 的 --retries 默认 3）。
-        // 队列一并清掉，否则下次触发（如新回复）又会把它翻出来接着失败。
+        // v0.2.75：队列里的剩余命令**落回界面**而不是丢弃——它们已经生成出来了，
+        // 用户应该在界面上看到并可自行决定，而不是凭空消失。
         if (consecutiveCommandFailures >= MAX_CONSECUTIVE_COMMAND_FAILURES) {
+            releaseQueueToPending()
             if (autoRunQueue.isNotEmpty()) {
                 autoRunQueue = emptyList()
                 _assistantMessages.update {
@@ -3553,7 +3558,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         id = UUID.randomUUID().toString(),
                         role = TerminalMessageRole.SYSTEM_NOTE,
                         text = "连续 $consecutiveCommandFailures 条命令失败，已暂停自动执行" +
-                            "（避免反复失败空烧 token）。请先看看上面的报错，处理后再发下一步。",
+                            "（避免反复失败空烧 token）。剩下的命令已列在下面，" +
+                            "你可以自己决定要不要继续。",
                     )
                 }
             }
@@ -3562,15 +3568,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         while (true) {
             val next = autoRunQueue.firstOrNull() ?: return
             autoRunQueue = autoRunQueue.drop(1)
-            // 双保险：队列里万一混进不该自动执行的命令，也不发（留给用户在界面上点）。
-            if (!TerminalCommandSafety.autoRunnable(next.command, level)) continue
+            // v0.2.75：不满足自动执行条件（如用户中途调低了档位）时**落回界面**。
+            // 以前这里是 continue（直接丢弃），而注释写着"留给用户在界面上点"——
+            // 实际上那条命令从未进入 _pendingCommands，界面上根本没有它可点。
+            // 真机表现：档位 3 下 AI 给了 5 条命令，用户改成档位 1，结果只跑了 1 条、
+            // 剩下 4 条凭空消失且无任何提示。
+            if (!TerminalCommandSafety.autoRunnable(next.command, level)) {
+                _pendingCommands.value = _pendingCommands.value + next
+                continue
+            }
             if (!_state.value.aiStudio.consoleConnected) {
-                autoRunQueue = emptyList()
+                // 终端断了发不出去：剩余命令落回界面，用户连上后还能自己点。
+                releaseQueueToPending()
                 return
             }
             executeAssistantCommand(next)
             return
         }
+    }
+
+    /**
+     * 把自动执行队列里的剩余命令**落回待办界面**（v0.2.75）。
+     *
+     * 用在"不能再自动往下跑"但仍该让用户看到那些命令的场合
+     * （连续失败熔断、终端断开）。丢弃它们等于让用户面对"AI 说给了 5 条，
+     * 界面上只有 1 条"的困惑。
+     */
+    private fun releaseQueueToPending() {
+        if (autoRunQueue.isEmpty()) return
+        val known = _pendingCommands.value.mapTo(mutableSetOf()) { it.id }
+        _pendingCommands.value = _pendingCommands.value + autoRunQueue.filterNot { it.id in known }
+        autoRunQueue = emptyList()
     }
 
     /**
