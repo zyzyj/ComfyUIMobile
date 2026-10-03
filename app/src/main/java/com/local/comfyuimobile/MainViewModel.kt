@@ -186,6 +186,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var strengthCancelRequested = false
     private var workflowSaveJob: Job? = null
     private var workflowDraftSaveJob: Job? = null
+    /** 快捷页字段值的防抖保存（v0.2.71）：打字时不要每个字符都写一次磁盘。 */
+    private var quickFieldValuesSaveJob: Job? = null
     private var visibleNodeJob: Job? = null
     // v0.1.87：任务列表刷新的合并器（见 scheduleTasksRefresh）。
     private var tasksRefreshJob: Job? = null
@@ -2895,6 +2897,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun quickSelectWorkflow(entry: WorkflowEntry) {
         if (entry.isDirectory) return
+        // v0.2.71：切工作流前把上一个工作流待写的参数值落盘
+        // （防抖保存会被新的输入取消，不 flush 就丢了最后一次改动）。
+        flushQuickFieldValues()
         AppLogger.info("快捷生图选择工作流：${entry.path}")
         viewModelScope.launch {
             runOperation("快捷工作流加载失败") {
@@ -2956,12 +2961,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 ) else field
             })
         }
-        if (path != null) {
-            viewModelScope.launch {
-                val values = _state.value.quickFields.associate { it.key to it.displayValue }
-                preferences.saveQuickFieldValues(path, values)
-            }
+        // v0.2.71：改为**防抖保存**。
+        //
+        // 以前是每个字符都启动一个协程写 DataStore——打个二十字的提示词就是二十次磁盘写。
+        // 正确性没问题（每次读的都是最新 _state，不会写回旧值），但纯属浪费，
+        // 且与参数页的 updateField（用 scheduleDraftSave 防抖 250ms）行为不一致。
+        scheduleQuickFieldValuesSave()
+    }
+
+    /**
+     * 防抖保存快捷页字段值（v0.2.71）。与 [scheduleDraftSave] 同一节奏（250ms）。
+     *
+     * 切换工作流前会调 [flushQuickFieldValues] 立即落盘，不会丢最后一次输入。
+     */
+    private fun scheduleQuickFieldValuesSave(immediate: Boolean = false) {
+        val path = _state.value.quickWorkflowPath ?: return
+        quickFieldValuesSaveJob?.cancel()
+        quickFieldValuesSaveJob = viewModelScope.launch {
+            if (!immediate) delay(DRAFT_SAVE_DEBOUNCE_MILLIS)
+            val values = _state.value.quickFields.associate { it.key to it.displayValue }
+            runCatching { preferences.saveQuickFieldValues(path, values) }
+                .onFailure { AppLogger.warn("保存快捷页参数值失败（不影响使用）", it) }
         }
+    }
+
+    /** 把待写的快捷页字段值立刻落盘（切工作流/离开页面前调用）。 */
+    private fun flushQuickFieldValues() {
+        if (quickFieldValuesSaveJob?.isActive != true) return
+        scheduleQuickFieldValuesSave(immediate = true)
     }
 
     /** 快捷页：移除一个已显示参数，并把选择持久化。 */
@@ -3397,11 +3424,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!sent) {
             // v0.2.61：终端断了就放弃整批自动执行，避免后续命令连串失败。
             autoRunQueue = emptyList()
+            // v0.2.71：把这条命令**放回待办列表**。
+            // 上面第 3390 行已经把它摘掉了；失败时若不放回，用户看到的是
+            // "发送失败…命令未执行" 但列表里那条也没了——重连之后无从重试，
+            // 只能让 AI 重新生成一遍（还可能给出不一样的命令）。
+            // 注意放回要在列表最前，用户重连后一眼就能看到它。
+            if (_pendingCommands.value.none { it.id == pending.id }) {
+                _pendingCommands.value = listOf(pending) + _pendingCommands.value
+            }
             _assistantMessages.update {
                 it + TerminalChatMessage(
                     id = UUID.randomUUID().toString(),
                     role = TerminalMessageRole.SYSTEM_NOTE,
-                    text = "发送失败：终端连接已断开。请到「更多 → 控制台」重连后再执行。\n命令未执行：$pending.command",
+                    text = "发送失败：终端连接已断开。请到「更多 → 控制台」重连后，" +
+                        "再点上面那条「执行」重试。\n命令未执行：${pending.command}",
                 )
             }
             return
@@ -3420,7 +3456,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val result = awaitCommandResult(pending.command, token)
                 // v0.2.62：连续失败计数（成功清零）。配合 startNextAutoCommand 的熔断，
                 // 防止「失败 → 再试 → 再失败」的闭环无限烧 token。
-                if (result.success) consecutiveCommandFailures = 0 else consecutiveCommandFailures++
+                //
+                // v0.2.71：**超时不算失败**。exitCode == null 表示我们没能从输出里
+                // 读到结束标记（命令还在跑，或输出被冲掉了），不代表命令出错——
+                // 装依赖、下模型这类动辄十几分钟，10 分钟超时很正常。
+                // 以前把它一律记成失败，连续 3 条慢命令就会触发熔断并提示
+                // "连续失败已暂停自动执行"，属于误报（命令其实好好的）。
+                // 只有真的拿到非零退出码才计数。
+                consecutiveCommandFailures = TerminalCommandSafety.nextFailureCount(
+                    current = consecutiveCommandFailures,
+                    exitCode = result.exitCode,
+                )
                 _assistantMessages.update {
                     it + TerminalChatMessage(
                         id = UUID.randomUUID().toString(),
@@ -5426,8 +5472,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshStorageStats() {
         _state.update { it.copy(storageLoading = true) }
         viewModelScope.launch {
-            val stats = withContext(Dispatchers.IO) { collectStorageStats() }
-            _state.update { it.copy(storageStats = stats, storageLoading = false) }
+            // v0.2.71：统计失败也必须把 loading 复位。
+            // 以前没有兜底：collectStorageStats 里一旦抛异常（目录遍历遇到权限问题、
+            // 系统服务取不到等），协程直接死掉，storageLoading 永久停在 true——
+            // 空间管理页会一直转圈，用户只能重启 App。
+            val stats = runCatching { withContext(Dispatchers.IO) { collectStorageStats() } }
+                .getOrElse { error ->
+                    if (error is CancellationException) throw error
+                    AppLogger.warn("统计存储占用失败", error)
+                    null
+                }
+            _state.update {
+                it.copy(
+                    storageStats = stats ?: it.storageStats,
+                    storageLoading = false,
+                    notice = if (stats == null) "统计存储占用失败，请稍后重试" else it.notice,
+                )
+            }
         }
     }
 
@@ -5760,9 +5821,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         notice = "已通过${result.source}（${result.latencyMillis}ms）开始下载",
                     )
                 }
+                // v0.2.71：这个轮询以前有两个漏洞，都会让界面永久停在"下载中"：
+                //  1) downloadState 返回 null 时直接 break（下载记录被用户在系统下载器里
+                //     清掉、或记录过期），但没复位 updateDownloading；
+                //  2) 没有任何超时，若状态一直是 DOWNLOADING 就无限循环下去。
+                // 现在：null 视为失败并复位；同时加一个总时长上限。
+                val deadline = System.currentTimeMillis() + UPDATE_DOWNLOAD_TIMEOUT_MS
                 while (true) {
                     delay(800)
-                    val progress = updates.downloadState(result.downloadId) ?: break
+                    val progress = updates.downloadState(result.downloadId)
+                    if (progress == null) {
+                        _state.update {
+                            it.copy(
+                                updateDownloading = false,
+                                updateDownloadProgress = null,
+                                error = "下载记录已丢失（可能被系统下载器清理），请重新下载",
+                            )
+                        }
+                        break
+                    }
+                    if (System.currentTimeMillis() > deadline) {
+                        _state.update {
+                            it.copy(
+                                updateDownloading = false,
+                                updateDownloadProgress = null,
+                                error = "下载超时，请检查网络后重新下载",
+                            )
+                        }
+                        break
+                    }
                     when (progress.status) {
                         UpdateDownloadStatus.SUCCESSFUL -> {
                             _state.update {
@@ -7089,6 +7176,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         loading = false,
                         generating = false,
                         scanning = false,
+                        // v0.2.71：updateDownloading 以前不在这里复位。
+                        // 下载更新途中一旦抛异常（网络断、磁盘满、校验失败），
+                        // 它就永久停在 true——界面一直显示"下载中"，
+                        // 而"检查更新"入口也不会再给机会重试，只能重启 App。
+                        // 它是"进行中的操作"这一类状态，理应与 loading 同进退。
+                        updateDownloading = false,
                         error = "$title：$detail",
                         cookieExpired = authExpired,
                         status = if (connecting) ConnectionStatus.ERROR else it.status,
@@ -7125,6 +7218,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .onFailure { AppLogger.error("退出前保存工作流草稿失败", it) }
             }
         }
+        // v0.2.71：快捷页参数值同理——防抖可能还没到点，退出前补写一次。
+        quickFieldValuesSaveJob?.cancel()
+        _state.value.quickWorkflowPath?.let { path ->
+            val values = _state.value.quickFields.associate { it.key to it.displayValue }
+            exitSaveScope.launch {
+                runCatching { preferences.saveQuickFieldValues(path, values) }
+                    .onFailure { AppLogger.warn("退出前保存快捷页参数值失败", it) }
+            }
+        }
         client.closeWebSocket()
         kernelClient.closeTerminal()
         // v0.1.86：App 真正退出时把"已连接"常驻通知一起撤掉，别在通知栏留孤儿。
@@ -7136,6 +7238,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
         const val MIN_VISIBLE_NODE_MILLIS = 450L
+        /**
+         * 更新包下载的总时长上限（v0.2.71）。
+         *
+         * APK 十几 MB，正常几十秒；给 15 分钟足够慢网，又能兜住"卡住不动"的情况
+         * ——以前这里没有任何超时，界面可能永远显示"下载中"。
+         */
+        const val UPDATE_DOWNLOAD_TIMEOUT_MS = 15 * 60_000L
         /**
          * 结果页一次拉多少条历史。ComfyUI 的 `/history?max_items=N` 只返回最近 N 条，
          * 避免云端几 MB 的历史把"出图后看到图"拖成几十秒。

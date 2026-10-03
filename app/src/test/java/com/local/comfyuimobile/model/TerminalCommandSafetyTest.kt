@@ -261,6 +261,28 @@ class TerminalCommandSafetyTest {
         assertEquals(3, window.exitCode)
     }
 
+    // ===== 连续失败计数（v0.2.71）=====
+
+    @Test
+    fun timeoutDoesNotCountAsFailure() {
+        // 真机反馈：装依赖/下模型动辄十几分钟，超过 10 分钟等待上限很正常。
+        // 以前超时被记成失败，连续 3 条慢命令就误报"已暂停自动执行"。
+        assertEquals(0, TerminalCommandSafety.nextFailureCount(0, null))
+        assertEquals(2, TerminalCommandSafety.nextFailureCount(2, null))
+    }
+
+    @Test
+    fun successResetsFailureCount() {
+        assertEquals(0, TerminalCommandSafety.nextFailureCount(0, 0))
+        assertEquals(0, TerminalCommandSafety.nextFailureCount(5, 0))
+    }
+
+    @Test
+    fun nonZeroExitIncrementsFailureCount() {
+        assertEquals(1, TerminalCommandSafety.nextFailureCount(0, 1))
+        assertEquals(3, TerminalCommandSafety.nextFailureCount(2, 127))
+    }
+
     // ===== 自动执行白名单（v0.2.64）=====
 
     @Test

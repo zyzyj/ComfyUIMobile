@@ -132,7 +132,8 @@ class WorkflowSnapshotStore internal constructor(private val directory: File) {
             .map { it.second }
     }
 
-    private fun writeNow(serverUrl: String, workflowPath: String, json: String) {        directory.mkdirs()
+    private fun writeNow(serverUrl: String, workflowPath: String, json: String) {
+        directory.mkdirs()
         val target = fileFor(serverUrl, workflowPath)
         val temporary = File(directory, ".${target.name}.${UUID.randomUUID()}.tmp")
         try {
