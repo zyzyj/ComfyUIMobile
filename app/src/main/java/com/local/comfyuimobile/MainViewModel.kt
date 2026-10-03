@@ -3111,6 +3111,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val pendingCommands: StateFlow<List<PendingCommand>> = _pendingCommands.asStateFlow()
 
     /**
+     * 排队消息的「文本 → 消息 id」（v0.2.76）：正式发送时据此移除占位那条。
+     * 只记当前待发的；取出即移除，不会累积。
+     */
+    private var queuedMessageIds: Map<String, String> = emptyMap()
+
+    /**
+     * 取出并移除该提问对应的排队消息 id（v0.2.76）。同一句话可能被排队多次，这里只取第一条。
+     */
+    private fun consumeQueuedMessageId(prompt: String): String? {
+        val id = queuedMessageIds[prompt] ?: return null
+        queuedMessageIds = queuedMessageIds - prompt
+        return id
+    }
+
+    /**
      * 排队等发送的用户消息（v0.2.61）。
      *
      * v0.2.58 修了“上一条在跑时静默丢弃”，但只说了一句“稍后一起发送”——
@@ -3142,6 +3157,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // v0.2.61：先清队列再 cancel。cancel 可能同步触发 assistantJob 的完成回调，
         // 那时若队列还有内容，会把消息重新发出去（刚清空又冒出来）。
         _queuedAssistantPrompts.value = emptyList()
+        // v0.2.76：排队消息的 id 映射也要清，否则残留 id 会被下一轮误当作匹配项。
+        queuedMessageIds = emptyMap()
         autoRunQueue = emptyList()
         assistantJob?.cancel()
         assistantJob = null
@@ -3170,6 +3187,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val hadQueue = _queuedAssistantPrompts.value.isNotEmpty() || autoRunQueue.isNotEmpty()
         if (!busy && !hadQueue) return
         _queuedAssistantPrompts.value = emptyList()
+        // v0.2.76：排队消息的 id 映射也要清，否则残留 id 会被下一轮误当作匹配项。
+        queuedMessageIds = emptyMap()
         autoRunQueue = emptyList()
         assistantJob?.cancel()
         assistantJob = null
@@ -3239,6 +3258,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 role = TerminalMessageRole.USER,
                 text = prompt,
             )
+            // v0.2.76：记住排队消息的 id。正式发送时要把它移除——它只是同一个提问的占位，
+            // 留着会让 UI 出现两条右对齐气泡、prompt 里同一句话出现三次。
+            queuedMessageIds = queuedMessageIds + (prompt to queued.id)
             _queuedAssistantPrompts.update { it + prompt }
             _assistantMessages.update {
                 it + queued + TerminalChatMessage(
@@ -3254,7 +3276,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             role = TerminalMessageRole.USER,
             text = prompt,
         )
-        _assistantMessages.update { it + userMessage }
+        // v0.2.76：正式发送这一条时把排队时加的那条移除——它是同一个提问的"占位"，
+        // 留着会导致 UI 上出现两条右对齐气泡、prompt 里同一句话出现三次。
+        val queuedId = consumeQueuedMessageId(prompt)
+        _assistantMessages.update { current ->
+            val withoutQueued = if (queuedId != null) current.filterNot { it.id == queuedId } else current
+            withoutQueued + userMessage
+        }
         // v0.2.61：新问题等于放弃上一轮剩下未执行的建议，自动执行队列一并作废。
         _pendingCommands.value = emptyList()
         autoRunQueue = emptyList()
@@ -3265,7 +3293,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // 清除放在 invokeOnCompletion（它覆盖正常结束与取消两种情况），
             // 且用任务身份比对，避免上一轮的收尾把新一轮的标记误清掉。
             _state.update { it.copy(assistantThinking = true) }
-            val history = _assistantMessages.value
+            // v0.2.76：去掉"与本轮提问重复"的末条——上面刚把 userMessage 写进列表，
+            // 而 buildTranscript 的尾部又会拼一次 `User: $prompt`，不去掉这句话会在
+            // prompt 里出现两次（排队场景三次）。与排队路径共用同一个函数。
+            val history = AssistantContext.historyForPrompt(_assistantMessages.value, prompt)
             val reply = runCatching {
                 llm.chat(
                     config = config,

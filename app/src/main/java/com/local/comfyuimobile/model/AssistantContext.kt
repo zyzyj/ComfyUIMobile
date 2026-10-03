@@ -174,6 +174,32 @@ object AssistantContext {
     const val TERMINAL_OUTPUT_SPEAKER = "终端输出"
 
     /**
+     * 为「本轮提问」准备历史（v0.2.76）。
+     *
+     * 关键：`buildTranscript` 的尾部恒为 `User: $prompt`（本轮提问），
+     * 而调用方若把"已经写进消息列表的同一条提问"也当 history 传进来，
+     * 这句话就会在 prompt 里出现**两次**。
+     * 排队场景更严重：排队时加一条 USER、正式发送时又加一条，而排队那条从未移除
+     * → 同一句提问出现三次，UI 上还看到两个右对齐气泡。
+     *
+     * 所以这里统一丢掉**尾部与本轮提问重复的那条 USER**（只丢最后一条：更早的同文本
+     * 提问是真实历史，不能删）。
+     *
+     * 首轮与排队路径**都**走这个函数——两条是平行路径，只修一条就会留半边。
+     */
+    fun historyForPrompt(
+        messages: List<TerminalChatMessage>,
+        prompt: String,
+    ): List<TerminalChatMessage> {
+        val last = messages.lastOrNull() ?: return messages
+        return if (last.role == TerminalMessageRole.USER && last.text == prompt) {
+            messages.dropLast(1)
+        } else {
+            messages
+        }
+    }
+
+    /**
      * 为「跟进轮」准备历史（v0.2.74）。
      *
      * 跟进轮会把命令结果作为 followUp 单独传入，而那条结果**同时也已经被追加进了

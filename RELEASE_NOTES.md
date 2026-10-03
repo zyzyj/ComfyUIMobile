@@ -1,3 +1,70 @@
+# v0.2.76 — 修首轮/排队提问重复入参（第三次"平行路径只改一条"）
+
+一份复审指出我 v0.2.74 的修复**又漏了一条平行路径**。复现确认后修复。
+
+## P0 · 首轮提问在 prompt 里出现两次，排队场景三次
+
+### 机理
+
+`buildTranscript` 的尾部恒为 `User: $prompt`（本轮提问）。而首轮 `askAssistant` 先
+把提问写进消息列表，再用整个列表当 history —— **同一句话在 prompt 里出现两次**。
+
+v0.2.74 我修了 follow-up 路径（加 `historyForFollowUp` 丢尾部命令输出），
+**首轮没有对应处理**。这是第三次同类错误（`isReadOnly`/`isInstall`、follow-up/首轮）。
+
+### 实测复现
+
+```
+===FIRST-TURN===
+Conversation so far:
+User: 看下显存
+User: 看下显存                       ← 两份
+
+===QUEUED-TURN===
+Conversation so far:
+User: 看下显存                       ← 排队时加的
+System: 上一条还在等大模型回复…
+User: 看下显存                       ← 正式发送时加的
+User: 看下显存                       ← tail
+                                     ← 三份；UI 上两个 USER 气泡
+```
+
+### 修复
+
+1. **首轮**：新增 `AssistantContext.historyForPrompt(messages, prompt)`，丢掉尾部与
+   本轮提问重复的那条 USER。首轮与排队路径**共用同一个函数**——两条是平行路径，
+   只修一条就会留半边（这正是本报告指出的模式）。
+2. **排队**：记住排队消息的 id（`queuedMessageIds`），正式发送时按 id 精确移除，
+   避免 UI 两条气泡 + prompt 三份。`clearAssistantConversation` / `stopAssistant`
+   两处都重置该映射，避免残留 id 被下一轮误匹配。
+
+## 报告的两条"观察"，我的处理
+
+| 观察 | 结论 |
+|---|---|
+| `enqueueAutoRun` 在终端断开时静默丢弃 | 报告更正：已被 `routeCommands` 的 `canAutoRun` 兜住，命令会进 `needsConfirm` → 界面可见。**只剩毫秒级竞态**，不投入（同意报告判断）。 |
+| 档位 2 下 `pip install x && cat /etc/shadow` 放行 | **既有只读白名单行为**，非新回归：单条 `cat /etc/shadow`、`env` 本来就在只读白名单里。同意**不动**——真收紧会误伤正常排障，属设计层面的隐私取舍。
+
+## 关于"修一半"这个反复出现的模式
+
+报告把它总结得很准：**共同点是"同一个逻辑在两条平行路径上各写一遍，只改了一条**。
+
+`askAssistant` / `askAssistantFollowUp` 是平行路径，`isReadOnly` / `isInstall` 是平行判定。
+报告建议的方法比"列出同源函数"更具体：
+
+> **先 grep 出所有调用点/平行实现再动手**。同源函数的边界要人判断，而"调用点/平行实现"可以机械枚举。
+
+本轮我照此执行：`buildAssistantUserMessage` 只有 **2 个**调用点（首轮 / 跟进），
+跟进已修、首轮待修 → 全部覆盖。另外把两条路径**收敛到同一个函数**（`historyForPrompt`），
+从结构上消除"下次再漏一条"的可能。
+
+## 测试
+
+新增 4 条（首轮去重、完整链路只出现一次、不同文本不误删、更早的同文本提问不删）。
+本地全量：**537 个测试通过，0 失败**。
+
+---
+
 # v0.2.75 — 安全复审（第二轮）：三类同类残留 + 两条功能 bug
 
 一份新复审指出：**v0.2.74 的修复只做了一半**——同一根因（判定函数没做全）还有三处。
