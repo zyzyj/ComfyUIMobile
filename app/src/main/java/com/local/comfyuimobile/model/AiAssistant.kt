@@ -21,6 +21,18 @@ enum class TerminalMessageRole {
     SYSTEM_NOTE,
 
     /**
+     * 「（已执行）xxx」这类**执行标记**（v0.2.75 从 USER 拆出来）。
+     *
+     * 以前复用 USER 角色，只是为了在 UI 上显示成右对齐气泡（合理），但它破坏了
+     * "USER = 人说的话"这个隐含假设：`retryLastAssistantRequest` 用
+     * `indexOfLast { it.role == USER }` 找最后一条用户输入，于是会命中
+     * 「（已执行）nvidia-smi」——重发出去的是这句话，用户的真实问题被忽略。
+     *
+     * （同一类"假设失效"的 bug：角色名承载的语义比它的用途更宽。）
+     */
+    EXECUTED_MARK,
+
+    /**
      * 命令跑出来的终端输出（v0.2.66 从 SYSTEM_NOTE 拆出来）。
      *
      * 以前和系统旁注共用一种角色，于是**终端输出也被居中小字渲染**——

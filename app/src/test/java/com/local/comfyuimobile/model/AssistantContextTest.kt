@@ -80,6 +80,44 @@ class AssistantContextTest {
         assertTrue("压缩后必须回到预算内", t.tokens <= 1_200)
     }
 
+    // ===== 角色语义：USER 只表示"人说的话"（v0.2.75）=====
+
+    @Test
+    fun executedMarkIsNotUserRole() {
+        // 「（已执行）xxx」以前复用 USER 角色，只为 UI 上右对齐气泡。
+        // 但 retryLastAssistantRequest 用 `indexOfLast { role == USER }` 找
+        // 最后一条用户输入 → 会命中这句话，重发出去的是"（已执行）nvidia-smi"
+        // 而不是用户的真实问题（真机触发序列：问 A 成功 → 问 B 失败 → 点执行 →
+        // 点重试）。
+        //
+        // 这条锁定：执行标记必须是独立角色，不能等于 USER。
+        assertTrue(
+            "EXECUTED_MARK 必须是独立于 USER 的角色",
+            TerminalMessageRole.EXECUTED_MARK != TerminalMessageRole.USER,
+        )
+        val messages = listOf(
+            msg(TerminalMessageRole.USER, "帮我看看显存"),
+            msg(TerminalMessageRole.EXECUTED_MARK, "（已执行）nvidia-smi"),
+        )
+        // 模拟 retryLastAssistantRequest 的定位逻辑
+        val lastUserIndex = messages.indexOfLast { it.role == TerminalMessageRole.USER }
+        assertEquals(0, lastUserIndex)
+        assertEquals("帮我看看显存", messages[lastUserIndex].text)
+    }
+
+    @Test
+    fun executedMarkIsLabelledAsSystemInPrompt() {
+        // 发给模型时，执行标记要归为 System（机器旁注），不能是 User。
+        // 否则又变成"这是用户的要求"。
+        val messages = listOf(
+            msg(TerminalMessageRole.USER, "看下插件"),
+            msg(TerminalMessageRole.EXECUTED_MARK, "（已执行）ls ~"),
+        )
+        val t = AssistantContext.buildTranscript(messages, "然后呢")
+        assertTrue(t.text.contains("System: （已执行）ls ~"))
+        assertFalse("执行标记不能被标成 User", t.text.contains("User: （已执行）"))
+    }
+
     // ===== 跟进轮的历史准备（v0.2.74）=====
 
     @Test

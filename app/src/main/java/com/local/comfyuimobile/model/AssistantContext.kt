@@ -143,6 +143,9 @@ object AssistantContext {
 
     private fun TerminalChatMessage.toTranscriptLine(): String {
         val speaker = when (role) {
+            // 执行标记标成 System：它也是"机器生成的旁注"（记录跑了什么命令），
+            // 不是用户说的话。这样模型不会把它当成人的要求。
+            TerminalMessageRole.EXECUTED_MARK -> "System"
             TerminalMessageRole.USER -> "User"
             TerminalMessageRole.ASSISTANT -> "You"
             TerminalMessageRole.SYSTEM_NOTE -> "System"
