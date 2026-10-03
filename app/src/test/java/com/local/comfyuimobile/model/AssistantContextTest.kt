@@ -80,6 +80,56 @@ class AssistantContextTest {
         assertTrue("压缩后必须回到预算内", t.tokens <= 1_200)
     }
 
+    // ===== 本轮提问不能重复入参（v0.2.76）=====
+    //
+    // 真 bug（第三次"平行路径只改一条"）：v0.2.74 修了 follow-up 路径，
+    // 首轮没有对应处理。buildTranscript 尾部恒为 `User: $prompt`，而调用方把
+    // "已经写进列表的同一条"也当 history 传进去 → 两份；排队场景三份 + UI 两条气泡。
+
+    @Test
+    fun historyForPromptDropsTrailingDuplicateQuestion() {
+        // 首轮：先把提问写进列表，再用它当 history → 必须去掉重复的末条
+        val q = "看下显存"
+        val messages = listOf(msg(TerminalMessageRole.USER, q))
+        val history = AssistantContext.historyForPrompt(messages, q)
+        assertTrue("末尾重复的提问要被去掉", history.isEmpty())
+    }
+
+    @Test
+    fun firstTurnQuestionAppearsOnceInPrompt() {
+        // 完整链路模拟：首轮"先写进列表 → 再去重 → 拼 prompt"，提问只应出现一次。
+        val q = "看下显存"
+        val messages = listOf(msg(TerminalMessageRole.USER, q))
+        val history = AssistantContext.historyForPrompt(messages, q)
+        val t = AssistantContext.buildTranscript(history, q)
+        assertEquals(
+            "本轮提问在 prompt 里只能出现一次",
+            1,
+            Regex(Regex.escape(q)).findAll(t.text).count(),
+        )
+    }
+
+    @Test
+    fun historyForPromptKeepsDifferentText() {
+        // 回归护栏：只有"末条 == 本轮提问"才丢，不能误删真实历史
+        val mixed = listOf(
+            msg(TerminalMessageRole.USER, "看下显存"),
+            msg(TerminalMessageRole.ASSISTANT, "好的"),
+        )
+        assertEquals(2, AssistantContext.historyForPrompt(mixed, "装个插件").size)
+    }
+
+    @Test
+    fun historyForPromptKeepsEarlierSameTextQuestion() {
+        // 只丢最后一条；更早的同文本提问是真实历史，不能删
+        val dup = listOf(
+            msg(TerminalMessageRole.USER, "看下显存"),
+            msg(TerminalMessageRole.ASSISTANT, "好的"),
+            msg(TerminalMessageRole.USER, "看下显存"),
+        )
+        assertEquals(2, AssistantContext.historyForPrompt(dup, "看下显存").size)
+    }
+
     // ===== 角色语义：USER 只表示"人说的话"（v0.2.75）=====
 
     @Test
