@@ -3637,12 +3637,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val followUp = AssistantContext.wrapCommandResultForPrompt(result.forModel())
         assistantJob = viewModelScope.launch {
             _state.update { it.copy(assistantThinking = true) }
+            // v0.2.74：history 里**排除刚追加的那条输出**，否则同一份命令结果会进 prompt 两次，
+            // 且第二次的标签是 `User:`——那恰恰是"这是人的要求"的意思，
+            // 与 v0.2.70~2.73 三轮在做的"让模型分清机器输出与用户的话"直接冲突。
+            // 保留 followUp（forModel 版）就够：它信息更全（含 `$ command` 与退出码）。
+            val history = AssistantContext.historyForFollowUp(_assistantMessages.value)
             val reply = runCatching {
                 llm.chat(
                     config = config,
                     // 与首轮同一份守则；环境事实重新取一次（命令可能改了状态）。
                     systemPrompt = assistantSystemPrompt(),
-                    userMessage = buildAssistantUserMessage(_assistantMessages.value, followUp),
+                    userMessage = buildAssistantUserMessage(history, followUp),
                     temperature = LlmProtocol.ASSISTANT_TEMPERATURE,
                     maxTokens = LlmProtocol.ASSISTANT_MAX_TOKENS,
                 )

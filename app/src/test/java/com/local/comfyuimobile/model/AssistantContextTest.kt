@@ -80,6 +80,52 @@ class AssistantContextTest {
         assertTrue("压缩后必须回到预算内", t.tokens <= 1_200)
     }
 
+    // ===== 跟进轮的历史准备（v0.2.74）=====
+
+    @Test
+    fun followUpHistoryDropsTrailingCommandOutput() {
+        // 跟进轮会把命令结果作为 followUp 单独传入，而那条结果同时也已追加进消息列表。
+        // 不丢掉的话，同一份结果会进 prompt 两次，且第二次标签是 `User:`——
+        // 与"让模型分清机器输出与用户的话"直接冲突。
+        val messages = listOf(
+            msg(TerminalMessageRole.USER, "看下插件"),
+            msg(TerminalMessageRole.ASSISTANT, "先列目录"),
+            msg(TerminalMessageRole.TERMINAL_OUTPUT, "\$ ls\ncustom_nodes"),
+        )
+        val history = AssistantContext.historyForFollowUp(messages)
+        assertEquals(2, history.size)
+        assertTrue("尾部的命令输出要被丢掉", history.none { it.role == TerminalMessageRole.TERMINAL_OUTPUT })
+    }
+
+    @Test
+    fun followUpHistoryKeepsEarlierCommandOutputs() {
+        // 只丢**尾部连续**的输出：更早的输出是模型理解"前面发生了什么"的依据，必须留。
+        val messages = listOf(
+            msg(TerminalMessageRole.USER, "看下显存"),
+            msg(TerminalMessageRole.TERMINAL_OUTPUT, "\$ nvidia-smi\nV100"),
+            msg(TerminalMessageRole.ASSISTANT, "显存 32G，够用"),
+            msg(TerminalMessageRole.USER, "那就装吧"),
+            msg(TerminalMessageRole.TERMINAL_OUTPUT, "\$ pip install x\n成功"),
+        )
+        val history = AssistantContext.historyForFollowUp(messages)
+        // 5 条消息，只丢掉尾部那 1 条命令输出 → 剩 4 条
+        assertEquals(4, history.size)
+        assertTrue("较早的输出必须保留", history.any { it.role == TerminalMessageRole.TERMINAL_OUTPUT })
+        assertFalse(
+            "尾部那条已被丢掉",
+            history.last().role == TerminalMessageRole.TERMINAL_OUTPUT,
+        )
+    }
+
+    @Test
+    fun followUpHistoryIsUnchangedWhenNoTrailingOutput() {
+        val messages = listOf(
+            msg(TerminalMessageRole.USER, "你好"),
+            msg(TerminalMessageRole.ASSISTANT, "在的"),
+        )
+        assertEquals(messages, AssistantContext.historyForFollowUp(messages))
+    }
+
     // ===== 角色标记（v0.2.72）=====
 
     @Test
