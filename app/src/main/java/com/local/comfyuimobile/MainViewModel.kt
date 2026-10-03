@@ -3381,8 +3381,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val transcript = AssistantContext.buildTranscript(history, prompt)
         if (transcript.compacted) {
             // 让用户知道发生了什么——否则他会以为 AI「忘了」前面聊过的事。
+            // v0.2.72：旁注与命令输出分开说明。以前旁注被算进"命令输出"，
+            // 提示的条数与实际省掉的东西对不上。
             val parts = buildList {
                 if (transcript.omittedOutputs > 0) add("${transcript.omittedOutputs} 条较早的命令输出")
+                if (transcript.omittedNotes > 0) add("${transcript.omittedNotes} 条系统提示")
                 if (transcript.omittedTurns > 0) add("${transcript.omittedTurns} 条更早的对话")
             }
             _assistantMessages.update {
