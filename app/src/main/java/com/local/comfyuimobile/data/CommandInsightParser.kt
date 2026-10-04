@@ -25,9 +25,18 @@ object CommandInsightParser {
             Regex("\\bdf\\b").containsMatchIn(cmd) -> parseDf(output)
             Regex("\\bfree\\b").containsMatchIn(cmd) -> parseFree(output)
             cmd.contains("ps ") && cmd.contains("grep") -> parsePs(output)
+            // v0.2.84：`ls -l` 的 18 行里真正有用的是"有哪些名字"，权限/属主/日期
+            // 全是噪音。注意仅对带 `-l` 的 ls 生效：纯 `ls` 本来就是简洁名单，
+            // 再包一层卡片反而更难读（这是解析器原来的判断，对 `ls` 成立）。
+            isLongListing(cmd) -> parseLsLong(output)
             else -> null
         }
     }
+
+    /** 是不是 `ls -l` 这类长格式列表（带 `-l` / `-la` / `-lh` 等）。 */
+    private fun isLongListing(cmd: String): Boolean =
+        Regex("(^|\\s)ls\\s").containsMatchIn(cmd) &&
+            Regex("(^|\\s)-[a-zA-Z]*l").containsMatchIn(cmd)
 
     // ===== nvidia-smi =====
 
@@ -89,12 +98,63 @@ object CommandInsightParser {
             gpuNames.size == 1 -> "GPU  ${gpuNames.first()}"
             else -> "GPU  ${gpuNames.first()} 等 ${gpuNames.size} 张卡"
         }
+        // v0.2.84：显存为 0 但整卡利用率不低——数字看着矛盾，不解释一句用户会以为
+        // App 算错了。云端 GPU 可能被同机其他实例共享，nvidia-smi 看到的是整卡状态。
+        val usedMiB = memMatches.firstOrNull()?.groupValues?.get(1)?.toDoubleOrNull()
+        val utilPercent = util?.toIntOrNull()
+        val note = if ((usedMiB ?: 0.0) <= 0.0 && (utilPercent ?: 0) > 5) {
+            "本容器未占用显存，但整卡利用率 $utilPercent%——可能是同机其他实例在用。"
+        } else {
+            ""
+        }
         return InsightCard(
             title = title,
             bars = bars,
             metrics = metrics,
             rows = rows.take(5),
             rowsTitle = if (rows.isEmpty()) "" else "占用进程",
+            note = note,
+        )
+    }
+
+    // ===== ls -l =====
+
+    /**
+     * `ls -l` 行：权限 链接数 属主 属组 大小 月 日 (时间|年) 名称。
+     * 名称可能含空格（截到行尾）；时间列可能是 `10:00`（半年内）或 `2024`（更早），两种都要认。
+     */
+    private val LS_LONG_LINE = Regex(
+        "^([-dlbcps][rwxstST-]{9})\\s+\\d+\\s+\\S+\\s+\\S+\\s+\\d+\\s+\\S+\\s+\\d+\\s+\\S+\\s+(.+)$",
+    )
+
+    private fun parseLsLong(output: String): InsightCard? {
+        val entries = output.lines().mapNotNull { raw ->
+            val line = raw.trim()
+            if (line.isBlank() || line.startsWith("total ")) return@mapNotNull null
+            val m = LS_LONG_LINE.find(line) ?: return@mapNotNull null
+            val perms = m.groupValues[1]
+            val name = m.groupValues[2].trim()
+            if (name.isBlank()) return@mapNotNull null
+            // 符号链接 `name -> target`：只留名字，链接指向是次要信息。
+            val displayName = name.substringBefore(" -> ").trim()
+            // 目录名后加 `/`：一眼区分目录与文件（不需要额外列）。
+            val isDir = perms.startsWith("d")
+            (if (isDir) "$displayName/" else displayName) to isDir
+        }
+        if (entries.isEmpty()) return null
+
+        val dirs = entries.count { it.second }
+        val files = entries.size - dirs
+        val title = buildString {
+            append("共 ${entries.size} 项")
+            if (dirs > 0 && files > 0) append("（$dirs 目录 / $files 文件）")
+            else if (dirs == entries.size) append("目录")
+            else if (files == entries.size) append("文件")
+        }
+        return InsightCard(
+            title = title,
+            rows = entries.take(20).map { InsightRow(primary = it.first) },
+            rowsTitle = "名称",
         )
     }
 
@@ -107,24 +167,27 @@ object CommandInsightParser {
             val m = DF_LINE.find(line.trim()) ?: return@mapNotNull null
             val size = humanToBytes(m.groupValues[2]) ?: return@mapNotNull null
             val used = humanToBytes(m.groupValues[3]) ?: return@mapNotNull null
+            // v0.2.84：用 df 自己的 **Avail** 列，不能用 size - used。
+            // ext4 默认给 root 留 5% 保留块，于是 Used + Avail ≠ Size——减法必然高估。
+            // 实测差 50 倍：`/` 真剩 0.1G，减出来的"剩 5.0G"。而守则要求 AI 拿
+            // 卡片上的余量去对照下载体积——这个数字错了就直接导致判断错。
+            val avail = humanToBytes(m.groupValues[4]) ?: return@mapNotNull null
             val percent = m.groupValues[5].toDoubleOrNull() ?: return@mapNotNull null
             // 伪文件系统（体积解析不出来或为 0）跳过——它们不占实际磁盘。
             if (size <= 0) return@mapNotNull null
-            Quad(m.groupValues[1], m.groupValues[6], size, used, percent)
+            Quad(m.groupValues[1], m.groupValues[6], size, used, avail, percent)
         }
         if (entries.isEmpty()) return null
 
         val bars = entries.take(6).map { e ->
-            val free = (e.size - e.used).coerceAtLeast(0.0)
             InsightBar(
                 label = e.mount,
                 used = e.used,
                 total = e.size,
-                ratio = (e.used / e.size).coerceIn(0.0, 1.0),
-                // v0.2.83：主数字换成"剩余"。以前主显示"42G / 99G（已用 43%）"，
-                // 而守则要求 AI 拿命令结果去对照"磁盘余量"——卡片却没给余量，
-                // 用户得自己心算。
-                display = "剩余 ${human(free)}",
+                // v0.2.84：进度条用 df 自己的 Use% 列，而不是 used/size。
+                // 两者在保留块存在时不一致，用后者会让进度条与文字对不上。
+                ratio = (e.percent / 100.0).coerceIn(0.0, 1.0),
+                display = "剩余 ${human(e.avail)}",
                 secondary = "共 ${human(e.size)}，已用 ${human(e.used)}（${e.percent.toInt()}%）",
             )
         }
@@ -136,6 +199,8 @@ object CommandInsightParser {
         val mount: String,
         val size: Double,
         val used: Double,
+        /** df 的 Avail 列（真实可用，已扣保留块）。 */
+        val avail: Double,
         val percent: Double,
     )
 

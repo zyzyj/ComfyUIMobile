@@ -969,15 +969,19 @@ private fun ToolCallCard(
                     val lines = remember(call.output) { call.output.lines() }
                     val collapsible = lines.size > TERMINAL_OUTPUT_COLLAPSE_LINES ||
                         call.output.length > TERMINAL_OUTPUT_COLLAPSE_CHARS
+                    // v0.2.84：状态已在卡片头的徽标里（`✓ 成功 · 0.4s`），正文里不再
+                    // 重复"成功"——截图里那行占一整行却零信息量。剥掉它只留真实输出。
+                    val body = remember(call.output) { stripStatusPrefix(call.output) }
+                    val bodyLines = remember(body) { body.lines() }
                     val shown = if (outputExpanded || !collapsible) {
-                        call.output
+                        body
                     } else {
-                        lines.take(TERMINAL_OUTPUT_COLLAPSE_LINES).joinToString("\n")
+                        bodyLines.take(TERMINAL_OUTPUT_COLLAPSE_LINES).joinToString("\n")
                     }
-                    TerminalOutputText(shown)
+                    if (shown.isNotBlank()) TerminalOutputText(shown)
                     if (collapsible) {
                         Text(
-                            if (outputExpanded) "收起" else "原始输出（共 ${lines.size} 行）▾",
+                            if (outputExpanded) "收起" else "原始输出（共 ${bodyLines.size} 行）▾",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier
@@ -990,6 +994,22 @@ private fun ToolCallCard(
             }
         }
     }
+}
+
+/**
+ * 剥掉 `forDisplay()` 加在首行的状态词（v0.2.84）。
+ *
+ * `forDisplay` 的首行是「成功 / 失败（退出码 N）/ 未捕获到退出码 / 无匹配」——
+ * 而现在状态已经在卡片头的徽标里显示了，正文再写一遍就是重复（截图里那行零信息量）。
+ * 只剥首行且仅当它是已知状态词——真实输出里恰好以这些词开头的行不受影响。
+ */
+private fun stripStatusPrefix(text: String): String {
+    val lines = text.lines()
+    if (lines.size <= 1) return text
+    val first = lines.first().trim()
+    val isStatus = first == "成功" || first == "无匹配" || first == "未捕获到退出码" ||
+        first.startsWith("失败（退出码")
+    return if (isStatus) lines.drop(1).joinToString("\n").trimStart('\n') else text
 }
 
 /** 卡片右侧的状态徽标：图标 + 耗时（v0.2.83）。 */
@@ -1146,73 +1166,126 @@ private fun AssistantMessageItem(
 }
 
 /**
- * 命令输出的可视化卡片（v0.2.82）。
+ * 命令输出的可视化卡片（v0.2.82，v0.2.84 视觉重做）。
  *
- * 与原文（[TerminalOutputBlock]）**并存**：卡片在上、原文在下。
- * 绝不只给卡片——解析错了用户还有原文可查（设计原则一）。
+ * 与原文（折叠的原始输出）**并存**：卡片在上、原文在下。绝不只给卡片——
+ * 解析错了用户还有原文可查（设计原则一）。
+ *
+ * v0.2.84 视觉调整（用户反馈"不够美观"）：
+ *  - 内层不再套第二层底（原来卡片里又一块浅底，截图里像"卡中卡"，脏）
+ *  - 进度条加粗到 8dp 并圆角，是唯一"一眼看够不够"的元素，值得更醒目
+ *  - 数值右对齐并加重，与左侧标签形成清晰的两栏
+ *  - 纯名称列表（ls -l）走 chip 流，窄屏自动换行，不再是挤成三列的行
  */
 @Composable
 private fun InsightCardView(card: InsightCard) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-        shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Column(
-            Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                card.title,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-            )
+        Text(
+            card.title,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
 
-            card.bars.forEach { bar ->
-                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            bar.label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.weight(1f))
-                        Text(bar.display, style = MaterialTheme.typography.labelSmall)
-                    }
-                    LinearProgressIndicator(
-                        progress = { bar.ratio.toFloat() },
-                        modifier = Modifier.fillMaxWidth().height(6.dp),
+        card.bars.forEach { bar ->
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        bar.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        bar.display,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
                         color = if (bar.ratio >= 0.9) MaterialTheme.colorScheme.error
-                        else MaterialTheme.colorScheme.primary,
+                        else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                // 进度条：8dp + 圆角。它是这张卡片里唯一"一眼看够不够"的元素。
+                LinearProgressIndicator(
+                    progress = { bar.ratio.toFloat() },
+                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                    color = if (bar.ratio >= 0.9) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                )
+                if (bar.secondary.isNotBlank()) {
+                    Text(
+                        bar.secondary,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
+        }
 
-            if (card.metrics.isNotEmpty()) {
-                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    card.metrics.forEach { metric ->
-                        Column {
-                            Text(
-                                metric.label,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Text(metric.value, style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
-            }
-
-            if (card.rows.isNotEmpty()) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (card.rowsTitle.isNotBlank()) {
+        if (card.metrics.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(20.dp),
+            ) {
+                card.metrics.forEach { metric ->
+                    Column {
                         Text(
-                            card.rowsTitle,
+                            metric.label,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        Text(
+                            metric.value,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                        )
                     }
+                }
+            }
+        }
+
+        if (card.rows.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (card.rowsTitle.isNotBlank()) {
+                    Text(
+                        card.rowsTitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                // 纯名称列表（无 secondary/trailing，如 ls -l）→ chip 流，窄屏自动换行。
+                // 带附加列的（如占用进程的 PID/显存）→ 两栏行，右列数值对齐。
+                val plainNames = card.rows.all { it.secondary.isBlank() && it.trailing.isBlank() }
+                if (plainNames) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        card.rows.forEach { row ->
+                            Surface(
+                                color = MaterialTheme.colorScheme.surface,
+                                shape = RoundedCornerShape(6.dp),
+                            ) {
+                                Text(
+                                    row.primary,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = FontFamily.Monospace,
+                                    ),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                )
+                            }
+                        }
+                    }
+                } else {
                     card.rows.forEach { row ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
@@ -1234,6 +1307,7 @@ private fun InsightCardView(card: InsightCard) {
                                 Text(
                                     row.trailing,
                                     style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Medium,
                                     modifier = Modifier.padding(start = 8.dp),
                                 )
                             }
@@ -1241,6 +1315,13 @@ private fun InsightCardView(card: InsightCard) {
                     }
                 }
             }
+        }
+        if (card.note.isNotBlank()) {
+            Text(
+                card.note,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
