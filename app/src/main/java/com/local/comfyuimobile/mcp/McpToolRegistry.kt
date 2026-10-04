@@ -89,7 +89,7 @@ internal class McpToolRegistry(
     private suspend fun handleToolCall(id: String?, params: JSONObject): JSONObject {
         val name = params.optString("name")
         val args = params.optJSONObject("arguments") ?: JSONObject()
-        val text = try {
+        val result = try {
             invoke(name, args)
         } catch (error: Exception) {
             // 工具执行失败按 MCP 约定回 isError=true 的**正常结果**（而非 JSON-RPC error），
@@ -99,12 +99,20 @@ internal class McpToolRegistry(
                 McpProtocol.textResult("工具 $name 执行失败：${error.message}", isError = true),
             )
         }
-        return McpProtocol.success(id, McpProtocol.textResult(text))
+        return McpProtocol.success(id, McpProtocol.textResult(result.text, isError = result.isError))
     }
 
-    private suspend fun invoke(name: String, args: JSONObject): String = when (name) {
-        TOOL_LIST_MODELS -> host.listModels(args.optString("type").takeIf { it.isNotBlank() })
-        TOOL_LIST_WORKFLOWS -> host.listWorkflows()
+    /**
+     * 工具结果。
+     *
+     * [isError] 必须能区分"业务上失败"与"成功"：出图失败（工作流格式不对、服务器拒绝）
+     * 对模型来说就是错误，它需要据此换策略；而运行中/完成都算正常结果。
+     */
+    internal data class ToolResult(val text: String, val isError: Boolean = false)
+
+    private suspend fun invoke(name: String, args: JSONObject): ToolResult = when (name) {
+        TOOL_LIST_MODELS -> ToolResult(host.listModels(args.optString("type").takeIf { it.isNotBlank() }))
+        TOOL_LIST_WORKFLOWS -> ToolResult(host.listWorkflows())
         TOOL_GENERATE -> renderGenerate(host.generate(parseGenerate(args), generateAwaitMillis))
         TOOL_JOB_STATUS -> {
             val jobId = args.optString("job_id").trim()
@@ -130,15 +138,17 @@ internal class McpToolRegistry(
     }
 
     /** 把结果渲染成给模型看的文本。图片只给 URL——AiCode 不渲染 image content block。 */
-    private fun renderGenerate(outcome: GenerateOutcome): String = when (outcome) {
-        is GenerateOutcome.Failed -> "生成失败：${outcome.message}"
-        is GenerateOutcome.Running -> JSONObject()
-            .put("status", "running")
-            .put("job_id", outcome.jobId)
-            .put("elapsed_sec", outcome.elapsedSec)
-            .put("message", outcome.message)
-            .put("hint", "用 job_status 轮询，或直接在 App 里看进度")
-            .toString()
+    private fun renderGenerate(outcome: GenerateOutcome): ToolResult = when (outcome) {
+        is GenerateOutcome.Failed -> ToolResult("生成失败：${outcome.message}", isError = true)
+        is GenerateOutcome.Running -> ToolResult(
+            JSONObject()
+                .put("status", "running")
+                .put("job_id", outcome.jobId)
+                .put("elapsed_sec", outcome.elapsedSec)
+                .put("message", outcome.message)
+                .put("hint", "用 job_status 轮询，或直接在 App 里看进度")
+                .toString(),
+        )
         is GenerateOutcome.Done -> {
             val arr = JSONArray()
             for (media in outcome.media) {
@@ -149,12 +159,14 @@ internal class McpToolRegistry(
                         .put("url", fileUrlBase() + fileId),
                 )
             }
-            JSONObject()
-                .put("status", "done")
-                .put("job_id", outcome.jobId)
-                .put("images", arr)
-                .put("hint", "用 curl 下载 url 到容器本地后用 viewImage 查看")
-                .toString()
+            ToolResult(
+                JSONObject()
+                    .put("status", "done")
+                    .put("job_id", outcome.jobId)
+                    .put("images", arr)
+                    .put("hint", "用 curl 下载 url 到容器本地后用 viewImage 查看")
+                    .toString(),
+            )
         }
     }
 
