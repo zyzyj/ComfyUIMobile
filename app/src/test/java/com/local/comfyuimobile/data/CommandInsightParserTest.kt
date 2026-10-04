@@ -100,8 +100,11 @@ class CommandInsightParserTest {
         assertEquals("overlay / tmpfs / /dev/sdb 三行都可解析", 3, card.bars.size)
         val root = card.bars.first()
         assertEquals("/", root.label)
-        assertEquals(43, (root.ratio * 100).toInt())
+        // ratio 由字节数算出（42GiB/99GiB≈0.424）；注意它不一定等于 df 的 Use% 列
+        // （平台按真实字节算并四舍五入，那列显示 43%）。这里按摩尔值断言。
+        assertEquals(0.424, root.ratio, 0.005)
         assertTrue(root.display.contains("42G"))
+        assertTrue("展示应带上平台给出的 Use% 列 43%", root.display.contains("43%"))
     }
 
     @Test
