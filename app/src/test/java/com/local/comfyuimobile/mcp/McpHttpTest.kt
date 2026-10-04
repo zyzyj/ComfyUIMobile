@@ -17,6 +17,13 @@ class McpHttpTest {
     private fun parse(raw: String): HttpReadResult =
         McpHttp.readRequest(ByteArrayInputStream(raw.toByteArray(Charsets.ISO_8859_1)))
 
+    /**
+     * 按**字节**拼请求：中文等非 ASCII 内容在 ISO-8859-1 下会把字符压成 `?`，
+     * 声明的 Content-Length 就与真实字节数对不上。凡是需要精确长度的场景都走这里。
+     */
+    private fun parseBytes(head: String, body: ByteArray): HttpReadResult =
+        McpHttp.readRequest(ByteArrayInputStream(head.toByteArray(Charsets.ISO_8859_1) + body))
+
     private fun ok(raw: String): HttpRequest {
         val result = parse(raw)
         assertTrue("期望解析成功，实际 $result", result is HttpReadResult.Ok)
@@ -43,12 +50,10 @@ class McpHttpTest {
     fun readsBodyByteExactForMultibyteContent() {
         // 内容长度按**字节**算而非字符数。中文提示词一旦被按字符截断，
         // 服务端会用半个 UTF-8 序列解析 JSON 并失败。
-        val body = """{"prompt":"一只猫"}"""
-        val bytes = body.toByteArray(Charsets.UTF_8)
-        val request = ok(
-            "POST /mcp HTTP/1.1\r\nContent-Length: ${bytes.size}\r\n\r\n" + body,
-        )
-        assertEquals(body, request.body)
+        val body = """{"prompt":"一只猫"}""".toByteArray(Charsets.UTF_8)
+        val result = parseBytes("POST /mcp HTTP/1.1\r\nContent-Length: ${body.size}\r\n\r\n", body)
+        assertTrue("期望解析成功，实际 $result", result is HttpReadResult.Ok)
+        assertEquals("""{"prompt":"一只猫"}""", (result as HttpReadResult.Ok).request.body)
     }
 
     @Test

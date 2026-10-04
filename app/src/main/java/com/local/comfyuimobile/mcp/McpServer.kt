@@ -41,6 +41,8 @@ internal class McpServer(
     private val workers = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "mcp-worker").apply { isDaemon = true }
     }
+    /** 正在处理的连接。`stop()` 要把它们一并关掉，否则卡在 read 的线程会永远留着。 */
+    private val liveSockets = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
 
     /** 实际绑定端口（port 传 0 时由系统分配，单测用）。 */
     @Volatile
@@ -70,6 +72,11 @@ internal class McpServer(
         if (!running.compareAndSet(true, false)) return
         runCatching { serverSocket?.close() }
         serverSocket = null
+        // 正在处理的连接必须一并关掉：socket 的 `read()` **不响应线程中断**
+        // （`Thread.interrupt()` 对套接字流无效），只 shutdownNow 的话，卡在读
+        // 请求上的 worker 会永远留在那里——本套测试首次跑就把 CI 拖到 40 分钟超时。
+        liveSockets.forEach { runCatching { it.close() } }
+        liveSockets.clear()
         workers.shutdownNow()
         AppLogger.info("MCP server 已停止")
     }
@@ -93,6 +100,15 @@ internal class McpServer(
     }
 
     private suspend fun handle(socket: Socket) {
+        liveSockets += socket
+        try {
+            handleInner(socket)
+        } finally {
+            liveSockets -= socket
+        }
+    }
+
+    private suspend fun handleInner(socket: Socket) {
         socket.use { s ->
             s.soTimeout = READ_TIMEOUT_MILLIS
             val input = s.getInputStream()
