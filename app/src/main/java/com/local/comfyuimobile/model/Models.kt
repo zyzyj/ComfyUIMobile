@@ -279,6 +279,16 @@ data class AppUiState(
      * 权限判定（requiresConfirmation / autoRunnable）在灾难熔断之后才看它。
      */
     val trustedCommands: List<String> = CommandAllowlist.DEFAULT_PATTERNS,
+    /**
+     * MCP server（v0.2.85）：是否开启内嵌的 MCP 服务，供同机 AiCode 连接。
+     *
+     * 默认关——开启等于对外提供一个可操作 ComfyUI 的接口，必须由用户主动打开。
+     */
+    val mcpServerEnabled: Boolean = false,
+    /** MCP server 实际监听端口（开启后才有意义；0 表示未启动）。 */
+    val mcpServerPort: Int = 0,
+    /** MCP 的 Bearer token，供用户复制到 AiCode 配置里。 */
+    val mcpServerToken: String = "",
     /** 命令是否正在执行（用于禁用按钮，避免重复提交）。 */
     val assistantCommandRunning: Boolean = false,
     /**

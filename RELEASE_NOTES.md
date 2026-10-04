@@ -1,3 +1,91 @@
+# v0.2.85 — 内嵌 MCP 服务：让同机的 AiCode 直接操作 ComfyUI
+
+新能力：App 里起一个 **MCP server**（`127.0.0.1:8765`），同机的 AiCode（Android AI
+编程 Agent）连上后可以用外部强模型操作本 App 连着的 ComfyUI——列模型、列工作流、出图。
+
+**本版只加不删**：智能助手板块原样保留。删除是独立的一次改动，等这版真机验证过再单独做。
+
+## 为什么值得做
+
+ComfyUI 的痛点是**要人守着调参**。MCP 让你手机上的 AI Agent 直接读工作流、改提示词、
+提交出图，把"想试试加个词会怎样"从三轮点击变成一句话。
+
+## 协议层：按 AiCode 源码实证实现
+
+不是照文档猜的——对着 AiCode 客户端源码逐条核过：
+
+| 项 | 取值 | 依据 |
+|---|---|---|
+| 传输 | Streamable HTTP 单端点 `POST /mcp` | `StreamableHttpTransport` |
+| 协议版本 | `2025-06-18` | `McpClient` |
+| 通知应答 | **HTTP 202 空体** | 源码注释明确 |
+| 会话 | `Mcp-Session-Id` **可选**（回显但不维护状态） | `sessionId?.let {}` |
+| 响应格式 | 纯 `application/json` 即可 | 不必实现 SSE |
+| 图片 | **不渲染**（`image` 块被压成 `[image content]`） | `flattenContent` |
+
+## 取图链路：为什么必须走文件端点
+
+源码确证 MCP **不渲染图片**。而"返回路径让 AiCode 读"**也不可行**——两个 App 的私有
+目录互相隔离（实测：容器里 `/data` 根本不存在）。
+
+唯一可行的是 App 把字节**经 HTTP 交出去**：
+
+```
+gen_image → {"url":"http://127.0.0.1:8765/files/<uuid>.png"}
+         → AiCode 侧 curl -o /tmp/x.png <url>
+         → viewImage /tmp/x.png
+```
+
+已端到端实测：HTTP 200、字节数正确、**sha256 与服务端一致**、图片能正常显示。
+URL 用不可猜 UUID + 1 小时 TTL。
+
+## 工具（4 个）
+
+| 工具 | 说明 |
+|---|---|
+| `list_models` | 代理 `/object_info`（模型在云端容器里，扫本地没用） |
+| `list_workflows` | 工作流名 + 路径 |
+| `generate` | 注入提示词 → 提交；同步等 120 秒，超时回 `running` + `job_id` |
+| `job_status` | 轮询状态；完成给图 URL |
+
+**为什么是 120 秒**：60 太短（SDXL 带高清修复就超）、600 太长（无进度通知，界面
+静默干等）。超时返回 `running` 让 AI 自己决定是否继续轮询。
+
+## 安全
+
+- **只绑 `127.0.0.1`**：绑 `0.0.0.0` 等于把"能操作你 ComfyUI 的接口"开放给同一 WiFi
+- **Bearer token**：未带/带错一律 401；token 为空时**拒绝启动**（不给无凭证入口）
+- **文件 URL 不可猜 + TTL 1 小时**
+- **不做 `terminal` 工具**：MCP 的工具调用由 AiCode 自主发起、不经过本 App 界面，
+  而现有安全模型建立在"用户点确认"上。改成"server 自行拒绝"是独立的一次改造，
+  不该和首次打通混在一批。见下文「下个版本」。
+
+## 已知边界（如实说明）
+
+- **`generate` 只支持 API 格式工作流**（ComfyUI 的 `Workflow → Export (API)`）。
+  画布格式转 API 格式在本项目里走前端 `graphToPrompt()`，依赖 WebView，而 MCP server
+  跑在前台服务里、拿不到 Activity。遇到画布格式会返回可操作的错误提示，不会静默出错图。
+- **真机未验证**：容器里没有 Android 环境，编译与真机连通都要靠 CI/你实测。
+- LoRA 触发词（civitai 那类知识）拿不到，交给 Skill 或读同名 `.txt`。
+
+## 测试（新增 5 个测试类）
+
+其中 **`McpServerTest` 是真 socket 端到端**：起真 `ServerSocket`、用真 HTTP 客户端跑完
+握手 → 工具调用 → 取图全链路。上次那批 bug 里有一类正是"两个函数各自正确、串起来坏"，
+只有端到端能抓到。
+
+解析层的**拒绝路径**也都有测试：chunked 拒收（411）、超长体拒收（413）、残缺 body 报错。
+
+## 怎么用
+
+设置 → MCP 服务 → 开启 → 复制配置片段 → 贴到 AiCode 的 `.aicode/mcp.json`。
+配套已装 Skill `comfyui-prompts`（提示词方法论 + 取图流程）。
+
+## 下个版本候选
+
+- `terminal` 工具（需先把安全模型从"提议+人工确认"改成"server 自行拒绝"）
+- 画布格式工作流的纯 Kotlin 转换（`Workflow → prompt`，可脱离 WebView）
+- 删除智能助手板块（独立一次纯删除改动）
 # v0.2.84 — 修 df 余量算错（真 bug）+ 卡片视觉重做 + ls -l 卡片
 
 用户反馈「UI 还是不够美观」。这轮按同事的截图复审逐条修，另参照业界 agent
