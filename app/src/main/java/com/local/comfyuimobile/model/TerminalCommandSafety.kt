@@ -279,12 +279,19 @@ object TerminalCommandSafety {
      * （实测：BEGIN 出现、END 永不出现 → 所有命令挂满 10 分钟，不只是管道命令）。
      * 现在改成**先探测再设置**：不支持的 shell 上跳过，退化为无 pipefail 的旧语义。
      * 探测必须用 `if` 而不是 `cond && cmd` 短路——grep 失败会让短路式返回 1 污染 rc。
+     *
+     * v0.2.80 修第二处：恢复不再无条件。以前末尾无条件 `set +o pipefail`，会**关掉
+     * 用户本来就开着的 pipefail**（`.bashrc` 里设过的），污染这个长期存活的会话。
+     * 现在记下原状态：原本就 on 的不动它；原本 off 的才在跑完后还原；不支持的 shell
+     * 全程不碰。
      */
     fun wrap(command: String, token: String): String =
         "echo __AI_${token}_BEGIN__ && { " +
-            "if set -o 2>/dev/null | grep -q pipefail 2>/dev/null; then set -o pipefail; fi; " +
+            "__ai_pf=skip; " +
+            "if set -o 2>/dev/null | grep -q 'pipefail.*on'; then __ai_pf=1; " +
+            "elif set -o 2>/dev/null | grep -q pipefail; then set -o pipefail; __ai_pf=0; fi; " +
             "${sanitizeCommand(command)} ; rc=\$? ; if [ \$rc -eq 141 ]; then rc=0; fi; " +
-            "if set -o 2>/dev/null | grep -q pipefail 2>/dev/null; then set +o pipefail; fi; " +
+            "if [ \"\$__ai_pf\" = 0 ]; then set +o pipefail; fi; " +
             "} ; echo __AI_${token}_END__ rc=\$rc"
 
     fun beginMarker(token: String): String = "__AI_${token}_BEGIN__"
@@ -367,8 +374,19 @@ object TerminalCommandSafety {
         // 档位 2 让用户点一条中文句子；档位 3 真发出去报 command not found；
         // 还挤占 MAX_COMMANDS 名额。提示符场景让用户手删那个 `#` 即可。
         if (line.startsWith("#")) return
-        // 非 ASCII 的行不是命令（中文说明文字的兜底——真实命令与路径都是 ASCII）。
-        if (line.any { it.code > 127 }) return
+        // v0.2.80：只检查**命令名**是否 ASCII，路径与注释放行。
+        //
+        // v0.2.78 曾对整行做非 ASCII 过滤，把 `ls ~/模型/loras`、`cat ~/说明.txt`、
+        // `nvidia-smi  # 查看显存` 这类合法命令一并丢弃（中文路径/文件名在云端很常见，
+        // 而守则是中文写的、模型很爱加中文注释）。而 [sanitizeCommand] 本来就能处理它们
+        // ——解析层提前扔掉，两层能力没对齐。
+        //
+        // 取首个 token，剥掉路径前缀（`~` `/` `.`）与目录部分，剩下的必须是 ASCII：
+        // 可执行名都是 ASCII，而中文说明句（`先看显存`、`模型/loras`）仍被拦住。
+        val commandName = line.split(' ', '\t').firstOrNull().orEmpty()
+            .trimStart('~', '/', '.')
+            .substringBefore('/')
+        if (commandName.any { it.code > 127 }) return
         // 注释行、纯说明文字不当命令（要求至少有一个空格或看起来像可执行名）。
         if (line.startsWith("//")) return
         if (!line.first().isLetter() && !line.startsWith("./") && !line.startsWith("/")) return

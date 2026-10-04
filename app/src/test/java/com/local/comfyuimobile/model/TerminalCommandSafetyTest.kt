@@ -188,7 +188,7 @@ class TerminalCommandSafetyTest {
 
     @Test
     fun skipsNonAsciiLinesEvenWithoutHash() {
-        // 中文说明文字（无论有没有 #）都不该被当命令——真实命令与路径都是 ASCII。
+        // 中文说明文字（无论有没有 #）都不该被当命令——命令名必须是 ASCII。
         val reply = """
             ```sh
             先看显存占用再决定
@@ -196,6 +196,48 @@ class TerminalCommandSafetyTest {
             ```
         """.trimIndent()
         assertEquals(listOf("nvidia-smi"), TerminalCommandSafety.parseCommands(reply))
+    }
+
+    // ===== 中文路径 / 注释不能误伤（v0.2.80）=====
+    //
+    // v0.2.78 对**整行**做非 ASCII 过滤，把 `ls ~/模型/loras`、`nvidia-smi  # 查看显存`
+    // 这类合法命令一并丢弃（中文路径在云端很常见，守则本身是中文写的、模型爱加中文注释）。
+    // 而 wrap 层的 sanitizeCommand 本来就能处理它们——解析层提前扔掉，两层能力没对齐。
+
+    @Test
+    fun keepsChinesePathAndFilename() {
+        val reply = """
+            ```sh
+            ls ~/模型/loras
+            cat ~/说明.txt
+            ```
+        """.trimIndent()
+        assertEquals(
+            listOf("ls ~/模型/loras", "cat ~/说明.txt"),
+            TerminalCommandSafety.parseCommands(reply),
+        )
+    }
+
+    @Test
+    fun keepsChineseComment() {
+        // 注释由 wrap 层的 sanitizeCommand 剥离，解析层不该提前丢弃整条命令。
+        val reply = """
+            ```sh
+            nvidia-smi  # 查看显存
+            df -h ~  # 看磁盘余量
+            ```
+        """.trimIndent()
+        assertEquals(
+            listOf("nvidia-smi  # 查看显存", "df -h ~  # 看磁盘余量"),
+            TerminalCommandSafety.parseCommands(reply),
+        )
+    }
+
+    @Test
+    fun stillRejectsChineseProseAsCommandName() {
+        // 放宽后仍必须拦住"中文说明句"——它们首 token 就是中文，不是命令。
+        assertEquals(emptyList<String>(), TerminalCommandSafety.parseCommands("```sh\n检查磁盘\n```"))
+        assertEquals(emptyList<String>(), TerminalCommandSafety.parseCommands("```sh\n模型/loras\n```"))
     }
 
     @Test
