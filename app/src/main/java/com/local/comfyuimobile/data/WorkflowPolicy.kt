@@ -6,7 +6,17 @@ import org.json.JSONObject
 import kotlin.math.abs
 
 object WorkflowPolicy {
-    private const val DRAFT_STRUCTURE_MIN_COVERAGE = 0.5
+    /**
+     * 草稿与服务器工作流的“节点重合比例”下限。
+     *
+     * v0.2.81：从 0.5 降到 0.2。以前 0.5 会把"大改造"误判成"混入了别的工作流"——
+     * 例如把 10 节点的 SDXL 工作流改成 SD1.5：保留 4 个原节点、新增 6 个，覆盖率
+     * 4/10=0.4 < 0.5，用户的高级编辑被当作垃圾丢弃。这个检查要防的是"草稿文件
+     * 混进了别的工作流的数据"，而草稿 key 是 serverUrl + workflowPath 的哈希，
+     * 撞车概率极低；真正需要防的"服务器被其他设备改了"已由 hasModifiedConflict
+     * （基于 modified 时间戳）在做。降到 0.2 保留"完全不是同一个工作流"的兜底。
+     */
+    private const val DRAFT_STRUCTURE_MIN_COVERAGE = 0.2
 
     fun hasModifiedConflict(loadedModified: Double, serverModified: Double?): Boolean =
         serverModified != null && abs(serverModified - loadedModified) > 0.001

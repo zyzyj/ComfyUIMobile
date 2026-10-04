@@ -369,6 +369,7 @@ class AppPreferences(private val context: Context) {
                             .put("uid", account.uid)
                             .put("cookie", account.cookie)
                             .put("bdToken", account.bdToken)
+                            .put("bdTokenFetchedAt", account.bdTokenFetchedAt)
                             .put("lastUsedAt", account.lastUsedAt)
                             .put("lastSignInAt", account.lastSignInAt),
                     )
@@ -399,6 +400,7 @@ class AppPreferences(private val context: Context) {
                         uid = item.optString("uid"),
                         cookie = cookie,
                         bdToken = item.optString("bdToken"),
+                        bdTokenFetchedAt = item.optLong("bdTokenFetchedAt"),
                         lastUsedAt = item.optLong("lastUsedAt"),
                         lastSignInAt = item.optLong("lastSignInAt"),
                     ),

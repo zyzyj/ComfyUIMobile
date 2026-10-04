@@ -91,6 +91,7 @@ import com.local.comfyuimobile.network.ActiveJobRecovery
 import com.local.comfyuimobile.network.ComfyClient
 import com.local.comfyuimobile.network.AiStudioClient
 import com.local.comfyuimobile.network.AiStudioKernelClient
+import com.local.comfyuimobile.network.AiStudioTokenRefresher
 import com.local.comfyuimobile.network.AiStudioException
 import com.local.comfyuimobile.network.AiStudioProtocol
 import com.local.comfyuimobile.network.ExecutionNodeResolver
@@ -240,6 +241,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ===== v0.1.90 AI Studio 平台 =====
     private val aiStudio = AiStudioClient()
     private val kernelClient = AiStudioKernelClient()
+    /**
+     * bdToken 自动刷新器（v0.2.81）。两个 client 共用同一实例：底层是同一个令牌，
+     * 各建一份只会各自拿到“更新后”的值、互相覆盖。
+     */
+    private val tokenRefresher = AiStudioTokenRefresher()
     /** 控制台当前连接的环境（用于后续在内核里跑命令）。 */
     private var kernelEndpoint: AiStudioKernelClient.KernelEndpoint? = null
     /**
@@ -288,6 +294,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var pendingAccountId: String? = null
 
     init {
+        // v0.2.81：把令牌刷新器接入两个 client。刷新出新 bdToken 后由 applyRefreshedToken
+        // 回写账号并落盘（client 不知道账号列表与 DataStore）。
+        aiStudio.tokenRefresher = tokenRefresher
+        aiStudio.onAccountRefreshed = { applyRefreshedToken(it) }
+        kernelClient.tokenRefresher = tokenRefresher
+        kernelClient.onAccountRefreshed = { applyRefreshedToken(it) }
         viewModelScope.launch {
             preferences.settings.collect { stored ->
                 val submittedJobsChanged = _state.value.submittedJobIds != stored.submittedJobs
@@ -1971,6 +1983,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 把刷新出来的新 bdToken 回写到账号（内存 + 磁盘），并返回更新后的账号
+     * （v0.2.81）。
+     *
+     * 跨账号作废：刷新是异步的，回来时用户可能已经切了账号——那时不能再把新令牌
+     * 盖到一个已经不在当前列表里的账号上。找不到就原样返回，请求照旧用旧令牌
+     * （本轮失败，下轮重新刷）。
+     *
+     * 返回更新后的账号而不是 Unit，是为了让 client 用**新令牌**重试——两个 client
+     * 都只持有传入的 account 快照，不会自己重新去 state 里取。
+     */
+    private fun applyRefreshedToken(updated: AiStudioAccount): AiStudioAccount {
+        val panel = _state.value.aiStudio
+        val existing = panel.accounts.firstOrNull { it.id == updated.id } ?: return updated
+        val merged = panel.accounts.map { if (it.id == updated.id) updated else it }
+        _state.update { it.copy(aiStudio = it.aiStudio.copy(accounts = merged)) }
+        persistAiStudio(merged, panel.activeAccountId)
+        AppLogger.info("AI Studio 已更新令牌：${updated.displayName()}")
+        return existing.copy(bdToken = updated.bdToken, bdTokenFetchedAt = updated.bdTokenFetchedAt)
+    }
+
     private fun failAiStudio(
         prefix: String,
         error: Throwable,
@@ -2512,6 +2545,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             size = json.toString().toByteArray().size.toLong(),
         )
 
+    /**
+     * 服务器不支持云端工作流时，把改名/移动当成本地操作处理（v0.2.81）。
+     *
+     * AI Studio 这类反代不开放 /userdata，`client.moveWorkflow` 必抛。删除早在
+     * v0.2.34 就做了本地降级，改名/移动当时漏了——又是"平行路径只改一条"。效果：
+     * 本机这份工作流换名/换目录，并保留 modified 以免误报"服务器版本变了"。
+     */
+    private fun localMovedEntry(path: String, json: String, original: WorkflowEntry): WorkflowEntry =
+        WorkflowEntry(
+            name = path.substringAfterLast('/'),
+            path = path,
+            isDirectory = false,
+            size = json.toByteArray().size.toLong(),
+            modified = original.modified,
+        )
+
     fun selectWorkflow(entry: WorkflowEntry, recordAsOpened: Boolean = false) {
         if (entry.isDirectory) return
         AppLogger.info("预读取工作流：${entry.path}")
@@ -2548,10 +2597,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val structuralDraft = draft != null && draft.structural && !draft.workflowJson.isNullOrBlank()
                 val draftDiscarded = structuralDraft &&
                     WorkflowPolicy.draftStructureMismatched(draft.workflowJson!!, serverRaw)
-                if (draftDiscarded) {
-                    runCatching { workflowDrafts.delete(serverUrl, entry.path) }
-                        .onFailure { AppLogger.error("清除不匹配的本地草稿失败", it) }
-                }
+                // v0.2.81：丢弃草稿时不再静默删文件。丢弃是因为"草稿结构对不上服务器"，
+                // 但也可能是用户大改造后被阈值误伤——删了就永久丢失，保留成本几乎为零
+                // （真混入了别的工作流数据，下次仍会被判定为不匹配并忽略）。
                 val raw = if (structuralDraft && !draftDiscarded) draft.workflowJson!! else serverRaw
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(
@@ -2607,7 +2655,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         },
                         notice = when {
                             !promote -> "已预读取 ${entry.name}，点击“打开参数”或双击进入参数页"
-                            draftDiscarded -> "检测到本地草稿与当前工作流内容不匹配（可能是旧版本数据混入），已忽略并读取服务器版本"
+                            draftDiscarded -> "检测到本地草稿与当前工作流结构差异很大（可能是旧数据或大改造），已忽略并读取服务器版本；草稿仍保留在本机"
                             draft != null -> "已恢复 ${entry.name} 的本地未保存草稿"
                             else -> "已加载 ${entry.name}"
                         },
@@ -4666,6 +4714,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         workflowSaveJob = viewModelScope.launch {
             runOperation("工作流保存失败") {
                 flushCurrentDraft()
+                val workflowJson = bridgeOperationMutex.withLock {
+                    ensureSelectedWorkflowLoaded()
+                    (bridge ?: error("前端桥接不可用")).syncWorkflow(_state.value.fields)
+                }
+                // v0.2.81：先判能力再调接口。以前第一行就是 client.listWorkflows()，
+                // 而 AI Studio 这类不开放 /userdata 的服务器上它必抛（退避期内
+                // userdataCall 直接抛 PlatformResponseException）——降级分支在它之后，
+                // 永远到不了。用户看到的是「该服务器不支持云端工作流」，而 App 明写了
+                // 降级逻辑却用不上。另存为（saveWorkflowAs）早就是先判能力再调接口。
+                //
+                // 部分云端平台（如百度 AI Studio 的 api_serving 代理）不开放 /userdata
+                // 工作流管理接口，保存会返回 404/400。此时降级为本地草稿保存，功能不中断。
+                if (bridge?.serverWorkflowStoreAvailable != true) {
+                    saveWorkflowAsLocalDraft(document, workflowJson)
+                    return@runOperation
+                }
                 val current = client.listWorkflows().firstOrNull { it.path == document.entry.path }
                 if (!force && current != null) {
                     val changed = WorkflowPolicy.hasModifiedConflict(document.baseModified, current.modified)
@@ -4682,19 +4746,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     return@runOperation
                 }
-                val workflowJson = bridgeOperationMutex.withLock {
-                    ensureSelectedWorkflowLoaded()
-                    (bridge ?: error("前端桥接不可用")).syncWorkflow(_state.value.fields)
-                }
-                // 部分云端平台（如百度 AI Studio 的 api_serving 代理）不开放 /userdata
-                // 工作流管理接口，保存会返回 404/400。此时降级为本地草稿保存，功能不中断。
-                // v0.1.72：探测已知不支持时直接降级，省掉一发必败的写入请求。
-                if (bridge?.serverWorkflowStoreAvailable != true) {
-                    saveWorkflowAsLocalDraft(document, workflowJson)
-                    return@runOperation
-                }
                 val saved = try {
-                    client.writeWorkflow(document.entry.path, workflowJson, overwrite = current != null)
+                    // v0.2.81：overwrite 直接传 true。以前传 `current != null`，而
+                    // listWorkflows 在部分平台会回 200 空列表（项目注释已记过这个假阳性），
+                    // 于是 current==null 时 overwrite=false，服务端拒绝覆盖 → 保存失败。
+                    // 防误覆盖的职责交给上面那次按 modified 的确认（已有）。
+                    client.writeWorkflow(document.entry.path, workflowJson, overwrite = true)
                 } catch (error: IllegalStateException) {
                     // v0.1.68：改用统一判定，能力门控下的"已暂停重试"也能识别为不支持。
                     if (!isUserdataUnavailable(error)) throw error
@@ -4749,12 +4806,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 fields = WorkflowDraftFields.capture(_state.value.fields),
             ),
         )
+        // v0.2.81：服务器不支持云端保存时，为了不丢数据总是写本地草稿（即使
+        // “本地草稿”开关是关的）。提示里说清楚是服务器限制导致的暂存，免得
+        // 用户发现关了开关却仍有草稿文件。
+        val draftsOff = !_state.value.localDraftsEnabled
         _state.update {
             it.copy(
                 loading = false,
                 workflowOverwriteRequired = false,
                 workflowOverwriteReason = "",
-                notice = "此服务器不支持云端保存工作流，已保存到本地草稿（下次打开自动恢复）",
+                notice = buildString {
+                    append("此服务器不支持云端保存工作流，已暂存到本机草稿（下次打开自动恢复）")
+                    if (draftsOff) append("；本次暂存不受「本地草稿」开关限制，以免丢失编辑")
+                },
             )
         }
     }
@@ -4954,7 +5018,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val currentJson = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).syncWorkflow(document.fields)
                 }
-                val moved = client.moveWorkflow(document.entry.path, "$folder/$fileName")
+                // v0.2.81：先判能力再调接口（与 saveWorkflow / deleteWorkflowByPath 对齐）。
+                // 以前直接 client.moveWorkflow，而 AI Studio 这类不开放 /userdata 的服务器
+                // 上它必抛，整段失败——改名后本地快照也不会改，新路径读不到正文。
+                val targetPath = "$folder/$fileName"
+                val moved = if (bridge?.serverWorkflowStoreAvailable != true) {
+                    localMovedEntry(targetPath, currentJson, document.entry)
+                } else {
+                    try {
+                        client.moveWorkflow(document.entry.path, targetPath)
+                    } catch (error: IllegalStateException) {
+                        if (!isUserdataUnavailable(error)) throw error
+                        localMovedEntry(targetPath, currentJson, document.entry)
+                    }
+                }
                 renameWorkflowSnapshot(document.serverUrl, document.entry.path, moved.path)
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(currentJson, workflowPath = moved.path)
@@ -5000,7 +5077,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val currentJson = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).syncWorkflow(document.fields)
                 }
-                val moved = client.moveWorkflow(document.entry.path, destination)
+                // v0.2.81：同 renameWorkflow，先判能力再调接口，不支持时就地降级为本地移动。
+                val moved = if (bridge?.serverWorkflowStoreAvailable != true) {
+                    localMovedEntry(destination, currentJson, document.entry)
+                } else {
+                    try {
+                        client.moveWorkflow(document.entry.path, destination)
+                    } catch (error: IllegalStateException) {
+                        if (!isUserdataUnavailable(error)) throw error
+                        localMovedEntry(destination, currentJson, document.entry)
+                    }
+                }
                 renameWorkflowSnapshot(document.serverUrl, document.entry.path, moved.path)
                 val manifest = bridgeOperationMutex.withLock {
                     (bridge ?: error("前端桥接不可用")).loadWorkflow(currentJson, workflowPath = moved.path)
@@ -6347,9 +6434,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         .distinctBy { it.path }
                 }.getOrElse { emptyList() }
                 val placeholders = RecentWorkflows.resolveEntries(ui.recentWorkflowPaths, ui.workflows)
-                // 快照优先，占位里和快照重复的（同路径）去掉，避免一行出现两次。
+                // v0.2.81：剔除"幽灵条目"——既没有本机快照、也不在现有列表里的最近浏览路径。
+                // 这种条目只在"上一次成功列表"里出现过，云端读不到、本机又没存正文，
+                // 用户点开必然报错（列表里有它，就是打不开）。快照被 prune 掉后也会变成这样。
+                val snapshotPaths = snapshots.mapTo(mutableSetOf()) { it.path }
+                val existingPaths = ui.workflows.mapTo(mutableSetOf()) { it.path }
+                // 快照优先；占位只保留"已在现有列表里"的（去掉与本机快照重复的行）。
                 val entries = snapshots +
-                    placeholders.filter { place -> snapshots.none { it.path == place.path } }
+                    placeholders.filter { place ->
+                        place.path !in snapshotPaths && place.path in existingPaths
+                    }
                 when {
                     entries.isEmpty() -> ui
                     // v0.1.74：不再区分"永久不支持"和"暂时性故障"——AI Studio 的网关

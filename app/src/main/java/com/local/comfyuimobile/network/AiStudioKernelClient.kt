@@ -118,6 +118,48 @@ class AiStudioKernelClient {
         .cookieJar(cookieJar)
         .build()
 
+    /**
+     * 令牌刷新器与回写回调（v0.2.81）。
+     *
+     * 与 [AiStudioClient] 共用同一个实例：底层是同一个 bdToken，写两份只会
+     * 各自拿一份“更新后”的令牌，反而互相覆盖（“平行路径只改一条”的反面教训）。
+     * 这里只用于平台网关（enter / baseinfo / running_status_check），终端自身的
+     * Jupyter 会话走 endpoint.token，与本头无关。
+     */
+    var tokenRefresher: AiStudioTokenRefresher? = null
+    var onAccountRefreshed: ((AiStudioAccount) -> AiStudioAccount)? = null
+
+    /**
+     * 调平台网关；遇 403（令牌过期）时刷新令牌并重试一次。
+     *
+     * 网关方法拿到的是“账号 + bdToken 头”，所以刷新后把新账号传给 block 即可。
+     */
+    private suspend fun <T> gatewayCall(
+        account: AiStudioAccount,
+        action: String,
+        block: suspend (AiStudioAccount) -> T,
+    ): T {
+        try {
+            return block(account)
+        } catch (error: AiStudioException) {
+            if (error is CancellationException) throw error
+            val refresher = tokenRefresher
+            if (error.errorCode != 403 || refresher == null) throw error
+            when (val refreshed = refresher.refresh(account, account.bdToken)) {
+                is AiStudioTokenRefresher.Result.Refreshed -> {
+                    val updated = onAccountRefreshed?.invoke(refreshed.account) ?: refreshed.account
+                    return block(updated)
+                }
+                is AiStudioTokenRefresher.Result.LoggedOut ->
+                    throw AiStudioException("${action}失败：登录已失效，请到「账号」页重新登录 AI Studio", 403)
+                is AiStudioTokenRefresher.Result.ExtractionFailed ->
+                    throw AiStudioException("${action}失败：${refreshed.message}", 403)
+                is AiStudioTokenRefresher.Result.Unreachable ->
+                    throw AiStudioException("${action}失败：刷新平台令牌时网络不可达（${refreshed.message}）", 403)
+            }
+        }
+    }
+
     private var terminalSocket: WebSocket? = null
 
     /**
@@ -210,7 +252,10 @@ class AiStudioKernelClient {
     }
 
     /** `POST /studio/project/notebook/enter`：进入 notebook，触发 IDE 环境分配。 */
-    private fun enterNotebook(account: AiStudioAccount, projectId: String): String {
+    private suspend fun enterNotebook(account: AiStudioAccount, projectId: String): String =
+        gatewayCall(account, "进入 notebook") { acct -> enterNotebookOnce(acct, projectId) }
+
+    private fun enterNotebookOnce(account: AiStudioAccount, projectId: String): String {
         val body = AiStudioProtocol.formEncode(mapOf("projectId" to projectId))
         val request = Request.Builder()
             .url(AiStudioProtocol.BASE_URL + AiStudioProtocol.PATH_NOTEBOOK_ENTER)
@@ -229,7 +274,10 @@ class AiStudioKernelClient {
     }
 
     /** `GET /studio/project/envs/baseinfo?projectId=...` → result 里带 baseUrl/token。 */
-    private fun fetchBaseInfo(account: AiStudioAccount, projectId: String): JSONObject {
+    private suspend fun fetchBaseInfo(account: AiStudioAccount, projectId: String): JSONObject =
+        gatewayCall(account, "查询环境信息") { acct -> fetchBaseInfoOnce(acct, projectId) }
+
+    private fun fetchBaseInfoOnce(account: AiStudioAccount, projectId: String): JSONObject {
         val url = AiStudioProtocol.BASE_URL + AiStudioProtocol.PATH_ENV_BASEINFO +
             "?projectId=" + URLEncoder.encode(projectId, "UTF-8")
         val request = Request.Builder()
@@ -248,7 +296,15 @@ class AiStudioKernelClient {
         return AiStudioProtocol.unwrap(raw, "查询环境信息")
     }
 
-    private fun fetchRunningStatusCheck(
+    private suspend fun fetchRunningStatusCheck(
+        account: AiStudioAccount,
+        projectId: String,
+        scheduleName: String,
+    ): JSONObject = gatewayCall(account, "查询内核环境") { acct ->
+        fetchRunningStatusCheckOnce(acct, projectId, scheduleName)
+    }
+
+    private fun fetchRunningStatusCheckOnce(
         account: AiStudioAccount,
         projectId: String,
         scheduleName: String,
