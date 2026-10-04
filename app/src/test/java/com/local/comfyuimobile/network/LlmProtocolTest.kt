@@ -55,6 +55,44 @@ class LlmProtocolTest {
         assertEquals("", LlmProtocol.chatEndpoint("   "))
     }
 
+    // ===== 版本段归一化（v0.2.77）=====
+    //
+    // 智谱 GLM 的 OpenAI 兼容地址是 https://open.bigmodel.cn/api/paas/v4。
+    // 旧实现的无条件 else 分支会拼成 .../v4/v1/chat/completions → 404，
+    // 而 404 提示还写着"是不是少了 /v1"，恰好指向错误方向。
+
+    @Test
+    fun `带非 v1 版本段的地址只补端点名`() {
+        assertEquals(
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            LlmProtocol.chatEndpoint("https://open.bigmodel.cn/api/paas/v4"),
+        )
+    }
+
+    @Test
+    fun `models 端点同样识别非 v1 版本段`() {
+        assertEquals(
+            "https://open.bigmodel.cn/api/paas/v4/models",
+            LlmProtocol.modelsEndpoint("https://open.bigmodel.cn/api/paas/v4"),
+        )
+    }
+
+    @Test
+    fun `版本段带后缀字母也识别`() {
+        assertEquals(
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            LlmProtocol.chatEndpoint("https://generativelanguage.googleapis.com/v1beta/openai"),
+        )
+    }
+
+    @Test
+    fun `裸域名仍补 v1，不受版本段规则影响`() {
+        assertEquals(
+            "https://api.openai.com/v1/chat/completions",
+            LlmProtocol.chatEndpoint("https://api.openai.com"),
+        )
+    }
+
     // ===== 模型列表（v0.2.56） =====
 
     @Test
@@ -251,6 +289,26 @@ class LlmProtocolTest {
     }
 
     @Test
+    fun `stripFence=false 时保留围栏，终端链路的命令提取依赖它`() {
+        // v0.2.77 组合失效：守则教模型"以代码块结尾"，而 stripCodeFence 会把
+        // 收尾围栏剥掉 → parseCommands 的正则只剩一个围栏 → 一条命令都提不出来。
+        // 这个测试锁的就是**两个函数的组合**，单独测任何一个都发现不了。
+        val raw = """{"choices":[{"message":{"content":"先看下显存占用，确认没有别的进程占着卡：\n```sh\nnvidia-smi\n```"}}]}"""
+        val assistantText = LlmProtocol.parseContent(raw, stripFence = false)
+        // 终端助手的完整链路：解析回复 → 提取命令，命令必须非空
+        val commands = com.local.comfyuimobile.model.TerminalCommandSafety.parseCommands(assistantText)
+        assertEquals(listOf("nvidia-smi"), commands)
+        // 对照：剥了围栏就提不出来（写提示词路径的行为，不该用于终端）
+        val stripped = LlmProtocol.parseContent(raw, stripFence = true)
+        assertTrue(
+            "剥围栏后应印证故障：命令提取为空",
+            com.local.comfyuimobile.model.TerminalCommandSafety.parseCommands(stripped).isEmpty(),
+        )
+        // 原样保留时不应改动正文（首尾只 trim）
+        assertTrue(assistantText.contains("```sh"))
+    }
+
+    @Test
     fun `服务端返回 error 字段时报出来`() {
         val raw = """{"error":{"message":"model not found"}}"""
         try {
@@ -282,8 +340,12 @@ class LlmProtocolTest {
     }
 
     @Test
-    fun `404 提示地址可能少了 v1`() {
-        assertTrue(LlmProtocol.describeHttpError(404, "").contains("/v1"))
+    fun `404 提示指向版本段与端点名`() {
+        // v0.2.77：以前只说"是不是少了 /v1"，但地址也可能是 /v4 这类版本号，
+        // 旧文案在那种情形下恰好指向错误方向。
+        val text = LlmProtocol.describeHttpError(404, "")
+        assertTrue(text.contains("/v1"))
+        assertTrue(text.contains("/v4"))
     }
 
     @Test

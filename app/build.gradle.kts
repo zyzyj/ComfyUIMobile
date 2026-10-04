@@ -21,8 +21,8 @@ android {
         applicationId = "com.local.comfyuimobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 276
-        versionName = "0.2.76"
+        versionCode = 277
+        versionName = "0.2.77"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // v0.1.71：fork 之后必须指向自己的仓库，否则"检查更新"会去拉上游

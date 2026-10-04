@@ -44,6 +44,7 @@ import com.local.comfyuimobile.model.AiStudioProject
 import com.local.comfyuimobile.model.AiStudioSchedule
 import com.local.comfyuimobile.model.AiStudioState
 import com.local.comfyuimobile.model.AssistantContext
+import com.local.comfyuimobile.model.QueuedMessageIndex
 import com.local.comfyuimobile.model.StorageBucket
 import com.local.comfyuimobile.model.StorageCleanTarget
 import com.local.comfyuimobile.model.StorageStats
@@ -3111,19 +3112,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val pendingCommands: StateFlow<List<PendingCommand>> = _pendingCommands.asStateFlow()
 
     /**
-     * 排队消息的「文本 → 消息 id」（v0.2.76）：正式发送时据此移除占位那条。
-     * 只记当前待发的；取出即移除，不会累积。
+     * 排队消息的「文本 → 占位消息 id」索引（v0.2.76，v0.2.77 改为 FIFO 队列）。
+     * 同一句话可能被排队多次，所以要能存重复；取出即移除，不会累积。
      */
-    private var queuedMessageIds: Map<String, String> = emptyMap()
-
-    /**
-     * 取出并移除该提问对应的排队消息 id（v0.2.76）。同一句话可能被排队多次，这里只取第一条。
-     */
-    private fun consumeQueuedMessageId(prompt: String): String? {
-        val id = queuedMessageIds[prompt] ?: return null
-        queuedMessageIds = queuedMessageIds - prompt
-        return id
-    }
+    private val queuedMessageIds = QueuedMessageIndex()
 
     /**
      * 排队等发送的用户消息（v0.2.61）。
@@ -3158,7 +3150,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 那时若队列还有内容，会把消息重新发出去（刚清空又冒出来）。
         _queuedAssistantPrompts.value = emptyList()
         // v0.2.76：排队消息的 id 映射也要清，否则残留 id 会被下一轮误当作匹配项。
-        queuedMessageIds = emptyMap()
+        queuedMessageIds.clear()
         autoRunQueue = emptyList()
         assistantJob?.cancel()
         assistantJob = null
@@ -3188,7 +3180,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!busy && !hadQueue) return
         _queuedAssistantPrompts.value = emptyList()
         // v0.2.76：排队消息的 id 映射也要清，否则残留 id 会被下一轮误当作匹配项。
-        queuedMessageIds = emptyMap()
+        queuedMessageIds.clear()
         autoRunQueue = emptyList()
         assistantJob?.cancel()
         assistantJob = null
@@ -3260,7 +3252,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             // v0.2.76：记住排队消息的 id。正式发送时要把它移除——它只是同一个提问的占位，
             // 留着会让 UI 出现两条右对齐气泡、prompt 里同一句话出现三次。
-            queuedMessageIds = queuedMessageIds + (prompt to queued.id)
+            // v0.2.77：同一句话可被排队多次，索引内部按 FIFO 存 id 列表。
+            queuedMessageIds.add(prompt, queued.id)
             _queuedAssistantPrompts.update { it + prompt }
             _assistantMessages.update {
                 it + queued + TerminalChatMessage(
@@ -3278,7 +3271,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         // v0.2.76：正式发送这一条时把排队时加的那条移除——它是同一个提问的"占位"，
         // 留着会导致 UI 上出现两条右对齐气泡、prompt 里同一句话出现三次。
-        val queuedId = consumeQueuedMessageId(prompt)
+        val queuedId = queuedMessageIds.consume(prompt)
         _assistantMessages.update { current ->
             val withoutQueued = if (queuedId != null) current.filterNot { it.id == queuedId } else current
             withoutQueued + userMessage
@@ -3307,6 +3300,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // v0.2.70：命令生成要稳定、要短，跟写提示词（配置值）反着来。
                     temperature = LlmProtocol.ASSISTANT_TEMPERATURE,
                     maxTokens = LlmProtocol.ASSISTANT_MAX_TOKENS,
+                    // v0.2.77：终端助手**不能**剥代码围栏——命令靠成对围栏提取，
+                    // 而守则恰好教模型以代码块结尾，剥掉收尾围栏就是一条命令都提不出来。
+                    stripFence = false,
                 )
             }.getOrElse { error ->
                 if (error is CancellationException) throw error
@@ -3709,6 +3705,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     userMessage = buildAssistantUserMessage(history, followUp),
                     temperature = LlmProtocol.ASSISTANT_TEMPERATURE,
                     maxTokens = LlmProtocol.ASSISTANT_MAX_TOKENS,
+                    // v0.2.77：同首轮，终端链路不能剥围栏。
+                    stripFence = false,
                 )
             }.getOrElse { error ->
                 if (error is CancellationException) throw error
