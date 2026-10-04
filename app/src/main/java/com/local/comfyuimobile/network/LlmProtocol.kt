@@ -17,20 +17,34 @@ object LlmProtocol {
     private const val CHAT_COMPLETIONS = "chat/completions"
     private const val MODELS = "models"
 
+    /** 路径段里的 API 版本段（`/v1`、`/v4`、`/v1beta` 等）——此时只差端点名，不能再补 `/v1`。 */
+    private val API_VERSION_SEGMENT = Regex("^v\\d+[a-zA-Z]*$", RegexOption.IGNORE_CASE)
+
+    /**
+     * 判断 URL 的路径部分是否已含版本段。
+     *
+     * 扫的是**任意路径段**而不只是末尾：各家的地址形态里版本段不总在末尾
+     * （智谱 `…/api/paas/v4` 在末尾，Gemini 的 `…/v1beta/openai` 不在）。
+     */
+    private fun hasApiVersionSegment(url: String): Boolean {
+        val path = url.substringAfter("://", url).substringAfter('/', "")
+        return path.split('/').any { API_VERSION_SEGMENT.matches(it) }
+    }
+
     /**
      * 把用户填的地址规范化成完整的 `/chat/completions` 端点。
      *
      * 各家给的地址形态很乱：有人填 `https://api.openai.com/v1`，有人直接把完整
-     * URL 粘进来，还有自建网关是 `https://x.com/api/v1`。统一成"没有就补 `/v1`"
-     * 两种补法，避免用户卡在"为什么一直 404"。
+     * URL 粘进来，有人填带版本段的网关地址（`…/api/paas/v4`）。三种末段分别处理：
+     * 已是端点 → 原样；已带版本段 → 只补端点名；其余 → 补 `/v1` 再补端点名。
+     * 避免用户卡在"为什么一直 404"。
      */
     fun chatEndpoint(baseUrl: String): String {
         val trimmed = baseUrl.trim().trimEnd('/')
         if (trimmed.isBlank()) return ""
         return when {
             trimmed.endsWith(CHAT_COMPLETIONS) -> trimmed
-            trimmed.endsWith("/v1") -> "$trimmed/$CHAT_COMPLETIONS"
-            trimmed.endsWith("/v1/") -> "$trimmed/$CHAT_COMPLETIONS"
+            hasApiVersionSegment(trimmed) -> "$trimmed/$CHAT_COMPLETIONS"
             else -> "$trimmed/v1/$CHAT_COMPLETIONS"
         }
     }
@@ -39,7 +53,8 @@ object LlmProtocol {
      * 模型列表端点 `/models`（v0.2.56）。
      *
      * 与 [chatEndpoint] 同一套地址归一规则，只是末尾换成 `models`：用户填的地址
-     * 可能是聊天端点、`/v1`、或裸域名，三种都要能拼对。
+     * 可能是聊天端点、版本段（`/v1`、`/v4`…）、`models` 端点、或裸域名，
+     * 各种都要能拼对。
      */
     fun modelsEndpoint(baseUrl: String): String {
         val trimmed = baseUrl.trim().trimEnd('/')
@@ -47,9 +62,8 @@ object LlmProtocol {
         return when {
             trimmed.endsWith("/$CHAT_COMPLETIONS") ->
                 trimmed.removeSuffix("/$CHAT_COMPLETIONS") + "/$MODELS"
-            trimmed.endsWith("/v1") -> "$trimmed/$MODELS"
-            trimmed.endsWith("/v1/") -> "$trimmed/$MODELS"
             trimmed.endsWith("/$MODELS") -> trimmed
+            hasApiVersionSegment(trimmed) -> "$trimmed/$MODELS"
             else -> "$trimmed/v1/$MODELS"
         }
     }
@@ -167,8 +181,13 @@ object LlmProtocol {
      *
      * 兼容三种常见形态：标准 `choices[0].message.content`、推理模型把正文放在
      * `reasoning_content`、以及 /v1/completions 风格的 `choices[0].text`。
+     *
+     * @param stripFence 是否剥掉首尾代码围栏。写提示词要剥（模型爱给提示词套一层
+     *   ```，写进画框会带出反引号）；**终端助手不能剥**——它的命令靠成对围栏提取
+     *   （`TerminalCommandSafety.parseCommands`），剥掉收尾围栏后正则只剩半个围栏、
+     *   一条命令都提不出来；而守则恰恰教模型以代码块结尾（v0.2.77 修的组合失效）。
      */
-    fun parseContent(raw: String): String {
+    fun parseContent(raw: String, stripFence: Boolean = true): String {
         val root = runCatching { JSONObject(raw) }
             .getOrNull()
             ?: throw LlmException("大模型返回了非 JSON 内容：${raw.trim().take(120)}")
@@ -179,7 +198,7 @@ object LlmProtocol {
             message?.optString("reasoning_content"),
             choice?.optString("text"),
         ).firstOrNull { it.isNotBlank() }
-            ?.let { return stripCodeFence(it) }
+            ?.let { return if (stripFence) stripCodeFence(it) else it.trim() }
         val reported = root.optJSONObject("error")?.optString("message").orEmpty()
         throw LlmException(
             if (reported.isNotBlank()) "大模型报错：$reported" else "大模型返回内容为空",
@@ -207,7 +226,7 @@ object LlmProtocol {
         val detail = reported.ifBlank { raw.trim().take(160) }
         val suffix = when (code) {
             401, 403 -> "（多半是 API Key 不对或没权限）"
-            404 -> "（地址不对，检查一下是不是少了 /v1）"
+            404 -> "（地址不对，检查地址是否完整：多数服务商的地址以 /v1 结尾，也有 /v4 等版本号）"
             429 -> "（触发限流，等一会儿再试）"
             in 500..599 -> "（服务端出错，稍后再试）"
             else -> ""

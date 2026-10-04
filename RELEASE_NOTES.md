@@ -1,3 +1,96 @@
+# v0.2.77 — 组合失效修复（第四类问题）+ 排队索引表达力 + 地址归一化
+
+一份复审指出三类问题。前几轮修的都是「判定函数的隐含假设」「平行路径只改一条」，
+这一轮 P0 是**新的一类**：两个函数各自正确，组合后失效。
+
+## P0 · 回复以代码块结尾时，命令一条都提取不到
+
+### 机理（集成层缺口）
+
+```
+llm.chat() → LlmProtocol.parseContent(raw)
+              → stripCodeFence(content)      ← 无条件剥首尾围栏
+           → TerminalCommandSafety.parseCommands(reply)
+              → 正则要求**成对**围栏 ```lang … ```
+```
+
+`stripCodeFence` 是为**写提示词**加的（模型爱给提示词套一层 ```，写进画框会带出
+反引号）。但终端助手共用同一个 `parseContent` —— 回复只要以 ``` 结尾，
+收尾围栏就被剥掉，正则只剩半个围栏 → 命令数为 0。
+
+### 为什么这是高频故障
+
+守则 VOICE 段明文写的是「一两句说明**为什么**要跑它，**然后给命令，结束**」，
+示范恰好以代码块收尾 —— **守则主动把模型推进这条故障路径**。
+
+界面上命令看起来正常显示（`AssistantMarkup` 对未闭合围栏有兜底、照常渲染成
+代码块），只是没有「执行」按钮。静默失败，最难自查的那种。
+
+### 实测（Python 移植复现，与 Kotlin 同逻辑）
+
+```
+=== 实际链路：parseCommands(stripCodeFence(raw)) ===
+① 守则示范格式（以代码块结尾）: ❌ 空 []
+② 代码块后有收尾句: ✅ ['nvidia-smi']
+③ 只有代码块: ❌ 空 []
+④ 两个代码块（第二个结尾）: ✅ ['nvidia-smi']   ← 丢了第二条
+```
+
+### 为什么测试没抓到
+
+`TerminalCommandSafetyTest` 直接调 `parseCommands`，**不经过** `stripCodeFence`；
+`LlmProtocolTest` 只测 `parseContent`；**没有任何测试覆盖两者的组合**。
+两个函数单独都对，串起来坏 —— 这是 6 个版本都没发现的集成层缺口。
+
+### 修复
+
+按调用点拆分（`chat()` / `parseContent()` 加 `stripFence: Boolean = true` 参数）：
+
+| 调用点 | 用途 | stripFence |
+|---|---|---|
+| `askAssistant` | 终端首轮 | **false** |
+| follow-up | 终端跟进 | **false** |
+| `runAiAssist` | 写提示词 | true（默认） |
+| `testLlmConnection` | 连接测试 | true（默认，无所谓） |
+
+**新增集成测试**（唯一能锁住这类 bug 的形态）：
+`parseCommands(parseContent(以代码块结尾的响应, stripFence=false))` 必须非空；
+并附对照组断言 `stripFence=true` 时提取为空 —— 把故障机理本身也锁进测试。
+
+## P1 · 重复排队同一句话，残留孤儿气泡
+
+`_queuedAssistantPrompts` 是 **List**（可存重复），但 v0.2.76 的 `queuedMessageIds`
+是 **Map<提问文本, id>**：同一句话排两次 → 第二次覆盖第一次的 id →
+第一条占位消息永远删不掉，UI 上留下右对齐的孤儿气泡。
+
+**根因是表达力不匹配**：两个数据结构描述同一件事，List 能表达重复、Map 不能，
+边界上必然丢信息。
+
+**修复**：抽出 `model/QueuedMessageIndex.kt`，内部为 `Map<String, ArrayDeque<String>>`
+（文本 → id 的 FIFO 队列），`consume()` 按序取出。清空/停止两处同步改为 `.clear()`。
+
+## P2 · 非 /v1 版本段的接口地址归一化错误
+
+`chatEndpoint` 的 else 分支无条件补 `/v1`。智谱 GLM 的 OpenAI 兼容地址是
+`https://open.bigmodel.cn/api/paas/v4` → 拼成 `.../v4/v1/chat/completions` → 404。
+
+**修复**：扫 URL 路径里的**任意路径段**是否为版本段（`^v\d+[a-zA-Z]*$`），是则只补端点名。
+- 智谱 `…/api/paas/v4` → `…/v4/chat/completions` ✅
+- Gemini `…/v1beta/openai` → `…/v1beta/openai/chat/completions` ✅（版本段不在末尾）
+- 裸域名仍补 `/v1` ✅
+
+顺带：404 文案从「检查一下是不是少了 /v1」改为「检查地址是否完整：多数以 /v1 结尾，
+也有 /v4 等版本号」——旧文案在非 v1 场景下恰好指向错误方向。`modelsEndpoint` 同步。
+
+## 测试
+
+新增 10 条：组合失效集成测试 1、版本段 5（含 Gemini 非末尾形态、裸域名对照）、
+FIFO 索引 5。本地全量：**547 个测试通过，0 失败**。
+
+---
+
+# v0.2.76 — 修首轮/排队提问重复入参（第三次"平行路径只改一条"）
+
 # v0.2.76 — 修首轮/排队提问重复入参（第三次"平行路径只改一条"）
 
 一份复审指出我 v0.2.74 的修复**又漏了一条平行路径**。复现确认后修复。

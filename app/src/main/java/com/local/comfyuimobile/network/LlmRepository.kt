@@ -42,6 +42,8 @@ class LlmRepository {
     /**
      * @param temperature 覆盖配置里的值；null 表示用配置值。
      * @param maxTokens 回复长度上限；null 表示用配置值。
+     * @param stripFence 是否剥掉回复首尾的代码围栏（透传给 [LlmProtocol.parseContent]）。
+     *   写提示词要剥；**终端助手必须传 `false`**——它靠成对围栏提取命令。
      *
      * 终端助手会传 [LlmProtocol.ASSISTANT_TEMPERATURE] 与 [LlmProtocol.ASSISTANT_MAX_TOKENS]：
      * 生成运维命令要稳定、要短，跟写提示词的需求是反的。
@@ -52,6 +54,7 @@ class LlmRepository {
         userMessage: String,
         temperature: Float?,
         maxTokens: Int?,
+        stripFence: Boolean = true,
     ): String {
         if (!config.isConfigured()) throw LlmException("还没有配置大模型接口：请到设置里填接口地址和模型名")
         val request = Request.Builder()
@@ -74,7 +77,7 @@ class LlmRepository {
                 if (!response.isSuccessful) {
                     throw LlmException(LlmProtocol.describeHttpError(response.code, raw))
                 }
-                LlmProtocol.parseContent(raw)
+                LlmProtocol.parseContent(raw, stripFence)
             }
         }
     }
