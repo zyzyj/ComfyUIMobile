@@ -71,6 +71,44 @@ class TerminalPlaybookTest {
         assertTrue(text.contains("提议"))
     }
 
+    // ===== 第零步：先判断是不是个任务（v0.2.82）=====
+    // 用户反馈「说声你好它就去启动 ComfyUI」：守则只禁了"重启/停止正在运行的"，
+    // 没禁"启动未运行的"，于是模型把打招呼当任务、按五步走完就去起服务。
+
+    @Test
+    fun playbookHasZerothStepForNonTasks() {
+        val text = prompt()
+        assertTrue("应有第零步", text.contains("零 · 先判断这是不是个任务"))
+        assertTrue("应说明打招呼/闲聊不是任务", text.contains("都不算任务"))
+        assertTrue("应给打招呼的处置", text.contains("回一句，停"))
+    }
+
+    @Test
+    fun playbookForbidsStartingServiceUnprompted() {
+        val text = prompt()
+        assertTrue("应禁止自作主张启动服务", text.contains("不要因为"))
+        assertTrue("启动未运行的也算", text.contains("就自作主张把它启动"))
+        assertTrue("禁令要覆盖启动/重启/停止", text.contains("启动 / 重启 / 停止任何服务"))
+        assertTrue("应给出反问式处置", text.contains("需要我启动吗"))
+    }
+
+    @Test
+    fun reconIsOnDemandNotAlways() {
+        // 用户抱怨「每轮都甩三条命令」是呆板感来源之一。
+        val text = prompt()
+        assertTrue("应说明侦察是按需", text.contains("缺什么查什么"))
+        assertTrue("不应每次都查全套", text.contains("不要每次都查全套"))
+        assertTrue("已知事实不要重复查", text.contains("不要重复查"))
+    }
+
+    @Test
+    fun forbidsSleepPollingLoops() {
+        // `sleep 25 && ss -ltnp` 让用户干等且看不到过程。
+        val text = prompt()
+        assertTrue("应禁 sleep 轮询", text.contains("sleep N && 检查"))
+        assertTrue("应给出替代做法", text.contains("立即返回"))
+    }
+
     // ===== 环境事实注入 =====
 
     @Test

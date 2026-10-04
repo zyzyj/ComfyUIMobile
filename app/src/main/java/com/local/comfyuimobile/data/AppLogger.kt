@@ -25,6 +25,23 @@ object AppLogger {
     private const val MAX_EXIT_TRACE_BYTES = 128 * 1024
     /** 待落盘行数上限，超出丢最旧（仅在磁盘持续跟不上写入时才可能触发）。 */
     private const val MAX_PENDING_LINES = 2_000
+    /**
+     * 堆栈最多保留的帧数（v0.2.82）。
+     *
+     * 完整堆栈动辄 70+ 行 ≈ 4~5KB；2MB 日志约 400 次就写满一轮并轮转，
+     * 真正的故障现场反而可能已被轮转丢弃（真机日志被截断就是这么来的）。
+     * 截到 15 帧足够定位调用点，又不会把日志吃干。
+     */
+    private const val MAX_STACK_FRAMES = 15
+    /**
+     * 同一 message + 同一异常的堆栈，在该时间窗内只记一次（v0.2.82）。
+     *
+     * 成功轮询/失败刷新这类会周期性重复（如 AI Studio 每 11 秒一次），
+     * 同一句话反复写会把诊断日志淹掉。
+     */
+    private const val DEDUP_WINDOW_MILLIS = 60_000L
+    /** 最近记过的"message + 异常类型"及时间戳，用于上面的去重。 */
+    private val recentErrors = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val traceKeyword = Regex(
         "fatal|sig[a-z0-9]+|crash|webview|chromium|abort|backtrace|fingerprint|abi|process|pid|tid|signal|tombstone|\\.so\\b",
         RegexOption.IGNORE_CASE,
@@ -88,8 +105,30 @@ object AppLogger {
     }
 
     fun error(message: String, throwable: Throwable? = null) {
+        if (throwable != null && shouldSkipDuplicate(message, throwable)) return
         val detail = if (throwable == null) message else "$message\n${stackTrace(throwable)}"
         write("错误", detail)
+    }
+
+    /**
+     * 该 message + 异常类型是否在去重窗口内已经记过（v0.2.82）。
+     *
+     * 周期性重复的错误（同一条 message 反复出现）只记第一次，其余静默跳过——
+     * 与 `userdataUnsupportedLogged` 同一个思路，只是下沉到日志层统一处理。
+     */
+    private fun shouldSkipDuplicate(message: String, throwable: Throwable): Boolean {
+        val now = System.currentTimeMillis()
+        // 只按 message + 异常类去重，不带堆栈内容：同一处代码在循环里反复抛，
+        // 行号也会一样，而堆栈字符串本身很长、做 key 开销大。
+        val key = message + "|" + throwable.javaClass.name
+        val previous = recentErrors[key]
+        if (previous != null && now - previous < DEDUP_WINDOW_MILLIS) return true
+        recentErrors[key] = now
+        // 顺手清理过期项，避免长期运行后表无限增长。
+        if (recentErrors.size > 200) {
+            recentErrors.entries.removeAll { now - it.value >= DEDUP_WINDOW_MILLIS }
+        }
+        return false
     }
 
     fun read(): String = synchronized(lock) {
@@ -289,7 +328,29 @@ object AppLogger {
         else -> "其他($reason)"
     }
 
-    private fun stackTrace(throwable: Throwable): String = StringWriter().also { writer ->
-        throwable.printStackTrace(PrintWriter(writer))
-    }.toString()
+    /**
+     * 把异常格式化成堆栈文本（v0.2.82 分级 + 截断）。
+     *
+     * 分级依据：**业务异常**（IllegalStateException / IllegalArgumentException）
+     * 是"用户可自行恢复的操作错误"（如"尚未连接 ComfyUI 服务器"），不该按崩溃规格
+     * 记完整堆栈——只记首帧就够定位，省下的空间留给真正的崩溃。
+     * 其余（含 PlatformResponseException 这类需要看调用链的）保留堆栈，但截到 15 帧。
+     */
+    private fun stackTrace(throwable: Throwable): String {
+        val full = StringWriter().also { writer ->
+            throwable.printStackTrace(PrintWriter(writer))
+        }.toString()
+        // 判定用**根因附近的类型**：OkHttp 常把真异常包在 cause 里。
+        val business = generateSequence(throwable) { it.cause }
+            .take(8)
+            .any { it is IllegalStateException || it is IllegalArgumentException }
+        val lines = full.lines()
+        val limit = if (business) 2 else MAX_STACK_FRAMES
+        val kept = lines.take(limit)
+        return if (kept.size < lines.size) {
+            (kept + "    …（堆栈已截断，共 ${lines.size} 行）").joinToString("\n")
+        } else {
+            kept.joinToString("\n")
+        }
+    }
 }

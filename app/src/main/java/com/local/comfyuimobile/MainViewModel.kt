@@ -955,19 +955,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         aiStudioRefreshJob?.cancel()
         val generation = ++aiStudioRefreshGeneration
         aiStudioRefreshJob = viewModelScope.launch {
-            val (points, signedTodayFromApi) = runCatching { aiStudio.fetchPointsInfo(account) }
+            // v0.2.82：预防性刷新令牌。实测 TTL 约 4~5 天，超过 72 小时就主动换一个，
+            // 免得用户撞上 403（虽然也有失败驱动刷新兜底，但那是先失败一次才修）。
+            // 失败不阻断：本轮照旧用旧令牌，请求 403 时还有重试。
+            val effective = refreshTokenIfStale(account)
+            val (points, signedTodayFromApi) = runCatching { aiStudio.fetchPointsInfo(effective) }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
                     AppLogger.warn("读取 AI Studio 积分失败", error)
                 }
                 .getOrDefault(null to null)
-            val snapshot = runCatching { aiStudio.fetchResources(account) }
+            val snapshot = runCatching { aiStudio.fetchResources(effective) }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
                     AppLogger.warn("读取 AI Studio 算力卡失败", error)
                 }
                 .getOrDefault(AiStudioClient.ResourceSnapshot(null, null, emptyMap()))
-            val aCoin = runCatching { aiStudio.fetchACoin(account) }
+            val aCoin = runCatching { aiStudio.fetchACoin(effective) }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
                     AppLogger.warn("读取 AI Studio A币失败", error)
@@ -1970,6 +1974,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearAiStudioMessage() {
         _state.update { it.copy(aiStudio = it.aiStudio.copy(message = null, error = null)) }
+    }
+
+    /**
+     * 令牌陈旧时预防性刷新一次（v0.2.82）。
+     *
+     * 失败一律静默——本轮照旧用旧令牌，真的失效了还有 403→刷新→重试 兵底。
+     * 返回可用的账号（刷新成功就是新的，否则原样）。
+     */
+    private suspend fun refreshTokenIfStale(account: AiStudioAccount): AiStudioAccount {
+        if (!AiStudioTokenRefresher.isTokenStale(account.bdTokenFetchedAt, System.currentTimeMillis())) {
+            return account
+        }
+        return when (val result = tokenRefresher.refreshProactively(account)) {
+            is AiStudioTokenRefresher.Result.Refreshed -> applyRefreshedToken(result.account)
+            else -> {
+                AppLogger.warn("AI Studio 令牌预防性刷新未成功，继续用旧令牌")
+                account
+            }
+        }
     }
 
     private fun persistAiStudio(accounts: List<AiStudioAccount>, activeId: String?) {
@@ -3553,6 +3576,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         id = UUID.randomUUID().toString(),
                         role = TerminalMessageRole.TERMINAL_OUTPUT,
                         text = result.forDisplay(),
+                        // v0.2.82：带上来源命令，供界面做可视化卡片（nvidia-smi/df …）。
+                        sourceCommand = pending.command,
                     )
                 }
                 // 拿到输出后自动接一轮：让模型解释/接着提案，用户不用自己描述结果。
