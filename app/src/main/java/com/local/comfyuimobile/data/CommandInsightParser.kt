@@ -111,7 +111,7 @@ object CommandInsightParser {
             val size = humanToBytes(m.groupValues[2]) ?: return@mapNotNull null
             val used = humanToBytes(m.groupValues[3]) ?: return@mapNotNull null
             val percent = m.groupValues[5].toDoubleOrNull() ?: return@mapNotNull null
-            // 伪文件系统（tmpfs/devtmpfs/overlay 之外）信息量低，跳过体积为 0 的。
+            // 伪文件系统（体积解析不出来或为 0）跳过——它们不占实际磁盘。
             if (size <= 0) return@mapNotNull null
             Quad(m.groupValues[1], m.groupValues[6], size, used, percent)
         }
@@ -139,10 +139,10 @@ object CommandInsightParser {
 
     // ===== free -h =====
 
-    private val FREE_MEM = Regex("^Mem:\\s+([\\d.]+[KMGTP]?i?)\\s+([\\d.]+[KMGTP]?i?)\\s+([\\d.]+[KMGTP]?i?)")
+    private val FREE_MEM = Regex("^Mem:\\s+([\\d.]+[KMGTP]?i?)\\s+([\\d.]+[KMGTP]?i?)\\s+([\\d.]+[KMGTP]?i?)", RegexOption.MULTILINE)
 
     private fun parseFree(output: String): InsightCard? {
-        val m = FREE_MEM.find(output.trim()) ?: return null
+        val m = FREE_MEM.find(output) ?: return null
         val total = humanToBytes(m.groupValues[1]) ?: return null
         val used = humanToBytes(m.groupValues[2]) ?: return null
         val free = humanToBytes(m.groupValues[3]) ?: return null

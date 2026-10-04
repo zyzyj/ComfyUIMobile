@@ -97,7 +97,7 @@ class CommandInsightParserTest {
         assertNotNull(card)
         card!!
         assertEquals("磁盘用量", card.title)
-        assertEquals(2, card.bars.size) // tmpfs 体积 0 被跳过
+        assertEquals("overlay / tmpfs / /dev/sdb 三行都可解析", 3, card.bars.size)
         val root = card.bars.first()
         assertEquals("/", root.label)
         assertEquals(43, (root.ratio * 100).toInt())
