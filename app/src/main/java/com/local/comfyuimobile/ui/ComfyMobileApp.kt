@@ -237,8 +237,10 @@ import com.local.comfyuimobile.AiStudioLoginActivity
 import com.local.comfyuimobile.bridge.ComfyBridge
 import com.local.comfyuimobile.bridge.FieldValidator
 import com.local.comfyuimobile.data.CachePolicy
+import com.local.comfyuimobile.data.CommandInsightParser
 import com.local.comfyuimobile.data.RecentWorkflows
 import com.local.comfyuimobile.data.UrlQuery
+import com.local.comfyuimobile.model.InsightCard
 import com.local.comfyuimobile.model.LoraStrengthMatrix
 import com.local.comfyuimobile.model.LoraStrengthRun
 import com.local.comfyuimobile.model.LoraStrengthSlot
@@ -495,6 +497,10 @@ private fun bubbleShape(isUser: Boolean): androidx.compose.ui.graphics.Shape =
 private val ChatGutter = 16.dp
 private const val BUBBLE_MAX_WIDTH_RATIO = 0.82f
 
+/** 命令输出超过这个行数/字符数就默认折叠（v0.2.82）。 */
+private const val TERMINAL_OUTPUT_COLLAPSE_LINES = 8
+private const val TERMINAL_OUTPUT_COLLAPSE_CHARS = 600
+
 @Composable
 private fun AiAssistantScreen(
     state: AppUiState,
@@ -513,10 +519,9 @@ private fun AiAssistantScreen(
     val focusRequester = remember { FocusRequester() }
 
     // 新消息到达时滚到底部，否则用户看不到最新回复。
-    // 待确认命令接在列表末尾，滚动目标要把它们算进去。
-    LaunchedEffect(messages.size, pending.size) {
+    // v0.2.82：待确认命令已从列表里移出、吸底显示，不再计入滚动目标。
+    LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
-        if (pending.isNotEmpty()) listState.animateScrollToItem(messages.size + pending.size)
     }
 
     Column(Modifier.fillMaxSize().padding(contentPadding)) {
@@ -552,11 +557,31 @@ private fun AiAssistantScreen(
                 items(messages, key = { it.id }) { message ->
                     AssistantMessageItem(message)
                 }
-                if (pending.isNotEmpty()) {
-                    item(key = "pending-label") {
-                        PendingCommandLabel(pending.size)
-                    }
-                    items(pending, key = { it.id }) { item ->
+            }
+        }
+
+        // v0.2.82：待确认命令**吸底**（固定在输入框上方），不再接在对话列表末尾。
+        //
+        // 以前它接在列表末尾：AI 给完命令后用户往往已经上滑在读历史/输出，命令卡片
+        // 就在屏幕外，要手动滑到底才看得到（用户反馈「命令在哪」的高频来源）。
+        // 固定在输入框上方后，无论滚到哪里都一眼可见。
+        // 数量多时（最多 10 条）给个高度上限 + 内部滚动，不把对话区挤没。
+        if (pending.isNotEmpty()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 2.dp,
+            ) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 300.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = ChatGutter, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    PendingCommandLabel(pending.size)
+                    pending.forEach { item ->
                         PendingCommandCard(
                             item = item,
                             level = level,
@@ -920,8 +945,17 @@ private fun AssistantMessageItem(message: TerminalChatMessage) {
     // 命令输出（v0.2.66）：**左对齐的等宽块**，不是居中的旁注。
     // 以前它与系统旁注同类，于是 `ls` 的列对齐被居中打散、多行输出挤成一团。
     // 终端输出的列对齐是它承载信息的方式，必须保留——所以横竖都铺满、不换行折行。
+    //
+    // v0.2.82：若能解析成可视化卡片（nvidia-smi / df …），卡片在上、原文仍可展开。
     if (message.role == TerminalMessageRole.TERMINAL_OUTPUT) {
-        TerminalOutputBlock(message.text)
+        val card = remember(message.sourceCommand, message.text) {
+            if (message.sourceCommand.isBlank()) null
+            else CommandInsightParser.parse(message.sourceCommand, message.text)
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            card?.let { InsightCardView(it) }
+            TerminalOutputBlock(message.text)
+        }
         return
     }
 
@@ -976,31 +1010,153 @@ private fun AssistantMessageItem(message: TerminalChatMessage) {
 }
 
 /**
- * 命令输出块（v0.2.66）。
+ * 命令输出的可视化卡片（v0.2.82）。
+ *
+ * 与原文（[TerminalOutputBlock]）**并存**：卡片在上、原文在下。
+ * 绝不只给卡片——解析错了用户还有原文可查（设计原则一）。
+ */
+@Composable
+private fun InsightCardView(card: InsightCard) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(
+            Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                card.title,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+
+            card.bars.forEach { bar ->
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            bar.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text(bar.display, style = MaterialTheme.typography.labelSmall)
+                    }
+                    LinearProgressIndicator(
+                        progress = { bar.ratio.toFloat() },
+                        modifier = Modifier.fillMaxWidth().height(6.dp),
+                        color = if (bar.ratio >= 0.9) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+
+            if (card.metrics.isNotEmpty()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    card.metrics.forEach { metric ->
+                        Column {
+                            Text(
+                                metric.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(metric.value, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+
+            if (card.rows.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (card.rowsTitle.isNotBlank()) {
+                        Text(
+                            card.rowsTitle,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    card.rows.forEach { row ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                row.primary,
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (row.secondary.isNotBlank()) {
+                                Text(
+                                    row.secondary,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(start = 8.dp),
+                                )
+                            }
+                            if (row.trailing.isNotBlank()) {
+                                Text(
+                                    row.trailing,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.padding(start = 8.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 命令输出块（v0.2.66，v0.2.82 加折叠）。
  *
  * 与代码块（AI 给的命令）区别开：命令是**待执行**的，输出是**已执行**的结果。
  * 视觉上刻意不同——输出用浅底、左对齐、可横向滚动。
  *
  * 为什么要横向滚动：终端输出的列对齐（`ls -l`、`nvidia-smi`、表格）靠空格排版，
  * 一旦折行就彻底乱掉、看不出哪列是哪列。宁可让用户横滑，也不要破坏对齐。
+ *
+ * v0.2.82：长输出默认折叠成前几行 + 「展开全部」。以前一大段（如 40 行）铺满一屏，
+ * 直接把对话顶走（用户反馈"一堆看不完"）。折叠后每段输出只占几行，需要时才展开。
  */
 @Composable
 private fun TerminalOutputBlock(text: String) {
-    val scrollState = rememberScrollState()
+    val lines = remember(text) { text.lines() }
+    // 行数或字符数任一超阀就默认折叠（宽行少行也能霸屏）。
+    val collapsible = lines.size > TERMINAL_OUTPUT_COLLAPSE_LINES || text.length > TERMINAL_OUTPUT_COLLAPSE_CHARS
+    var expanded by remember(text) { mutableStateOf(!collapsible) }
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
         shape = RoundedCornerShape(10.dp),
     ) {
-        Text(
-            text,
-            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-            softWrap = false,
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(scrollState)
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-        )
+        val scrollState = rememberScrollState()
+        Column {
+            val shown = if (expanded) text else lines.take(TERMINAL_OUTPUT_COLLAPSE_LINES).joinToString("\n")
+            Text(
+                shown,
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                softWrap = false,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(scrollState)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+            )
+            if (collapsible) {
+                Text(
+                    if (expanded) "收起" else "展开全部（共 ${lines.size} 行）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { expanded = !expanded }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
+        }
     }
 }
 

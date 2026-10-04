@@ -121,8 +121,26 @@ class AiStudioTokenRefresher {
         return Result.Refreshed(account.copy(bdToken = token, bdTokenFetchedAt = now))
     }
 
-    private companion object {
+    companion object {
         /** 任意登录页都会注入 bdToken，取最轻的概览页。 */
-        const val TOKEN_SOURCE_PATH = "/overview"
+        private const val TOKEN_SOURCE_PATH = "/overview"
+
+        /**
+         * 令牌多久算陈旧（v0.2.82）。
+         *
+         * 实测边界：2026-10-02 21:29 算力卡还能读（57 小时），2026-10-03 02:22 起失效
+         * ——TTL 约 4~5 天。取 72 小时留一天余量：既不会过于频繁地多打页面请求，
+         * 又能保证用户在真失效前已经换成新的。
+         */
+        const val TOKEN_MAX_AGE_MILLIS = 72L * 60L * 60L * 1000L
+
+        /**
+         * 该账号的令牌是否陈旧到需要预防性刷新。
+         *
+         * ` fetchedAt == 0` 视为未知（老账号未记录时间）——**不算陈旧**，
+         * 避免升级后一上来就对所有老账号狂刷一次页面。它们照样有 403→刷新 兜底。
+         */
+        fun isTokenStale(fetchedAt: Long, now: Long): Boolean =
+            fetchedAt > 0L && now - fetchedAt >= TOKEN_MAX_AGE_MILLIS
     }
 }

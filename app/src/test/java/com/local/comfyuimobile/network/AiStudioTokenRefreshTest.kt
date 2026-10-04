@@ -127,4 +127,26 @@ class AiStudioTokenRefreshTest {
         val refresher = AiStudioTokenRefresher()
         assertTrue(refresher.parsePage(account, "") is AiStudioTokenRefresher.Result.Unreachable)
     }
+
+    // ===== 预防性刷新的陈旧判定（v0.2.82）=====
+
+    @Test
+    fun tokenWithinMaxAgeIsNotStale() {
+        val now = 1_000_000_000L
+        val justFetched = now - 60_000L
+        assertFalse(AiStudioTokenRefresher.isTokenStale(justFetched, now))
+    }
+
+    @Test
+    fun tokenOlderThanSeventyTwoHoursIsStale() {
+        val now = 1_000_000_000L
+        val threeDaysAgo = now - AiStudioTokenRefresher.TOKEN_MAX_AGE_MILLIS - 1
+        assertTrue(AiStudioTokenRefresher.isTokenStale(threeDaysAgo, now))
+    }
+
+    @Test
+    fun unknownFetchTimeIsNotTreatedAsStale() {
+        // 老账号升级上来 bdTokenFetchedAt=0，不应触发"一上来就狂刷"。
+        assertFalse(AiStudioTokenRefresher.isTokenStale(0L, System.currentTimeMillis()))
+    }
 }

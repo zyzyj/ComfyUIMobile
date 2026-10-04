@@ -53,6 +53,13 @@ data class TerminalChatMessage(
     val role: TerminalMessageRole,
     val text: String,
     val commands: List<String> = emptyList(),
+    /**
+     * 产生这条输出的是哪条命令（v0.2.82）。
+     *
+     * 仅 `TERMINAL_OUTPUT` 角色会填：可视化卡片需要按命令分派解析器（nvidia-smi / df …）。
+     * 为空时界面回退到纯文本渲染。
+     */
+    val sourceCommand: String = "",
     val timestamp: Long = System.currentTimeMillis(),
 )
 
