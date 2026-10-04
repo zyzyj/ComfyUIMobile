@@ -162,6 +162,43 @@ class TerminalCommandSafetyTest {
     }
 
     @Test
+    fun skipsCommentLinesInsideCodeBlock() {
+        // v0.2.78：`#` 开头的行不当命令。修复前 `removePrefix("#")` 想兼容 root 提示符，
+        // 却把注释也放行——而中文的 isLetter() 为 true → 中文句子被当命令提取。
+        val reply = """
+            ```sh
+            # 先看显存
+            nvidia-smi
+            # 再看进程
+            ps aux
+            ```
+        """.trimIndent()
+        assertEquals(listOf("nvidia-smi", "ps aux"), TerminalCommandSafety.parseCommands(reply))
+    }
+
+    @Test
+    fun skipsPureCommentLine() {
+        val reply = """
+            ```sh
+            # 这一步只是说明
+            ```
+        """.trimIndent()
+        assertTrue(TerminalCommandSafety.parseCommands(reply).isEmpty())
+    }
+
+    @Test
+    fun skipsNonAsciiLinesEvenWithoutHash() {
+        // 中文说明文字（无论有没有 #）都不该被当命令——真实命令与路径都是 ASCII。
+        val reply = """
+            ```sh
+            先看显存占用再决定
+            nvidia-smi
+            ```
+        """.trimIndent()
+        assertEquals(listOf("nvidia-smi"), TerminalCommandSafety.parseCommands(reply))
+    }
+
+    @Test
     fun doesNotTreatProseAsCommand() {
         // 普通句子不能被当成命令执行 —— 这是事故来源。
         val reply = "你可以试试看，ComfyUI 一般装在 home 目录下。"
