@@ -178,14 +178,87 @@ object TerminalCommandSafety {
     )
 
     /**
+     * 把命令整理成能安全嵌入 `{ … ; }` 包装的形态（v0.2.78）。
+     *
+     * 模型给的命令直接拼进包装会破坏包装本身，已实测两类：
+     *  - 行尾 `# 注释`：`#` 后整段（含闭合 `}` 与结束标记）都被注释吃掉 →
+     *    bash 报语法错误、BEGIN/END 一个都不输出 → 命令白等满 10 分钟超时。
+     *  - 行尾悬空的 `;` / `&&` / `||` / `|` / `&`：拼成 `{ cmd; ; }` 同样语法错误，
+     *    后果相同。
+     *
+     * 只清理**引号外**的内容（引号内 `#`、分号是命令的一部分，如 `echo "a # b"`）；
+     * `#` 只在词首才算注释（`echo a#b` 里的 `#` 是字面量）。
+     * 清理后若什么都不剩，返回 `:`（no-op）——至少能让这条命令正常"完成"。
+     */
+    fun sanitizeCommand(command: String): String {
+        val trimmed = stripTrailingEmptyOperators(stripUnquotedComment(command))
+        return trimmed.ifBlank { ":" }
+    }
+
+    /** 截断引号外的行尾注释；引号内的 `#` 与转义的 `\#` 保留。 */
+    private fun stripUnquotedComment(command: String): String {
+        var inSingle = false
+        var inDouble = false
+        var prev: Char? = null
+        var i = 0
+        while (i < command.length) {
+            val c = command[i]
+            when {
+                inSingle -> if (c == '\'') inSingle = false
+                inDouble -> when (c) {
+                    '\\' -> i++ // 双引号内反斜杠转义
+                    '"' -> inDouble = false
+                }
+                c == '\\' -> i++ // 引号外的反斜杠转义
+                c == '\'' -> inSingle = true
+                c == '"' -> inDouble = true
+                c == '#' && (prev == null || prev.isWhitespace() || prev in "|&;()<>") ->
+                    return command.substring(0, i)
+            }
+            prev = c
+            i++
+        }
+        return command
+    }
+
+    /**
+     * 剥离行尾悬空的命令分隔符（`;`、`&&`、`||`、`|`、`&`）。
+     *
+     * 它们本身不是完整命令，拼进 `{ cmd; ; }` 是语法错误（同注释一样会挂满超时）。
+     * 剥离 `&` 会把"后台执行"改成前台——对 App 反而是对的：它靠结束标记判定完成，
+     * 后台命令只会"假完成"（还报成功），本来就是守则禁止的写法。
+     */
+    private fun stripTrailingEmptyOperators(command: String): String {
+        var result = command.trim()
+        while (true) {
+            val next = when {
+                result.endsWith("&&") || result.endsWith("||") -> result.dropLast(2)
+                result.endsWith(";") || result.endsWith("|") || result.endsWith("&") -> result.dropLast(1)
+                else -> return result.trim()
+            }
+            result = next.trim()
+            if (result.isEmpty()) return ""
+        }
+    }
+
+    /**
      * 给命令加执行边界标记，便于从终端输出里切出"这一条命令的输出"。
      *
      * 终端输出是一条连续的流，若不加标记，模型无法判断命令跑完没有、输出到哪为止——
      * 上一轮命令的尾巴会被当成本轮结果，后续判断全错。用带随机 token 的 echo 包起来，
      * 再把退出码打出来，模型就能准确知道：结束标记之间的就是本次输出，`exit=N` 是结果。
+     *
+     * v0.2.78 两处加固（都是"生成物交给真实 shell 后语义变了"类问题的实测修复）：
+     *  - 包装前先 [sanitizeCommand]，防行尾注释/悬空分隔符破坏包装；
+     *  - 子 shell 里打开 pipefail：守则建议过的 `cmd | tail -N` 写法会让 `$?` 取
+     *    最后一段（tail）的退出码——安装失败也报 rc=0。pipefail 让管道取首个非零值。
+     *    141（SIGPIPE，下游提前关闭管道）归一化为 0：`cat big | head` 属正常用法。
+     *    用完 restore，避免污染这个长期存活的终端会话。
      */
     fun wrap(command: String, token: String): String =
-        "echo __AI_${token}_BEGIN__ && { $command ; } ; echo __AI_${token}_END__ rc=\$?"
+        "echo __AI_${token}_BEGIN__ && { set -o pipefail 2>/dev/null || true; " +
+            "${sanitizeCommand(command)} ; rc=\$? ; if [ \$rc -eq 141 ]; then rc=0; fi; " +
+            "set +o pipefail 2>/dev/null || true; } ; echo __AI_${token}_END__ rc=\$rc"
 
     fun beginMarker(token: String): String = "__AI_${token}_BEGIN__"
     fun endMarker(token: String): String = "__AI_${token}_END__"
@@ -256,8 +329,19 @@ object TerminalCommandSafety {
     }
 
     private fun addCommandLine(target: MutableList<String>, raw: String) {
-        val line = raw.trim().removePrefix("$").trim().removePrefix("#").trim()
+        val line = raw.trim().removePrefix("$").trim()
         if (line.isBlank()) return
+        // v0.2.78：`#` 开头的行一律不当命令。
+        //
+        // 以前这里是 removePrefix("#")——想兼容"root 提示符"写法（`# ls`）。
+        // 但 AI 回复的代码块里 `#` 开头的行绝大多数是**注释**，而中文的
+        // isLetter() 为 true、英文注释的首词也像程序名，注释就这样被当成命令
+        // 提取出来（实测 `# 先看显存` + `nvidia-smi` → 提取出 ['先看显存', 'nvidia-smi']）：
+        // 档位 2 让用户点一条中文句子；档位 3 真发出去报 command not found；
+        // 还挤占 MAX_COMMANDS 名额。提示符场景让用户手删那个 `#` 即可。
+        if (line.startsWith("#")) return
+        // 非 ASCII 的行不是命令（中文说明文字的兜底——真实命令与路径都是 ASCII）。
+        if (line.any { it.code > 127 }) return
         // 注释行、纯说明文字不当命令（要求至少有一个空格或看起来像可执行名）。
         if (line.startsWith("//")) return
         if (!line.first().isLetter() && !line.startsWith("./") && !line.startsWith("/")) return
