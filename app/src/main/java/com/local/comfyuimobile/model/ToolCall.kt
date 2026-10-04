@@ -28,10 +28,9 @@ data class ToolCall(
     val output: String = "",
     /** 解析出的可视化卡片（nvidia-smi / df …）；解析失败为 null。 */
     val insight: InsightCard? = null,
-) {
     /** 命中用户白名单（v0.2.83）——卡片上标一句，用户知道"这条为什么没问就跑了"。 */
-    val trusted: Boolean = false
-
+    val trusted: Boolean = false,
+) {
     val finished: Boolean
         get() = status == ToolCallStatus.OK || status == ToolCallStatus.FAILED ||
             status == ToolCallStatus.TIMEOUT || status == ToolCallStatus.SKIPPED
