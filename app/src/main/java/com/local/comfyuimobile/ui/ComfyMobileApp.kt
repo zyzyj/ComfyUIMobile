@@ -5963,7 +5963,7 @@ private fun SettingsContent(
         )
 
         // —— MCP 服务（v0.2.85）——
-        McpSettingsSection(state = state, viewModel = viewModel, context = context)
+        McpSettingsSection(state = state, viewModel = viewModel, context = LocalContext.current)
 
         // —— 图片保存 ——
         SettingsSection("图片保存", icon = Icons.Outlined.Download) {
