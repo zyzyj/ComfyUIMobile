@@ -557,6 +557,23 @@ object TerminalCommandSafety {
     }
 
     /**
+     * 这条命令是不是"搜索类"（grep / rg）——它的 rc=1 无输出表示"没找到"，不是错误（v0.2.83）。
+     *
+     * 为什么限定命令类型而不是"只要 rc=1 且无输出就算无匹配"：
+     * `cd /不存在的目录`、`cat 不存在的文件` 也会 rc=1 且无输出，那些是**真失败**，
+     * 不该被显示成"无匹配"。只有搜索类命令才符合 POSIX 的"无命中 = rc 1"约定。
+     */
+    fun isMatchSearchCommand(command: String): Boolean {
+        val normalized = normalize(command)
+        if (normalized.isBlank()) return false
+        // 取每一段（管道/分号后）里的命令动词，只要有一段是 grep/rg 即可。
+        return splitBySeparators(normalized).any { segment ->
+            val verb = commandVerb(segment.split(' ', '\t').filter(String::isNotBlank))
+            verb == "grep" || verb == "rg" || verb == "egrep" || verb == "fgrep"
+        }
+    }
+
+    /**
      * 判断命令行里的**命令动词**（跳过 `sudo`、环境变量赋值与选项）。
      *
      * 只认命令位是为了避免误报：`grep shutdown /var/log/x` 里的 `shutdown` 是参数，
