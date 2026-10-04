@@ -70,13 +70,10 @@ object CommandInsightParser {
         }
 
         val metrics = buildList {
-            DRIVER.find(output)?.let { add(InsightMetric("驱动", it.groupValues[1])) }
-            CUDA.find(output)?.let { add(InsightMetric("CUDA", it.groupValues[1])) }
+            // v0.2.83：只留手机玩家真正看的三个。驱动版本 / CUDA / 功耗不显示——
+            // "显存 0、利用率 0% 却耗 72W"会让用户困惑，而这两项与"能不能跑模型"无关。
             util?.let { add(InsightMetric("利用率", "$it%")) }
             temp?.let { add(InsightMetric("温度", "${it}°C")) }
-            power?.let {
-                add(InsightMetric("功耗", "${it.groupValues[1]} / ${it.groupValues[2]} W"))
-            }
         }
 
         val rows = PROC.findAll(output).map { m ->
@@ -118,12 +115,17 @@ object CommandInsightParser {
         if (entries.isEmpty()) return null
 
         val bars = entries.take(6).map { e ->
+            val free = (e.size - e.used).coerceAtLeast(0.0)
             InsightBar(
                 label = e.mount,
                 used = e.used,
                 total = e.size,
                 ratio = (e.used / e.size).coerceIn(0.0, 1.0),
-                display = "${human(e.used)} / ${human(e.size)}（已用 ${e.percent.toInt()}%）",
+                // v0.2.83：主数字换成"剩余"。以前主显示"42G / 99G（已用 43%）"，
+                // 而守则要求 AI 拿命令结果去对照"磁盘余量"——卡片却没给余量，
+                // 用户得自己心算。
+                display = "剩余 ${human(free)}",
+                secondary = "共 ${human(e.size)}，已用 ${human(e.used)}（${e.percent.toInt()}%）",
             )
         }
         return InsightCard(title = "磁盘用量", bars = bars)

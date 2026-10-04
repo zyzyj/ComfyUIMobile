@@ -362,6 +362,14 @@ class TerminalCommandSafetyTest {
         assertEquals(3, TerminalCommandSafety.nextFailureCount(2, 127))
     }
 
+    @Test
+    fun grepNoMatchIsNotCountedAsFailure() {
+        // v0.2.83：grep 无命中回 rc=1，但"ComfyUI 没在跑"是守则让 AI 去确认的
+        // **正常结果**，不该触发连续失败熔断器。
+        assertEquals(0, TerminalCommandSafety.nextFailureCount(0, 1, noMatch = true))
+        assertEquals(2, TerminalCommandSafety.nextFailureCount(2, 1, noMatch = true))
+    }
+
     // ===== 复合命令（v0.2.75 补齐同类残留）=====
     //
     // 复审指出：v0.2.74 给 isReadOnly / isCatastrophic 加了分段，但 isInstall 漏了，

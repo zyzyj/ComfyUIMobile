@@ -418,14 +418,17 @@ object TerminalCommandSafety {
     }
 
     /**
-     * 在当前权限等级下，这条命令是否需要用户先确认才能执行（v0.2.59）。
+     * 在当前权限等级下，这条命令是否需要用户先确认才能执行（v0.2.59，v0.2.83 加白名单）。
      *
      * 1 级：全部需要；2 级：仅危险命令需要；3 级：都不需要。
-     * **例外：灾难性命令任何等级都要确认**（v0.2.62 熔断器）。
+     * **例外一：灾难性命令任何等级都要确认**（v0.2.62 熔断器，且不会被白名单绕过）。
+     * **例外二：命中用户白名单的直接放行**（v0.2.83）——但仍在灾难熔断之后判定。
+     *
      * 纯函数，可单测——权限判定是安全边界，不该散在 UI 里。
      */
-    fun requiresConfirmation(command: String, level: Int): Boolean {
+    fun requiresConfirmation(command: String, level: Int, trusted: List<String> = emptyList()): Boolean {
         if (isCatastrophic(command)) return true
+        if (CommandAllowlist.matches(command, trusted)) return false
         return when (level.coerceIn(1, 3)) {
             LEVEL_ASK_ALL -> true
             LEVEL_ASK_DANGEROUS -> isDangerous(command)
@@ -450,9 +453,13 @@ object TerminalCommandSafety {
      *  - 2 只读与安装：只读命令、安装/下载类自动执行（这正是用户的主要诉求：
      *    看状态、装插件）；其它（含无法分类的）仍然要确认
      *  - 3 不问：除灾难性命令外都自动执行
+     *
+     * v0.2.83：命中用户白名单的命令**任何档位都放行**（含 1 级）——那是用户的显式信任，
+     * 也正是白名单的意义（让重度用户真正省掉点击）。仍在灾难熔断之后判定。
      */
-    fun autoRunnable(command: String, level: Int): Boolean {
+    fun autoRunnable(command: String, level: Int, trusted: List<String> = emptyList()): Boolean {
         if (isCatastrophic(command)) return false
+        if (CommandAllowlist.matches(command, trusted)) return true
         return when (level.coerceIn(1, 3)) {
             LEVEL_ASK_ALL -> false
             LEVEL_ASK_DANGEROUS ->
@@ -469,13 +476,16 @@ object TerminalCommandSafety {
      *    而等待上限是 10 分钟。以前一律记成失败，连续 3 条慢命令就触发
      *    「已暂停自动执行」的熔断提示，属于误报。计数**不变**。
      *  - 成功（退出码 0）：清零。
+     *  - 无匹配（[noMatch]，grep/rg 没命中）：不是错误，计数**不变**（v0.2.83）。
+     *    "ComfyUI 没在跑"是守则让 AI 去确认的正常结果，不应因此暂停自动执行。
      *  - 失败（拿到非零退出码）：+1。
      *
      * 抽成纯函数是为了把"超时不算失败"这条判断锁住——它靠真机反馈才发现，
      * 写在这里比散在 ViewModel 的分支里好测。
      */
-    fun nextFailureCount(current: Int, exitCode: Int?): Int = when {
+    fun nextFailureCount(current: Int, exitCode: Int?, noMatch: Boolean = false): Int = when {
         exitCode == null -> current
+        noMatch -> current
         exitCode == 0 -> 0
         else -> current + 1
     }

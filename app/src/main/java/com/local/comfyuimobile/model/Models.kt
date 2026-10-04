@@ -272,6 +272,13 @@ data class AppUiState(
      * 用户自己选，因为不同人对“哪些命令危险”的容忍度不同。
      */
     val commandPermissionLevel: Int = 2,
+    /**
+     * 用户预批准的命令模式（v0.2.83）。命中即直接执行、零提示。
+     *
+     * 从偏好里来（空时用 [CommandAllowlist.DEFAULT_PATTERNS]），
+     * 权限判定（requiresConfirmation / autoRunnable）在灾难熔断之后才看它。
+     */
+    val trustedCommands: List<String> = CommandAllowlist.DEFAULT_PATTERNS,
     /** 命令是否正在执行（用于禁用按钮，避免重复提交）。 */
     val assistantCommandRunning: Boolean = false,
     /**

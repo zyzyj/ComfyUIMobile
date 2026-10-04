@@ -19,47 +19,25 @@ enum class TerminalMessageRole {
 
     /** 系统旁注（排队提示、压缩提示、报错说明）。居中细灰字，不是"谁说的话"。 */
     SYSTEM_NOTE,
-
-    /**
-     * 「（已执行）xxx」这类**执行标记**（v0.2.75 从 USER 拆出来）。
-     *
-     * 以前复用 USER 角色，只是为了在 UI 上显示成右对齐气泡（合理），但它破坏了
-     * "USER = 人说的话"这个隐含假设：`retryLastAssistantRequest` 用
-     * `indexOfLast { it.role == USER }` 找最后一条用户输入，于是会命中
-     * 「（已执行）nvidia-smi」——重发出去的是这句话，用户的真实问题被忽略。
-     *
-     * （同一类"假设失效"的 bug：角色名承载的语义比它的用途更宽。）
-     */
-    EXECUTED_MARK,
-
-    /**
-     * 命令跑出来的终端输出（v0.2.66 从 SYSTEM_NOTE 拆出来）。
-     *
-     * 以前和系统旁注共用一种角色，于是**终端输出也被居中小字渲染**——
-     * 多行输出挤成一团、`ls` 的列对齐全乱（真机截图可见）。它和"旁注"是两种东西：
-     * 这是命令的真实结果，该左对齐、等宽、可横向滚动。
-     */
-    TERMINAL_OUTPUT,
 }
 
 /**
- * 一条对话消息。
+ * 一条对话消息（v0.2.83 重构）。
  *
- * [commands] 是模型回复里解析出的命令建议；界面据此渲染"执行/跳过"按钮。
- * [commandResults] 记录某条命令实际跑出来的结果，供下一轮喂回模型。
+ * 以前 `EXECUTED_MARK` 与 `TERMINAL_OUTPUT` 是两个独立角色，于是**一次命令执行会
+ * 变成两条额外消息**散在对话流里（标记气泡 + 输出气泡），而待确认卡片又在列表外
+ * ——用户得自己把三处拼成一个逻辑单元。
+ *
+ * 现在工具调用内联在消息上（[toolCalls]），状态原地迁移；角色只剩三类：
+ * 谁说的话（USER/ASSISTANT）与旁注（SYSTEM_NOTE）。
  */
 data class TerminalChatMessage(
     val id: String,
     val role: TerminalMessageRole,
     val text: String,
     val commands: List<String> = emptyList(),
-    /**
-     * 产生这条输出的是哪条命令（v0.2.82）。
-     *
-     * 仅 `TERMINAL_OUTPUT` 角色会填：可视化卡片需要按命令分派解析器（nvidia-smi / df …）。
-     * 为空时界面回退到纯文本渲染。
-     */
-    val sourceCommand: String = "",
+    /** 本条消息触发的工具调用（v0.2.83）。内联渲染在消息正文之后。 */
+    val toolCalls: List<ToolCall> = emptyList(),
     val timestamp: Long = System.currentTimeMillis(),
 )
 
@@ -79,6 +57,17 @@ data class TerminalCommandResult(
     val success: Boolean,
 ) {
     /**
+     * "无匹配"：`grep` / `rg` 没找到命中项时退出码为 1（POSIX 约定），但这**不是错误**
+     * ——"ComfyUI 没在跑"就是守则让 AI 去确认的正常结果（v0.2.83）。
+     *
+     * 以前统一显示成红字"失败（退出码 1）"，既误导用户、又会被连续失败熔断器计数
+     * （AI 连查两次进程就暂停自动执行）。
+     * 判定：退出码为 1 **且**没有任何输出。有输出时即使 rc=1 也可能是真错误，不归进这。
+     */
+    val noMatch: Boolean
+        get() = exitCode == 1 && AnsiText.tidy(output).isBlank()
+
+    /**
      * 给**界面**显示的版本（v0.2.66）。
      *
      * 与 [forModel] 的区别：剥掉 ANSI 转义码。真机上 `ls` 的输出带颜色序列，
@@ -88,15 +77,19 @@ data class TerminalCommandResult(
     fun forDisplay(maxChars: Int = 4_000): String {
         val clean = AnsiText.tidy(output)
         val body = if (clean.length <= maxChars) clean else clean.take(maxChars) + "\n…（输出过长，已截断）"
-        val status = when {
-            exitCode == null -> "未捕获到退出码"
-            exitCode == 0 -> "成功"
-            else -> "失败（退出码 $exitCode）"
-        }
+        val status = statusLabel()
         // 刻意**不回显命令**：界面里紧接着上面就是"（已执行）xxx"的气泡，
         // 再写一遍 `$ xxx` 是重复（真机截图里能看到同一行出现两次）。
         // 命令本身仍留在 [command] 字段里，喂给模型的版本（forModel）照旧带上。
         return "$status\n${body.ifBlank { "（无输出）" }}"
+    }
+
+    /** 状态的文案（v0.2.83）：无匹配不算失败。 */
+    private fun statusLabel(): String = when {
+        noMatch -> "无匹配"
+        exitCode == null -> "未捕获到退出码"
+        exitCode == 0 -> "成功"
+        else -> "失败（退出码 $exitCode）"
     }
 
     /** 喂回模型时的紧凑表示：太长会挤爆上下文，截断尾部（错误通常出现在尾部）。 */
@@ -109,6 +102,7 @@ data class TerminalCommandResult(
             "…（前部省略）\n" + trimmed.takeLast(maxChars)
         }
         val status = when {
+            noMatch -> "无匹配（这不代表出错）"
             exitCode == null -> "（未捕获到退出码）"
             exitCode == 0 -> "成功（exit=0）"
             else -> "失败（exit=$exitCode）"

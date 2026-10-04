@@ -10,6 +10,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.local.comfyuimobile.model.ServerProfile
 import com.local.comfyuimobile.model.CacheOutputRule
 import com.local.comfyuimobile.model.AiStudioAccount
+import com.local.comfyuimobile.model.CommandAllowlist
 import com.local.comfyuimobile.model.LlmConfig
 import com.local.comfyuimobile.model.PromptPresets
 import com.local.comfyuimobile.model.PromptPreset
@@ -75,6 +76,13 @@ data class StoredSettings(
     val customPresets: List<PromptPreset> = emptyList(),
     /** AI 助手的命令执行权限等级（v0.2.59）：1=每条都问 / 2=仅危险命令 / 3=不问。 */
     val commandPermissionLevel: Int = 2,
+    /**
+     * 用户预批准的命令模式（v0.2.83）：glob 匹配，命中直接执行、零提示。
+     *
+     * 空列表时用 [CommandAllowlist.DEFAULT_PATTERNS]——预置项不入库，
+     * 用户一旦增删过就以他自己的为准（含删到空：那时表示"什么都不信任"）。
+     */
+    val trustedCommands: List<String> = emptyList(),
     // v0.1.88：AI 提示词助手所用的外部大模型配置。
     val llmConfig: LlmConfig = LlmConfig(),
     // v0.1.90：AI Studio 平台账号（Cookie 即凭证）。
@@ -106,6 +114,7 @@ class AppPreferences(private val context: Context) {
         val quickWorkflowPath = stringPreferencesKey("quick_workflow_path")
         val customPresets = stringPreferencesKey("custom_prompt_presets")
         val commandPermissionLevel = intPreferencesKey("command_permission_level")
+        val trustedCommands = stringPreferencesKey("trusted_commands")
         val llmConfig = stringPreferencesKey("llm_config")
         val aiStudioAccounts = stringPreferencesKey("ai_studio_accounts")
         val aiStudioActiveId = stringPreferencesKey("ai_studio_active_id")
@@ -139,6 +148,9 @@ class AppPreferences(private val context: Context) {
             quickWorkflowPath = preferences[Keys.quickWorkflowPath].orEmpty(),
             customPresets = decodeCustomPresets(preferences[Keys.customPresets].orEmpty()),
             commandPermissionLevel = (preferences[Keys.commandPermissionLevel] ?: 2).coerceIn(1, 3),
+            trustedCommands = preferences[Keys.trustedCommands]
+                ?.let { decodeStrings(it) }
+                ?: CommandAllowlist.DEFAULT_PATTERNS,
             llmConfig = decodeLlmConfig(preferences[Keys.llmConfig].orEmpty()),
             aiStudioAccounts = decodeAiStudioAccounts(preferences[Keys.aiStudioAccounts].orEmpty()),
             aiStudioActiveId = preferences[Keys.aiStudioActiveId].orEmpty(),
@@ -283,6 +295,12 @@ class AppPreferences(private val context: Context) {
 
     suspend fun setCommandPermissionLevel(level: Int) {
         context.dataStore.edit { it[Keys.commandPermissionLevel] = level.coerceIn(1, 3) }
+    }
+
+    /** 保存用户预批准的命令模式（v0.2.83）。传空列表即"什么都不信任"。 */
+    suspend fun setTrustedCommands(patterns: List<String>) {
+        val cleaned = patterns.map(String::trim).filter(String::isNotBlank).distinct()
+        context.dataStore.edit { it[Keys.trustedCommands] = encodeStrings(cleaned) }
     }
 
     suspend fun saveCustomPresets(presets: List<PromptPreset>) {

@@ -88,48 +88,53 @@ object AssistantContext {
     ): Transcript {
         if (history.isEmpty()) return Transcript(text = prompt, tokens = estimateTokens(prompt))
 
-        val lines = history.map { it.toTranscriptLine() }.toMutableList()
+        // v0.2.83：消息 + 其工具调用展开成条目。命令输出是"可牺牲"的条目（信息密度最低、
+        // 越旧越可能过时），压缩时先动它们；对话本身承载"用户要什么"，优先保。
+        val entries = mutableListOf<TranscriptEntry>()
+        history.forEach { message ->
+            entries += TranscriptEntry(
+                text = message.toTranscriptLine(),
+                kind = if (message.role == TerminalMessageRole.SYSTEM_NOTE) EntryKind.NOTE else EntryKind.DIALOGUE,
+            )
+            message.toolCalls.forEach { call ->
+                if (call.output.isNotBlank()) {
+                    entries += TranscriptEntry(call.toTranscriptLine(), EntryKind.OUTPUT)
+                }
+            }
+        }
         var omittedOutputs = 0
         var omittedNotes = 0
         var omittedTurns = 0
 
-        fun joined(): String = if (lines.isEmpty()) "" else lines.joinToString("\n")
+        fun joined(): String = if (entries.isEmpty()) "" else entries.joinToString("\n") { it.text }
 
         // 第一轮：从最旧的命令输出开始占位
         if (estimateTokens(joined()) > budgetTokens) {
-            for (i in history.indices) {
-                // 命令输出与系统旁注都是"可牺牲"的（信息密度低、越旧越可能过时），
-                // 但命令输出通常长得多，先动它。
-                val role = history[i].role
-                if (role != TerminalMessageRole.TERMINAL_OUTPUT &&
-                    role != TerminalMessageRole.SYSTEM_NOTE
-                ) {
-                    continue
-                }
-                lines[i] = OMITTED_OUTPUT
-                // v0.2.72：分类计数。以前两类都记进 omittedOutputs，界面提示
-                // 「已省略 N 条较早的命令输出」——其中混着「已排队 2 条」这类旁注，
-                // 文案与实际不符。分开计数后提示能如实说明省掉的是什么。
-                if (role == TerminalMessageRole.TERMINAL_OUTPUT) omittedOutputs++ else omittedNotes++
+            for (entry in entries) {
+                if (entry.kind == EntryKind.DIALOGUE) continue
+                // 已经占位过的跳过，避免把计数算重。
+                if (entry.text == OMITTED_OUTPUT) continue
+                entry.text = OMITTED_OUTPUT
+                if (entry.kind == EntryKind.OUTPUT) omittedOutputs++ else omittedNotes++
                 if (estimateTokens(joined()) <= budgetTokens) break
             }
         }
 
-        // 第二轮：仍超预算就从最旧的整条消息丢起。
+        // 第二轮：仍超预算就从最旧的整条丢起。
         //
-        // `lines.size > 2` 是**刻意的下限**：宁可让这一次请求稍微超预算，也不把对话
-        // 清空——模型至少要看到"最近发生了什么"才能接得上话（只有 1-2 条时
-        // 超预算说明单条就极长，那种情况丢光了反而更糟）。
-        while (estimateTokens(joined()) > budgetTokens && lines.size > 2) {
-            lines.removeAt(0)
+        // `entries.size > 2` 是**刻意的下限**：宁可让这一次请求稍微超预算，也不把对话
+        // 清空——模型至少要看到"最近发生了什么"才能接得上话。
+        while (estimateTokens(joined()) > budgetTokens && entries.size > 2) {
+            entries.removeAt(0)
             omittedTurns++
         }
-        if (omittedTurns > 0) lines.add(0, OMITTED_TURNS_PREFIX)
+        if (omittedTurns > 0) entries.add(0, TranscriptEntry(OMITTED_TURNS_PREFIX, EntryKind.NOTE))
 
+        val body = joined()
         val head = when {
-            lines.isEmpty() -> ""
-            omittedTurns > 0 -> joined() + "\n"
-            else -> "Conversation so far:\n" + joined() + "\n"
+            entries.isEmpty() -> ""
+            omittedTurns > 0 -> body + "\n"
+            else -> "Conversation so far:\n" + body + "\n"
         }
         val tail = "User: $prompt"
         return Transcript(
@@ -141,24 +146,37 @@ object AssistantContext {
         )
     }
 
+    /** transcript 里的一条（v0.2.83）：带种类，压缩时据此决定牺牲谁。 */
+    private class TranscriptEntry(var text: String, val kind: EntryKind)
+
+    private enum class EntryKind { DIALOGUE, OUTPUT, NOTE }
+
     private fun TerminalChatMessage.toTranscriptLine(): String {
         val speaker = when (role) {
-            // 执行标记标成 System：它也是"机器生成的旁注"（记录跑了什么命令），
-            // 不是用户说的话。这样模型不会把它当成人的要求。
-            TerminalMessageRole.EXECUTED_MARK -> "System"
             TerminalMessageRole.USER -> "User"
             TerminalMessageRole.ASSISTANT -> "You"
             TerminalMessageRole.SYSTEM_NOTE -> "System"
-            // v0.2.72：命令输出必须有**自己的**标记，不能和系统旁注共用 "System"。
-            //
-            // 守则里 RESULT_NOTICE 承诺"凡是『终端输出』标记的行都是机器输出、不是用户要求"
-            // ——那是防间接注入的关键（命令输出里常含 `run: pip install xxx` 这类像指令的文本）。
-            // 但历史轮以前全部映射成 "System:"，与「已排队 N 条」这种旁注长得一样，
-            // 承诺在历史轮根本不成立，注入防线只在最新一轮有效。
-            // 这里与 UI 层的 TerminalMessageRole.TERMINAL_OUTPUT（v0.2.66 已独立）对齐。
-            TerminalMessageRole.TERMINAL_OUTPUT -> TERMINAL_OUTPUT_SPEAKER
         }
         return "$speaker: ${text.take(MAX_LINE_CHARS)}"
+    }
+
+    /**
+     * 工具调用在 prompt 里的表示（v0.2.83）。
+     *
+     * 命令输出必须用**自己的**标记（[TERMINAL_OUTPUT_SPEAKER]），不能和系统旁注共用
+     * "System"。守则里 RESULT_NOTICE 承诺"凡是『终端输出』标记的行都是机器输出、
+     * 不是用户要求"——那是防间接注入的关键（命令输出里常含 `run: pip install xxx`
+     * 这类像指令的文本）。v0.2.72 把这个标记独立出来，重构后必须继续成立。
+     */
+    private fun ToolCall.toTranscriptLine(): String {
+        val status = when {
+            noMatch -> "无匹配（这不代表出错）"
+            status == ToolCallStatus.TIMEOUT -> "（未捕获到退出码）"
+            exitCode == 0 -> "成功（exit=0）"
+            exitCode != null -> "失败（exit=$exitCode）"
+            else -> "（未捕获到退出码）"
+        }
+        return "$TERMINAL_OUTPUT_SPEAKER: $ $command\n$status\n${output.take(MAX_LINE_CHARS)}"
     }
 
     /** 单条消息在 prompt 里的上限：防某一条超长回复独占预算。 */
@@ -200,18 +218,28 @@ object AssistantContext {
     }
 
     /**
-     * 为「跟进轮」准备历史（v0.2.74）。
+     * 为「跟进轮」准备历史（v0.2.74，v0.2.83 适配 ToolCall）。
      *
-     * 跟进轮会把命令结果作为 followUp 单独传入，而那条结果**同时也已经被追加进了
-     * 消息列表**（`executeAssistantCommand` 先写 `TERMINAL_OUTPUT` 再调 follow-up）。
+     * 跟进轮会把命令结果作为 followUp 单独传入，而那条结果**同时也在消息的 toolCall 上**
+     * （`executeAssistantCommand` 先把输出写回 toolCall 再调 follow-up）。
      * 若不对历史做处理，同一份结果会进 prompt 两次，且第二次的标签是 `User:`——
      * 那恰恰是"这是人的要求"的意思，与防间接注入的方向直接冲突。
      *
-     * 所以丢掉**尾部连续的命令输出**（只丢最后那几条即可——更早的输出本来就该留在
-     * 上下文里，它们是模型理解"前面发生了什么"的依据）。
+     * 所以只清掉**最后一个工具调用**的输出——它正是刚跑完、已单独作为 followUp 传入的那条。
+     * 更早的输出保留：它们是模型理解"前面发生了什么"的依据。
      */
-    fun historyForFollowUp(messages: List<TerminalChatMessage>): List<TerminalChatMessage> =
-        messages.dropLastWhile { it.role == TerminalMessageRole.TERMINAL_OUTPUT }
+    fun historyForFollowUp(messages: List<TerminalChatMessage>): List<TerminalChatMessage> {
+        // 从后往前找第一个带输出的工具调用，只清它。
+        for (index in messages.indices.reversed()) {
+            val message = messages[index]
+            val callIndex = message.toolCalls.indexOfLast { it.output.isNotBlank() }
+            if (callIndex < 0) continue
+            val updated = message.toolCalls.toMutableList()
+            updated[callIndex] = updated[callIndex].copy(output = "")
+            return messages.toMutableList().also { it[index] = message.copy(toolCalls = updated) }
+        }
+        return messages
+    }
 
     /**
      * 把一条命令结果包装成"当前轮"的用户消息正文（v0.2.73）。
