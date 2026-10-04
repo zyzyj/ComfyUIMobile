@@ -245,6 +245,38 @@ class WrapShellIntegrationTest {
         assertEquals(1, result.exitCode)
     }
 
+    // ===== 不污染用户环境（v0.2.80）=====
+    //
+    // v0.2.79 末尾无条件 `set +o pipefail`，会把用户本来就开着的 pipefail
+    // （`.bashrc` 里设过的）在那个会话里永久关掉。现在只在"原本是 off"时才还原。
+
+    private fun pipefailStateAfterRunning(scriptPrefix: String, shell: String = "bash"): String {
+        val wrapped = TerminalCommandSafety.wrap("echo hi", "t1")
+        val script = (if (scriptPrefix.isBlank()) "" else scriptPrefix + "\n") +
+            wrapped + "\necho __STATE__$(set -o 2>/dev/null | grep pipefail || echo none)"
+        // 本机不支持 pipefail 的 shell 上无法构造"原本 on"的场景，跳过。
+        val output = runInShell(shell, script)
+        return output.lineSequence().firstOrNull { it.contains("__STATE__") }
+            ?.substringAfter("__STATE__")?.trim().orEmpty()
+    }
+
+    @Test
+    fun doesNotDisableUserPipefail() {
+        assumeTrue(bashAvailable)
+        // 用户原本 pipefail=on：执行后必须仍然是 on。
+        val state = pipefailStateAfterRunning("set -o pipefail")
+        assertTrue("用户开着的 pipefail 不能被关掉，实际=$state", state.contains("pipefail"))
+        assertTrue("应为 on，实际=$state", state.contains("on"))
+    }
+
+    @Test
+    fun restoresPipefailWhenItWasOff() {
+        assumeTrue(bashAvailable)
+        // 用户原本 off：跑完也不能给用户留下一个 on（不能反向污染）。
+        val state = pipefailStateAfterRunning("")
+        assertTrue("原本 off 就该保持 off，实际=$state", state.contains("off"))
+    }
+
     // ===== sanitizeCommand 的纯字符串单测（部分引号场景真 shell 也难构造）=====
 
     @Test
