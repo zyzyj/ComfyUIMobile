@@ -101,6 +101,35 @@ class AiStudioTokenRefresher {
         }
     }
 
+    /**
+     * 预防性刷新（v0.2.82）：不管当前令牌是否失效，直接去抓一个新值。
+     *
+     * 与 [refresh] 的区别：后者是“失败驱动”（带单飞复用），适合 403 重试；
+     * 这里用于“已经过了很久”——实测 TTL 约 4~5 天，定期主动刷一次就避免用户撞上 403。
+     */
+    suspend fun refreshProactively(account: AiStudioAccount): Result = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            val html = try {
+                val request = Request.Builder()
+                    .url(AiStudioProtocol.BASE_URL + TOKEN_SOURCE_PATH)
+                    .header("Cookie", account.cookie)
+                    .header("Accept", "text/html")
+                    .get()
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        return@withContext Result.Unreachable("HTTP ${response.code}")
+                    }
+                    response.body?.string().orEmpty()
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                return@withContext Result.Unreachable(error.message.orEmpty())
+            }
+            parsePage(account, html)
+        }
+    }
+
     /** 解析页面并落定结果；抽出来便于单测（不依赖网络）。 */
     fun parsePage(account: AiStudioAccount, html: String): Result {
         if (html.isBlank()) return Result.Unreachable("页面为空")
