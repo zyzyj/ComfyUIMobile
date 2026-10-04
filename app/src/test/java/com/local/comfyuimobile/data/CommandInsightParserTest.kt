@@ -120,8 +120,9 @@ class CommandInsightParserTest {
         val card = CommandInsightParser.parse("df -h", df)
         assertNotNull(card)
         val bar = card!!.bars.first()
-        // 必须是 Avail 列的 0.5G，不是 100-96=4G
-        assertEquals("剩余 0.5G", bar.display)
+        // 必须是 Avail 列的 0.5G（展示为 512M，因为 human() 会自动降到合适单位），
+        // 而不是 100-96=4G。
+        assertEquals("剩余 512M", bar.display)
         assertTrue("副行里也该是真实的已用 96G", bar.secondary.contains("96G"))
     }
 
