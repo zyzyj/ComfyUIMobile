@@ -23,8 +23,15 @@ class CommandAllowlistTest {
         assertTrue(CommandAllowlist.matches("free -h", defaults))
         assertTrue(CommandAllowlist.matches("ls", defaults))
         assertTrue(CommandAllowlist.matches("ls -la ~/models", defaults))
-        assertTrue(CommandAllowlist.matches("ps aux | grep python", defaults))
+        assertTrue(CommandAllowlist.matches("ps aux", defaults))
         assertTrue(CommandAllowlist.matches("cat ~/notes.txt", defaults))
+    }
+
+    @Test
+    fun pipedCommandIsNotTrustedEvenIfVerbMatches() {
+        // `ps aux*` 预置模式**不该**命中 `ps aux | grep python`——它含管道（复合命令），
+        // 命中就等于放行整条链。这类要走正常确认。
+        assertFalse(CommandAllowlist.matches("ps aux | grep python", defaults))
     }
 
     @Test
