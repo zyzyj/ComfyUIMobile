@@ -32,17 +32,30 @@ object CommandAllowlist {
      *
      * @param patterns 用户配置的模式（glob：`*` 匹配任意字符，`?` 匹配一个字符）
      *
-     * 匹配是**整条命令**匹配（不是"包含"）：`ls *` 命中 `ls -la`，但不命中
-     * `ls -la && rm -rf /`——后者是复合命令，必须走正常确认流程。
+     * 匹配是**整条命令**匹配（不是"包含"），且**含命令分隔符（&&、;、|、换行等）的
+     * 复合命令一律不命中**——否则 `ls *` 会匹配 `ls -la && rm -rf ~/models`，
+     * 白名单就变成"只要以 ls 开头就放行后面任何东西"（单测锁住了这条）。
      */
     fun matches(command: String, patterns: List<String>): Boolean {
         val normalized = command.trim()
         if (normalized.isBlank()) return false
+        if (hasSeparator(normalized)) return false
         return patterns.any { pattern ->
             val p = pattern.trim()
             p.isNotBlank() && globToRegex(p).matches(normalized)
         }
     }
+
+    /**
+     * 命令行里有没有命令分隔符（复合命令）。
+     *
+     * 命中白名单必须是"这一条简单命令"——一旦能拼第二条，白名单就等于放行整条链。
+     * 单独一个 `&` / `|` 也阻断（重定向 `>` 不阻断：`df -h > /tmp/x` 仍是安全的单条）。
+     */
+    private fun hasSeparator(command: String): Boolean = SEPARATOR.containsMatchIn(command)
+
+    /** `&&`、`||`、`;`、`|`、`&`、换行——任一个出现就当成复合命令。 */
+    private val SEPARATOR = Regex("&&|\\|\\||;|\\||&|\\r|\\n")
 
     /**
      * glob → 正则。**不做 `**` 递归通配**——命令是单行，`*` 匹配任意字符已足够，

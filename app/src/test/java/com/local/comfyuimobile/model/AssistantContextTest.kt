@@ -163,41 +163,33 @@ class AssistantContextTest {
     // ===== 跟进轮的历史准备（v0.2.74 / v0.2.83）=====
 
     @Test
-    fun followUpHistoryClearsTrailingToolOutput() {
+    fun followUpHistoryDropsTrailingToolCall() {
         // 跟进轮会把命令结果作为 followUp 单独传入，而那条结果同时也在 toolCall 上。
-        // 不清掉的话同一份结果会进 prompt 两次，且第二次标签是 `User:`——
+        // 不摘掉的话同一份结果会进 prompt 两次，且第二次标签是 `User:`——
         // 与"让模型分清机器输出与用户的话"直接冲突。
         val messages = listOf(
             msg(TerminalMessageRole.USER, "看下插件"),
             outputMessage("ls", "\$ ls\ncustom_nodes"),
         )
         val history = AssistantContext.historyForFollowUp(messages)
-        assertEquals("消息条数不变（只清输出，不删消息）", 2, history.size)
+        assertEquals("消息条数不变（只摘 toolCall，不删消息）", 2, history.size)
         assertTrue(
-            "尾部工具调用的输出要被清掉",
-            history.last().toolCalls.all { it.output.isBlank() },
+            "尾部那个工具调用要被整条摘掉",
+            history.last().toolCalls.isEmpty(),
         )
     }
 
     @Test
-    fun followUpHistoryKeepsEarlierToolOutputs() {
+    fun followUpHistoryKeepsEarlierToolCalls() {
         val messages = listOf(
-            msg(TerminalMessageRole.USER, "看下显存"),
             outputMessage("nvidia-smi", "\$ nvidia-smi\nV100", id = "call-1"),
             msg(TerminalMessageRole.ASSISTANT, "显存 32G，够用"),
-            msg(TerminalMessageRole.USER, "那就装吧"),
             outputMessage("pip", "\$ pip install x\n成功", id = "call-2"),
         )
         val history = AssistantContext.historyForFollowUp(messages)
-        assertEquals("消息条数不变", 5, history.size)
-        assertTrue(
-            "较早的输出必须保留",
-            history[1].toolCalls.any { it.output.isNotBlank() },
-        )
-        assertTrue(
-            "尾部那条已被清掉",
-            history[4].toolCalls.all { it.output.isBlank() },
-        )
+        assertEquals("消息条数不变", 3, history.size)
+        assertTrue("较早的工具调用必须保留", history[0].toolCalls.isNotEmpty())
+        assertTrue("尾部那条已被摘掉", history[2].toolCalls.isEmpty())
     }
 
     @Test

@@ -97,7 +97,10 @@ object AssistantContext {
                 kind = if (message.role == TerminalMessageRole.SYSTEM_NOTE) EntryKind.NOTE else EntryKind.DIALOGUE,
             )
             message.toolCalls.forEach { call ->
-                if (call.output.isNotBlank()) {
+                // 包含**已跑完**的工具调用——即使输出为空（如 grep 无匹配）也要让模型知道
+                // "这条命令跑过了、结果是没找到"，否则它会以为命令根本没执行。
+                // 未跑（NEEDS_CONFIRM/RUNNING）与用户跳过的不进（模型不该把它们当成已发生）。
+                if (call.reportableToModel) {
                     entries += TranscriptEntry(call.toTranscriptLine(), EntryKind.OUTPUT)
                 }
             }
@@ -225,18 +228,15 @@ object AssistantContext {
      * 若不对历史做处理，同一份结果会进 prompt 两次，且第二次的标签是 `User:`——
      * 那恰恰是"这是人的要求"的意思，与防间接注入的方向直接冲突。
      *
-     * 所以只清掉**最后一个工具调用**的输出——它正是刚跑完、已单独作为 followUp 传入的那条。
-     * 更早的输出保留：它们是模型理解"前面发生了什么"的依据。
+     * 做法：把**最后一个工具调用整条摘掉**（不是只清输出——清空后它仍会被当"跑过了"
+     * 渲染一次）。更早的调用保留：它们是模型理解"前面发生了什么"的依据。
      */
     fun historyForFollowUp(messages: List<TerminalChatMessage>): List<TerminalChatMessage> {
-        // 从后往前找第一个带输出的工具调用，只清它。
         for (index in messages.indices.reversed()) {
             val message = messages[index]
-            val callIndex = message.toolCalls.indexOfLast { it.output.isNotBlank() }
-            if (callIndex < 0) continue
-            val updated = message.toolCalls.toMutableList()
-            updated[callIndex] = updated[callIndex].copy(output = "")
-            return messages.toMutableList().also { it[index] = message.copy(toolCalls = updated) }
+            if (message.toolCalls.isEmpty()) continue
+            val withoutLast = message.toolCalls.dropLast(1)
+            return messages.toMutableList().also { it[index] = message.copy(toolCalls = withoutLast) }
         }
         return messages
     }

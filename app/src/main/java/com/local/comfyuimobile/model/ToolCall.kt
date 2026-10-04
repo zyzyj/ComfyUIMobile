@@ -37,7 +37,20 @@ data class ToolCall(
 
     /** grep 无匹配（rc=1 且无输出）：不是错误，界面显示"无匹配"。 */
     val noMatch: Boolean
-        get() = exitCode == 1 && output.isBlank()
+        get() = exitCode == 1 && output.isBlank() &&
+            TerminalCommandSafety.isMatchSearchCommand(command)
+
+    /**
+     * 该工具调用要不要写进喂给模型的上下文（v0.2.83）。
+     *
+     * 只有**真正跑过且已结束**的才算（OK/FAILED/TIMEOUT）。未跑（NEEDS_CONFIRM/RUNNING）
+     * 与用户跳过的（SKIPPED）不写——模型不该把没发生的事当成已发生。
+     * 注意与 [finished] 的区别：这里**排除 SKIPPED**。
+     * 无匹配也要写（输出为空但有结论）。
+     */
+    val reportableToModel: Boolean
+        get() = status == ToolCallStatus.OK || status == ToolCallStatus.FAILED ||
+            status == ToolCallStatus.TIMEOUT
 }
 
 /** 工具调用的生命周期状态（原地迁移）。 */

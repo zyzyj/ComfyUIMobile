@@ -62,10 +62,13 @@ data class TerminalCommandResult(
      *
      * 以前统一显示成红字"失败（退出码 1）"，既误导用户、又会被连续失败熔断器计数
      * （AI 连查两次进程就暂停自动执行）。
-     * 判定：退出码为 1 **且**没有任何输出。有输出时即使 rc=1 也可能是真错误，不归进这。
+     *
+     * 只对**搜索类命令**生效：`cd /不存在`、`cat 缺失文件` 也会 rc=1 且无输出，
+     * 那些是真失败，不能显示成"无匹配"。
      */
     val noMatch: Boolean
-        get() = exitCode == 1 && AnsiText.tidy(output).isBlank()
+        get() = exitCode == 1 && output.isBlank() &&
+            TerminalCommandSafety.isMatchSearchCommand(command)
 
     /**
      * 给**界面**显示的版本（v0.2.66）。
