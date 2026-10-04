@@ -25,8 +25,14 @@ data class AiStudioAccount(
     /**
      * 平台前端注入在页面里的 bdToken，调业务接口要放进 `x-studio-token` 头。
      * 抓不到时留空，请求仍会发（部分接口不校验），失败会让用户重新登录。
+     *
+     * v0.2.81：它**有寿命**，过期后所有校验它的接口会集体 403（算力卡 / 档位 /
+     * 领算力 / 启动环境…），而不校验它的接口（项目列表、积分）照常——曾因此被
+     * 误判成"平台限制"。现在遇 403 会由 [AiStudioTokenRefresher] 自动换新值。
      */
     val bdToken: String = "",
+    /** 最近一次拿到/刷新 bdToken 的时间戳。0 表示从没记录过（老账号）。 */
+    val bdTokenFetchedAt: Long = 0L,
     val lastUsedAt: Long = 0L,
     /** 最近一次签到成功的时间戳（本机记录，用于界面展示"今天已签"）。 */
     val lastSignInAt: Long = 0L,

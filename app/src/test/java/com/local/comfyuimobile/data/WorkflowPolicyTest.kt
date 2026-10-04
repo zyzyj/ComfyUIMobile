@@ -60,6 +60,23 @@ class WorkflowPolicyTest {
         assertTrue(WorkflowPolicy.draftStructureMismatched(otherWorkflow, server))
     }
 
+    /**
+     * v0.2.81：大改造（保留一半旧节点 + 新增一半）不能再被判为"混入了别的工作流"。
+     *
+     * 阈值 0.5 时：保留 4/10 = 0.4 < 0.5 → 用户的高级编辑被判为不匹配。
+     * 降到 0.2 后不再误伤，同时"完全不同的工作流"（覆盖率≈0）仍被拦。
+     */
+    @Test fun draftStructureKeepsHeavyRefactorAboveNewThreshold() {
+        val server = (1..10).joinToString(",") { "{\"id\":$it,\"type\":\"KSampler\"}" }
+            .let { "{\"nodes\":[$it],\"links\":[]}" }
+        // 保留 1~4（4 个匹配），5~10 换成新 id 的新节点。
+        val refactor = (1..4).joinToString(",") { "{\"id\":$it,\"type\":\"KSampler\"}" } +
+            "," + (101..106).joinToString(",") { "{\"id\":$it,\"type\":\"CLIPTextEncode\"}" }
+        val draft = "{\"nodes\":[$refactor],\"links\":[]}"
+        assertEquals(0.4, WorkflowPolicy.draftStructureCoverage(draft, server), 0.001)
+        assertFalse(WorkflowPolicy.draftStructureMismatched(draft, server))
+    }
+
     @Test fun nodeSignatureSupportsApiPromptFormat() {
         val api = """{"3":{"class_type":"KSampler","inputs":{"seed":1}},"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"x.safetensors"}}}"""
         val signature = WorkflowPolicy.workflowNodeSignature(api)

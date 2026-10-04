@@ -79,7 +79,7 @@ object AiStudioProtocol {
         if (code != 0) {
             val msg = root.optString("errorMsg").ifBlank { describeErrorCode(code) }
             // 中文之间不要空格：之前是「领取算力 失败：…」，读着别扭。
-            throw AiStudioException("${action}失败：$msg（错误码 $code）")
+            throw AiStudioException("${action}失败：$msg（错误码 $code）", code)
         }
         // 注意：result 可能是**对象也可能是数组**（如 /point/user/action）。
         // 数组时 optJSONObject 返回 null，不能直接 fallback 成 root——那样数组就丢了。
@@ -506,6 +506,35 @@ object AiStudioProtocol {
         .filter { it.isNotBlank() && it.contains('=') }
         .joinToString("; ")
 
+    /**
+     * 从平台页面 HTML 里抠出当前注入的 bdToken。
+     *
+     * 平台把登录信息写在内联脚本 `window.aiStudio = { ..., bdToken: "<128位十六进制>", ... }`，
+     * 每次页面加载都签一个新值（旧值在新值签发后仍可用，故刷新不会踢掉其它会话）。
+     * 纯逻辑，可单测；抓不到返回空串，由调用方决定如何归因。
+     */
+    fun extractBdToken(html: String): String {
+        val match = BD_TOKEN_REGEX.find(html) ?: return ""
+        return match.groupValues[1]
+    }
+
+    /** 该页面 HTML 是否夹带了 bdToken（用于区分"未登录页面"）。 */
+    fun pageHasBdToken(html: String): Boolean = BD_TOKEN_REGEX.containsMatchIn(html)
+
+    /**
+     * 页面是否处于**未登录**状态。
+     *
+     * 实测：登录态的 `/overview` 里是 `userInfo: {"id":20222217,...}`，而 Cookie 失效
+     * （或缺 Cookie）时服务端仍回 200，但把 `userInfo` 写成空对象 `"{}"` 且不注入
+     * bdToken。用这条区分"需要换新令牌"（登录态在）与"需要重新登录"（登录态没了）。
+     */
+    fun pageLooksLoggedOut(html: String): Boolean = LOGGED_OUT_REGEX.containsMatchIn(html)
+
+    private val LOGGED_OUT_REGEX = Regex("userInfo\\s*:\\s*\"\\{\\}\"")
+
+    private val BD_TOKEN_REGEX =
+        Regex("bdToken\\s*:\\s*\"([0-9A-Fa-f]{60,200})\"")
+
     /** 账号身份的唯一键：优先 UID，其次昵称，最后按 Cookie 内容散列。 */
     fun accountKey(uid: String, nickname: String, cookie: String): String = when {
         uid.isNotBlank() -> "uid:$uid"
@@ -525,6 +554,7 @@ object AiStudioProtocol {
         uid = uid,
         cookie = normalizeCookie(cookie),
         bdToken = bdToken,
+        bdTokenFetchedAt = if (bdToken.isBlank()) 0L else now,
         lastUsedAt = now,
     )
 
@@ -660,4 +690,13 @@ object AiStudioProtocol {
 }
 
 /** AI Studio 接口调用失败。message 一律是可以直接展示给用户的中文。 */
-class AiStudioException(message: String) : IllegalStateException(message)
+class AiStudioException(
+    message: String,
+    /**
+     * 平台业务层的 errorCode（如 403）。HTTP 层面的失败为 null。
+     *
+     * v0.2.81：以前只能靠 message 里的“错误码 403”字样去认，而 AI Studio 的
+     * 无权限是 **HTTP 200 + 业务码 403**，用字段判定才能可靠地触发令牌刷新重试。
+     */
+    val errorCode: Int? = null,
+) : IllegalStateException(message)

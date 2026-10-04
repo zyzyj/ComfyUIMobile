@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit
  *
  * 认证要点（都来自前端真实请求）：
  *  - `Cookie: <整串>`（核心 BDUSS）
- *  - `x-studio-token: <bdToken>`（登录后页面注入）
+ *  - `x-studio-token: <bdToken>`（登录后页面注入；**会过期**，v0.2.81 起自动刷新）
  *  - `X-XSRFToken: <cookie 里的 _xsrf>`
  *  - `x-requested-with: XMLHttpRequest`（缺这个会被 302 甩到登录页）
  *
@@ -39,6 +39,15 @@ class AiStudioClient {
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
+
+    /**
+     * 令牌刷新器与刷新成功后的回调（v0.2.81）。
+     *
+     * 刷新出新的 bdToken 后需要回写账号并落盘，这两件事都在 ViewModel 层（它才知道
+     * 账号列表与 DataStore），client 只负责“发现 403 → 拿新令牌 → 重试一次”。
+     */
+    var tokenRefresher: AiStudioTokenRefresher? = null
+    var onAccountRefreshed: ((AiStudioAccount) -> AiStudioAccount)? = null
 
     /** 记下最近一次接口的原始响应，供真机把结构发回来校准解析。 */
     @Volatile var lastRawResponse: String = ""
@@ -294,6 +303,62 @@ class AiStudioClient {
         formBody: String?,
         action: String,
         callTimeoutMillis: Long? = null,
+    ): JSONObject = request(account, path, method, formBody, action, callTimeoutMillis, allowTokenRefresh = true)
+
+    /**
+     * 发一次请求；遇业务码 403（令牌可能过期）时刷新令牌并**重试一次**。
+     *
+     * 只重试一次且只针对 403：重试循环会把真权限问题一直转下去，而领算力这类
+     * 接口的失败其实是鉴权已过、业务失败（如“无效操作”），刷新没用。
+     */
+    private suspend fun request(
+        account: AiStudioAccount,
+        path: String,
+        method: String,
+        formBody: String?,
+        action: String,
+        callTimeoutMillis: Long?,
+        allowTokenRefresh: Boolean,
+    ): JSONObject {
+        try {
+            return executeOnce(account, path, method, formBody, action, callTimeoutMillis)
+        } catch (error: AiStudioException) {
+            if (error is CancellationException) throw error
+            val refresher = tokenRefresher
+            // 只对 403 刷新：业务码 403（令牌过期）与 HTTP 403 都算。
+            if (!allowTokenRefresh || refresher == null || error.errorCode != 403) throw error
+            when (val refreshed = refresher.refresh(account, account.bdToken)) {
+                is AiStudioTokenRefresher.Result.Refreshed -> {
+                    val updated = onAccountRefreshed?.invoke(refreshed.account) ?: refreshed.account
+                    return executeOnce(updated, path, method, formBody, action, callTimeoutMillis)
+                }
+                else -> throw AiStudioException(describeRefreshFailure(refreshed, action), 403)
+            }
+        }
+    }
+
+    /** 把刷新失败翻译成人话，并区分"要重登"与"平台改版"。 */
+    private fun describeRefreshFailure(
+        result: AiStudioTokenRefresher.Result,
+        action: String,
+    ): String = when (result) {
+        is AiStudioTokenRefresher.Result.LoggedOut ->
+            "${action}失败：登录已失效，请到「账号」页重新登录 AI Studio"
+        is AiStudioTokenRefresher.Result.ExtractionFailed ->
+            "${action}失败：${result.message}（请稍后重试；若持续出现请反馈日志）"
+        is AiStudioTokenRefresher.Result.Unreachable ->
+            "${action}失败：刷新平台令牌时网络不可达（${result.message}）"
+        is AiStudioTokenRefresher.Result.Refreshed ->
+            "${action}失败：已刷新令牌但仍失败"
+    }
+
+    private suspend fun executeOnce(
+        account: AiStudioAccount,
+        path: String,
+        method: String,
+        formBody: String?,
+        action: String,
+        callTimeoutMillis: Long?,
     ): JSONObject = withContext(Dispatchers.IO) {
         val url = AiStudioProtocol.BASE_URL + path
         val builder = Request.Builder()
@@ -345,16 +410,22 @@ class AiStudioClient {
                     if (resp.code == 403 && account.bdToken.isBlank()) {
                         "${action}失败：该账号缺少平台令牌（登录时未取到 bdToken），平台拒绝了这个操作。请到「账号」页重新登录一次（多账号请用「添加账号」重登后切换）。"
                     } else if (resp.code == 403) {
-                        // v0.2.69：403 不再是"一定是凭据坏了"。
-                        // 实测（两个账号一致）：项目列表与签到都成功、Cookie 有效，但
-                        // /studio/resource/* 与 /studio/project/cluster/* 一律 403——
-                        // 这是平台侧对该接口的权限限制（需网页端登录态），App 改不动。
-                        // 以前只说"没有权限"，用户会以为是登录失效、反复重登，白折腾。
-                        "${action}失败：平台拒绝了此接口（HTTP 403）。算力卡与可用档位接口由网页端控制权限，" +
-                            "App 端目前取不到——请在 AI Studio 网页端操作（不影响项目列表、终端与生图）。"
+                        // v0.2.81：403 的真相是 **bdToken 过期**，不是平台限制。
+                        //
+                        // v0.2.69 曾把 /studio/resource/* 的 403 判成"平台收回权限、
+                        // App 改不动”，那是错的——漏了令牌新鲜度这个变量。实测：同一
+                        // Cookie 下，换用刚从页面抓的新令牌，算力卡/档位/领算力
+                        // 立即恢复；而项目列表、积分这类不校验令牌的接口
+                        // 自始至终正常，正是它们把结论引偏了。
+                        //
+                        // 现在遇 403 由 request() 自动刷新令牌并重试一次，能走到这里
+                        // 说明刷新后仍失败（刷新失败已被单独归因）。
+                        "${action}失败：平台拒绝了此操作（HTTP 403），可能是登录态已过期。" +
+                            "请稍后重试，或到「账号」页重新登录。"
                     } else {
                         "${action}失败：HTTP ${resp.code}"
                     },
+                    errorCode = resp.code,
                 )
                 // 偶尔会返回登录页 HTML（百度网关的登录墙）
                 raw.trimStart().startsWith("<") -> throw AiStudioException(
