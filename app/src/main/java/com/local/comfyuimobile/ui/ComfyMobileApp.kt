@@ -1178,6 +1178,7 @@ private fun AssistantMessageItem(
  *  - 纯名称列表（ls -l）走 chip 流，窄屏自动换行，不再是挤成三列的行
  */
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun InsightCardView(card: InsightCard) {
     Column(
         Modifier
