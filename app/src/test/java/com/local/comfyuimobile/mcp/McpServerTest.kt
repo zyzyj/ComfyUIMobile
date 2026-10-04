@@ -5,7 +5,9 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -19,6 +21,17 @@ import java.net.URL
  * 假 host 提供确定性结果，不碰网络与 ComfyUI。
  */
 class McpServerTest {
+
+    /**
+     * 每个测试的硬上限（JUnit 层）。
+     *
+     * 本类用真实 socket，任何一处阻塞（连接未响应、服务端未回）都会让 Gradle 一直等，
+     * 而 job 上限是 40 分钟——本套测试首次跑就把 CI 拖到了超时被取消。除了给各种
+     * HTTP 连接设超时，这里再加一道进程级保险。
+     */
+    @Rule
+    @JvmField
+    val globalTimeout: Timeout = Timeout.seconds(20)
 
     private class FakeHost : McpToolHost {
         var lastRequest: GenerateRequest? = null
@@ -50,6 +63,9 @@ class McpServerTest {
             port = 0,
             token = TOKEN,
             tools = McpToolRegistry(host, files) { "http://127.0.0.1:${portHolder[0]}/files/" },
+            // 必须与 registry 共用同一实例：各建一份的话，工具登记的文件在文件端点里
+            // 根本查不到（这条曾经真的错过，由本测试拦住）。
+            files = files,
         )
 
         fun start(): Int {
@@ -75,6 +91,10 @@ class McpServerTest {
         val connection = (URL("http://127.0.0.1:$port/mcp").openConnection() as HttpURLConnection)
         connection.requestMethod = "POST"
         connection.doOutput = true
+        // 超时是硬件约束：这三个测试用真实 socket，一旦服务端不回，默认会无限等，
+        // 而 Gradle 的 job 超时是 40 分钟——本套测试第一次跑就因此把 CI 拖到超时。
+        connection.connectTimeout = TIMEOUT_MILLIS
+        connection.readTimeout = TIMEOUT_MILLIS
         // 固定长度：与 AiCode 的 OkHttp （`String.toRequestBody`）一致，避免
         // HttpURLConnection 对大 body 自动转 chunked——那会撞上我们刻意拒绝的路径。
         connection.setFixedLengthStreamingMode(payload.size)
@@ -91,6 +111,8 @@ class McpServerTest {
 
     private fun get(port: Int, path: String): Triple<Int, ByteArray, String> {
         val connection = (URL("http://127.0.0.1:$port$path").openConnection() as HttpURLConnection)
+        connection.connectTimeout = TIMEOUT_MILLIS
+        connection.readTimeout = TIMEOUT_MILLIS
         val code = connection.responseCode
         val contentType = connection.contentType.orEmpty()
         val stream = if (code in 200..299) connection.inputStream else connection.errorStream
@@ -137,6 +159,8 @@ class McpServerTest {
         val connection = (URL("http://127.0.0.1:$port/mcp").openConnection() as HttpURLConnection)
         connection.requestMethod = "POST"
         connection.doOutput = true
+        connection.connectTimeout = TIMEOUT_MILLIS
+        connection.readTimeout = TIMEOUT_MILLIS
         connection.setFixedLengthStreamingMode(payload.size)
         connection.setRequestProperty("Authorization", "Bearer $TOKEN")
         connection.setRequestProperty("Mcp-Session-Id", "sess-42")
@@ -287,5 +311,8 @@ class McpServerTest {
 
     private companion object {
         const val TOKEN = "test-token-123"
+
+        /** 单次连接/读取上限。默认是无限——一旦服务端不回，测试会挂到 CI 超时。 */
+        const val TIMEOUT_MILLIS = 5_000
     }
 }
