@@ -22,6 +22,13 @@ data class InsightCard(
     val rows: List<InsightRow> = emptyList(),
     /** 明细区的标题，如"占用进程"。为空则不显示。 */
     val rowsTitle: String = "",
+    /**
+     * 卡片底部的一句说明（v0.2.84）。
+     *
+     * 用在"数字看着矛盾、需要解释一句"的场合——如显存 0 但整卡利用率 50%
+     * （同机其他实例在用）。不加说明用户会以为 App 算错了。
+     */
+    val note: String = "",
 )
 
 /** 一条进度条：`used / total`，比例由 [ratio] 给出（0~1）。 */
