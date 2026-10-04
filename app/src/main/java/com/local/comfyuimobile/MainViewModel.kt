@@ -24,6 +24,7 @@ import com.local.comfyuimobile.bridge.WorkflowImageReader
 import com.local.comfyuimobile.data.AppPreferences
 import com.local.comfyuimobile.data.MAX_QUICK_COMMANDS
 import com.local.comfyuimobile.data.AppLogger
+import com.local.comfyuimobile.data.CommandInsightParser
 import com.local.comfyuimobile.data.AuthCookieProvider
 import com.local.comfyuimobile.data.LocalResultCache
 import com.local.comfyuimobile.data.PromptHistory
@@ -44,6 +45,10 @@ import com.local.comfyuimobile.model.AiStudioProject
 import com.local.comfyuimobile.model.AiStudioSchedule
 import com.local.comfyuimobile.model.AiStudioState
 import com.local.comfyuimobile.model.AssistantContext
+import com.local.comfyuimobile.model.CommandAllowlist
+import com.local.comfyuimobile.model.RiskTier
+import com.local.comfyuimobile.model.ToolCall
+import com.local.comfyuimobile.model.ToolCallStatus
 import com.local.comfyuimobile.model.QueuedMessageIndex
 import com.local.comfyuimobile.model.StorageBucket
 import com.local.comfyuimobile.model.StorageCleanTarget
@@ -347,6 +352,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         llmConfig = stored.llmConfig,
                         customPresets = stored.customPresets,
                         commandPermissionLevel = stored.commandPermissionLevel,
+                        trustedCommands = stored.trustedCommands,
                         aiStudio = _state.value.aiStudio.copy(
                             accounts = stored.aiStudioAccounts,
                             // v0.2.46：账号字段跟 serverInput 一样需要"内存领先磁盘"的
@@ -3169,7 +3175,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 3 级权限下本批还没轮到的命令（v0.2.61）。
      * 终端是串行的，只能一条跑完再发下一条。
      */
-    private var autoRunQueue: List<PendingCommand> = emptyList()
+    private var autoRunQueue: List<ToolCall> = emptyList()
     /**
      * 连续失败计数（v0.2.62）——对齐 Cline 的 `--retries`（默认 3）。
      *
@@ -3178,9 +3184,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 连续失败到上限就停下，交由用户看一眼再决定——比让它自己转一晚上好。
      */
     private var consecutiveCommandFailures = 0
-    /** 待用户确认的命令（界面渲染确认按钮）与它们的风险标注。 */
-    private val _pendingCommands = MutableStateFlow<List<PendingCommand>>(emptyList())
-    val pendingCommands: StateFlow<List<PendingCommand>> = _pendingCommands.asStateFlow()
+    /**
+     * 待用户确认的命令（界面渲染确认按钮）。
+     *
+     * v0.2.83：类型从 PendingCommand 改为 ToolCall——它与消息里的 toolCall 是**同一个
+     * 单元的引用**（按 id 关联），不再是"列表外的一份副本"。
+     */
+    private val _pendingCommands = MutableStateFlow<List<ToolCall>>(emptyList())
+    val pendingCommands: StateFlow<List<ToolCall>> = _pendingCommands.asStateFlow()
 
     /**
      * 排队消息的「文本 → 占位消息 id」索引（v0.2.76，v0.2.77 改为 FIFO 队列）。
@@ -3207,14 +3218,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _assistantFailedPrompt = MutableStateFlow<String?>(null)
     val assistantFailedPrompt: StateFlow<String?> = _assistantFailedPrompt.asStateFlow()
 
-    /** 一条待确认的命令 + 风险标注。 */
-    data class PendingCommand(
-        val id: String,
-        val command: String,
-        val dangerous: Boolean,
-        val readOnly: Boolean,
-        val install: Boolean,
-    )
+    /**
+     * 一条待确认的命令。
+     *
+     * v0.2.83：已被 [ToolCall] 取代（带状态/耗时/输出/可视化卡片）——同一个单元在原地
+     * 迁移，不再拆成多条消息。
+     */
 
     fun clearAssistantConversation() {
         // v0.2.61：先清队列再 cancel。cancel 可能同步触发 assistantJob 的完成回调，
@@ -3291,6 +3300,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _pendingCommands.value = _pendingCommands.value.filterNot { it.id == id }
         // 自动执行队列里也要移除，否则 3 级下点了「跳过」它照样会跑（v0.2.61）。
         autoRunQueue = autoRunQueue.filterNot { it.id == id }
+        // v0.2.83：卡片本身要就地变"已跳过"（它内联在消息里，不会被列表移除）。
+        updateToolCall(id) { it.copy(status = ToolCallStatus.SKIPPED) }
+    }
+
+    /**
+     * 一次执行所有待确认命令（v0.2.83，学 Aider 的 ConfirmGroup "Apply all"）。
+     *
+     * 一次给 3 条只读命令时，逐个点很烦。终端是串行的，所以先把它们全排进
+     * autoRunQueue，再由 [startNextAutoCommand] 逐条推进。
+     *
+     * 注：只对**当前已列出的待确认命令**生效（不重新判定权限）——用户点"全部执行"
+     * 就是明确授权了这一批。但灾难性命令仍由 [executeAssistantCommand] 以外的
+     * 路径拦住：它们从来不会进入 NEEDS_CONFIRM 以外的状态（requiresConfirmation 恒为真），
+     * 因此这里只可能拿到用户已看到并主动同意的命令。
+     */
+    fun executeAllPending() {
+        val panel = _state.value.aiStudio
+        if (!panel.consoleConnected) {
+            _assistantMessages.update {
+                it + TerminalChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    role = TerminalMessageRole.SYSTEM_NOTE,
+                    text = "终端未连接：先去「更多 → 控制台」连上终端，再执行命令。",
+                )
+            }
+            return
+        }
+        val batch = _pendingCommands.value
+        if (batch.isEmpty()) return
+        _pendingCommands.value = emptyList()
+        enqueueAutoRun(batch)
     }
 
     /**
@@ -3391,25 +3431,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }.trim()
             val commands = TerminalCommandSafety.parseCommands(reply)
+            // v0.2.83：命令建议直接变成 ToolCall 内联在回复消息上（同一个单元的引用，
+            // 经 id 与 _pendingCommands / autoRunQueue 关联），不再拆成独立的执行标记/输出消息。
+            val toolCalls = buildToolCalls(commands)
             _assistantMessages.update {
                 it + TerminalChatMessage(
                     id = UUID.randomUUID().toString(),
                     role = TerminalMessageRole.ASSISTANT,
                     text = reply,
                     commands = commands,
+                    toolCalls = toolCalls,
                 )
             }
             appendTruncationNote(reply)
-            val newPending = commands.map { command ->
-                PendingCommand(
-                    id = UUID.randomUUID().toString(),
-                    command = command,
-                    dangerous = TerminalCommandSafety.isDangerous(command),
-                    readOnly = TerminalCommandSafety.isReadOnly(command),
-                    install = TerminalCommandSafety.isInstall(command),
-                )
-            }
-            routeCommands(newPending)
+            routeCommands(toolCalls)
         }.also { job ->
             job.invokeOnCompletion {
                 if (assistantJob === job) {
@@ -3499,11 +3534,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
+     * 把模型给的命令串建为 [ToolCall] 单元（v0.2.83）。
+     *
+     * 两个构造点（首轮与跟进轮）共用它——之前那两处是逐字相同的重复代码，
+     * 正是"平行路径只改一条"的温床，抽成一处。
+     */
+    private fun buildToolCalls(commands: List<String>): List<ToolCall> {
+        val trusted = _state.value.trustedCommands
+        return commands.map { command ->
+            ToolCall(
+                id = UUID.randomUUID().toString(),
+                command = command,
+                status = ToolCallStatus.NEEDS_CONFIRM,
+                riskTier = riskTierOf(command),
+                trusted = CommandAllowlist.matches(command, trusted),
+            )
+        }
+    }
+
+    /** 风险档位（v0.2.83）：卡片据此配色。 */
+    private fun riskTierOf(command: String): RiskTier = when {
+        TerminalCommandSafety.isDangerous(command) || TerminalCommandSafety.isCatastrophic(command) ->
+            RiskTier.DESTRUCTIVE
+        TerminalCommandSafety.isReadOnly(command) -> RiskTier.READ_ONLY
+        else -> RiskTier.WRITE
+    }
+
+    /**
+     * 按 id 原地更新一条工具调用（v0.2.83）。
+     *
+     * 同时改两处引用（消息里的 toolCalls 与 _pendingCommands / autoRunQueue），
+     * 保证界面看到的是同一个单元的最新状态。找不到就静默跳过——列表可能已被清空。
+     */
+    private fun updateToolCall(id: String, transform: (ToolCall) -> ToolCall) {
+        _assistantMessages.update { messages ->
+            messages.map { message ->
+                if (message.toolCalls.none { it.id == id }) return@map message
+                message.copy(
+                    toolCalls = message.toolCalls.map { if (it.id == id) transform(it) else it },
+                )
+            }
+        }
+        _pendingCommands.value = _pendingCommands.value.map { if (it.id == id) transform(it) else it }
+        autoRunQueue = autoRunQueue.map { if (it.id == id) transform(it) else it }
+    }
+
+    /**
      * 执行一条 AI 提议的命令：加边界标记后发到终端，等输出回传，再把结果喂回对话。
      *
      * 需已连接终端；未连接时给提示而不是把命令发到空气里。
      */
-    fun executeAssistantCommand(pending: PendingCommand) {
+    fun executeAssistantCommand(pending: ToolCall) {
         val panel = _state.value.aiStudio
         if (!panel.consoleConnected) {
             _assistantMessages.update {
@@ -3530,8 +3611,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // "发送失败…命令未执行" 但列表里那条也没了——重连之后无从重试，
             // 只能让 AI 重新生成一遍（还可能给出不一样的命令）。
             // 注意放回要在列表最前，用户重连后一眼就能看到它。
+            // v0.2.83：把这条迁回「待确认」（而不是塞一份副本进列表）——同一个单元，
+            // 界面上就地变回可点状态。用户重连后一眼就能看到它。
+            updateToolCall(pending.id) { it.copy(status = ToolCallStatus.NEEDS_CONFIRM) }
             if (_pendingCommands.value.none { it.id == pending.id }) {
-                _pendingCommands.value = listOf(pending) + _pendingCommands.value
+                _pendingCommands.value = listOf(
+                    pending.copy(status = ToolCallStatus.NEEDS_CONFIRM),
+                ) + _pendingCommands.value
             }
             _assistantMessages.update {
                 it + TerminalChatMessage(
@@ -3543,15 +3629,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
-        _assistantMessages.update {
-            it + TerminalChatMessage(
-                id = UUID.randomUUID().toString(),
-                // v0.2.75：用独立角色而不是 USER。复用 USER 会让
-                // retryLastAssistantRequest 的 indexOfLast { role == USER }
-                // 命中这句话，重发出去的是"（已执行）xxx"而不是用户的真实问题。
-                role = TerminalMessageRole.EXECUTED_MARK,
-                text = "（已执行）${pending.command}",
-            )
+        // v0.2.83：不再追加「（已执行）xxx」独立消息——把这条工具调用**原地迁到 RUNNING**
+        // 并记下开始时刻。界面上的卡片就地变成"执行中"，跑完再变结果态（OpenHands 的
+        // "观察就地替换动作"）。顺带修掉 v0.2.75 那类"角色语义污染"的隐患：
+        // 不再有额外消息，`indexOfLast { role == USER }` 天然只命中真实提问。
+        val startedAt = System.currentTimeMillis()
+        updateToolCall(pending.id) {
+            it.copy(status = ToolCallStatus.RUNNING, startedAt = startedAt)
         }
         assistantCommandJob = viewModelScope.launch {
             // v0.2.59：标记“有命令在跑”，界面据此禁用执行按钮，避免重复提交。
@@ -3570,14 +3654,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 consecutiveCommandFailures = TerminalCommandSafety.nextFailureCount(
                     current = consecutiveCommandFailures,
                     exitCode = result.exitCode,
+                    noMatch = result.noMatch,
                 )
-                _assistantMessages.update {
-                    it + TerminalChatMessage(
-                        id = UUID.randomUUID().toString(),
-                        role = TerminalMessageRole.TERMINAL_OUTPUT,
-                        text = result.forDisplay(),
-                        // v0.2.82：带上来源命令，供界面做可视化卡片（nvidia-smi/df …）。
-                        sourceCommand = pending.command,
+                // v0.2.83：结果写回**同一个** ToolCall（原地迁移到终态），不再追加一条
+                // 独立的终端输出消息。可视化卡片也在这一刻算好，随卡片一起渲染。
+                val status = when {
+                    result.noMatch -> ToolCallStatus.OK
+                    result.exitCode == 0 -> ToolCallStatus.OK
+                    result.exitCode == null -> ToolCallStatus.TIMEOUT
+                    else -> ToolCallStatus.FAILED
+                }
+                val elapsed = System.currentTimeMillis() - startedAt
+                val display = result.forDisplay()
+                updateToolCall(pending.id) {
+                    it.copy(
+                        status = status,
+                        exitCode = result.exitCode,
+                        durationMs = elapsed,
+                        output = display,
+                        insight = CommandInsightParser.parse(pending.command, display),
                     )
                 }
                 // 拿到输出后自动接一轮：让模型解释/接着提案，用户不用自己描述结果。
@@ -3607,13 +3702,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      *
      * 追加还是取代：能看到队列的档位（有自动执行）用追加，否则新回复取代上一轮建议。
      */
-    private fun routeCommands(commands: List<PendingCommand>) {
+    private fun routeCommands(commands: List<ToolCall>) {
         val level = _state.value.commandPermissionLevel
+        val trusted = _state.value.trustedCommands
         // 终端没连接时不能自动执行；此时**全都留在界面上**等用户连上再点——
         // 否则可自动执行的那批会被摘掉却没人执行，等于静默消失。
         val canAutoRun = _state.value.aiStudio.consoleConnected
         val (autoReady, needsConfirm) = commands.partition {
-            canAutoRun && TerminalCommandSafety.autoRunnable(it.command, level)
+            canAutoRun && TerminalCommandSafety.autoRunnable(it.command, level, trusted)
         }
         _pendingCommands.value =
             if (autoReady.isNotEmpty()) _pendingCommands.value + needsConfirm
@@ -3630,7 +3726,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      *
      * 能不能自动执行由调用方（[routeCommands]）判定，这里只负责排队与推进。
      */
-    private fun enqueueAutoRun(commands: List<PendingCommand>) {
+    private fun enqueueAutoRun(commands: List<ToolCall>) {
         if (commands.isEmpty()) return
         if (!_state.value.aiStudio.consoleConnected) return
         autoRunQueue = autoRunQueue + commands
@@ -3645,6 +3741,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private fun startNextAutoCommand() {
         val level = _state.value.commandPermissionLevel
+        val trusted = _state.value.trustedCommands
         if (assistantCommandJob?.isActive == true) return
         // v0.2.62 熔断：连续失败到上限就不再自动往下跑（对齐 Cline 的 --retries 默认 3）。
         // v0.2.75：队列里的剩余命令**落回界面**而不是丢弃——它们已经生成出来了，
@@ -3673,7 +3770,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // 实际上那条命令从未进入 _pendingCommands，界面上根本没有它可点。
             // 真机表现：档位 3 下 AI 给了 5 条命令，用户改成档位 1，结果只跑了 1 条、
             // 剩下 4 条凭空消失且无任何提示。
-            if (!TerminalCommandSafety.autoRunnable(next.command, level)) {
+            if (!TerminalCommandSafety.autoRunnable(next.command, level, trusted)) {
                 _pendingCommands.value = _pendingCommands.value + next
                 continue
             }
@@ -3788,25 +3885,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }.trim()
             if (reply.isBlank()) return@launch
             val commands = TerminalCommandSafety.parseCommands(reply)
+            // v0.2.83：命令建议直接变成 ToolCall 内联在回复消息上（同一个单元的引用，
+            // 经 id 与 _pendingCommands / autoRunQueue 关联），不再拆成独立的执行标记/输出消息。
+            val toolCalls = buildToolCalls(commands)
             _assistantMessages.update {
                 it + TerminalChatMessage(
                     id = UUID.randomUUID().toString(),
                     role = TerminalMessageRole.ASSISTANT,
                     text = reply,
                     commands = commands,
+                    toolCalls = toolCalls,
                 )
             }
             appendTruncationNote(reply)
-            val newPending = commands.map { command ->
-                PendingCommand(
-                    id = UUID.randomUUID().toString(),
-                    command = command,
-                    dangerous = TerminalCommandSafety.isDangerous(command),
-                    readOnly = TerminalCommandSafety.isReadOnly(command),
-                    install = TerminalCommandSafety.isInstall(command),
-                )
-            }
-            routeCommands(newPending)
+            routeCommands(toolCalls)
         }.also { job ->
             job.invokeOnCompletion {
                 if (assistantJob === job) {
@@ -3865,6 +3957,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runCatching { preferences.setCommandPermissionLevel(clamped) }
                 .onFailure { AppLogger.error("保存命令权限等级失败", it) }
+        }
+    }
+
+    /** 保存用户预批准的命令模式（v0.2.83）。命中即直接执行、零提示。 */
+    fun setTrustedCommands(patterns: List<String>) {
+        val cleaned = patterns.map(String::trim).filter(String::isNotBlank).distinct()
+        _state.update { it.copy(trustedCommands = cleaned) }
+        viewModelScope.launch {
+            runCatching { preferences.setTrustedCommands(cleaned) }
+                .onFailure { AppLogger.error("保存已信任命令失败", it) }
         }
     }
 

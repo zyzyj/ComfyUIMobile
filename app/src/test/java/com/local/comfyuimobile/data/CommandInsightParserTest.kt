@@ -1,6 +1,7 @@
 package com.local.comfyuimobile.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -51,13 +52,13 @@ class CommandInsightParserTest {
         assertEquals(1234.0, bar.used, 0.1)
         assertEquals(0.0377, bar.ratio, 0.001)
         assertTrue("展示值应换算成 GB", bar.display.contains("32"))
-        // 指标
+        // 指标（v0.2.83：只留手机玩家看的三个——驱动/CUDA/功耗已不再显示）
         val metrics = card.metrics.associate { it.label to it.value }
-        assertEquals("535.104.05", metrics["驱动"])
-        assertEquals("12.2", metrics["CUDA"])
         assertEquals("0%", metrics["利用率"])
         assertEquals("38°C", metrics["温度"])
-        assertEquals("38 / 300 W", metrics["功耗"])
+        assertFalse("驱动版本不再占位", metrics.containsKey("驱动"))
+        assertFalse("CUDA 版本不再占位", metrics.containsKey("CUDA"))
+        assertFalse("功耗不再占位", metrics.containsKey("功耗"))
         // 进程
         assertEquals(1, card.rows.size)
         assertTrue(card.rows.first().primary.contains("python"))
@@ -103,8 +104,10 @@ class CommandInsightParserTest {
         // ratio 由字节数算出（42GiB/99GiB≈0.424）；注意它不一定等于 df 的 Use% 列
         // （平台按真实字节算并四舍五入，那列显示 43%）。这里按摩尔值断言。
         assertEquals(0.424, root.ratio, 0.005)
-        assertTrue(root.display.contains("42G"))
-        assertTrue("展示应带上平台给出的 Use% 列 43%", root.display.contains("43%"))
+        // v0.2.83：主数字改为"剩余"（直接回答够不够），总量/已用/百分比进副行。
+        assertEquals("剩余 57G", root.display)
+        assertTrue("副行仍带上总量与 Use%", root.secondary.contains("99G"))
+        assertTrue("副行带上 Use% 列 43%", root.secondary.contains("43%"))
     }
 
     @Test

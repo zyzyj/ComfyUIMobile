@@ -6,28 +6,51 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * v0.2.64：对话上下文压缩的单测。
+ * v0.2.64 起：对话上下文压缩的单测。
  *
  * 锁住的是「上下文太长怎么办」这个问题的答案：终端助手每轮都带回命令输出，
  * 几轮就把 prompt 撑爆，以前没有任何处理——只能等请求失败。
+ *
+ * v0.2.83 适配：命令输出不再是独立消息（`TERMINAL_OUTPUT` 角色已删），改为挂在
+ * 消息的 [ToolCall] 上。压缩与去重逻辑随之改成对 toolCall.output 生效。
  */
 class AssistantContextTest {
 
     private fun msg(role: TerminalMessageRole, text: String) =
         TerminalChatMessage(id = text.hashCode().toString(), role = role, text = text)
 
-    /**
-     * 造一条很长的命令输出（模拟 pip install 那类刷屏）。
-     *
-     * 注意单条在 prompt 里最多占 [AssistantContext] 的 1200 字上限，
-     * 所以"超预算"要靠**条数**堆出来，不能靠单条造得更大。
-     */
+    /** 造一条带长输出的工具调用消息（模拟 pip install 那类刷屏）。 */
     private fun longOutput(tag: String) = msg(
-        // v0.2.72：这里本该是 TERMINAL_OUTPUT（"命令输出"）。
-        // 以前误用 SYSTEM_NOTE，恰好因为旧实现把两类混在 omittedOutputs 里才没暴露；
-        // P2 分开计数后立刻失败——说明这个辅助函数原来就写错了角色。
-        TerminalMessageRole.TERMINAL_OUTPUT,
-        "cmd-$tag\n" + "x".repeat(9_000),
+        TerminalMessageRole.ASSISTANT,
+        "命令输出如下",
+    ).copy(
+        toolCalls = listOf(
+            ToolCall(
+                id = tag,
+                command = "cmd-$tag",
+                status = ToolCallStatus.OK,
+                riskTier = RiskTier.READ_ONLY,
+                exitCode = 0,
+                output = "cmd-$tag\n" + "x".repeat(9_000),
+            ),
+        ),
+    )
+
+    /** 造一条带短输出的工具调用消息。 */
+    private fun outputMessage(tag: String, body: String, id: String = tag) = msg(
+        TerminalMessageRole.ASSISTANT,
+        "输出：",
+    ).copy(
+        toolCalls = listOf(
+            ToolCall(
+                id = id,
+                command = "cmd-$tag",
+                status = ToolCallStatus.OK,
+                riskTier = RiskTier.READ_ONLY,
+                exitCode = 0,
+                output = body,
+            ),
+        ),
     )
 
     // ===== 基础 =====
@@ -44,7 +67,7 @@ class AssistantContextTest {
         val history = listOf(
             msg(TerminalMessageRole.USER, "看看插件"),
             msg(TerminalMessageRole.ASSISTANT, "先列目录："),
-            msg(TerminalMessageRole.SYSTEM_NOTE, "$ ls\ncustom_nodes"),
+            msg(TerminalMessageRole.SYSTEM_NOTE, "已排队 1 条"),
         )
         val t = AssistantContext.buildTranscript(history, "然后呢")
         assertFalse("短对话不该被压缩", t.compacted)
@@ -56,17 +79,14 @@ class AssistantContextTest {
 
     @Test
     fun dropsOldCommandOutputsBeforeTouchingDialogue() {
-        // 10 条输出（每条约 300 token，见 longOutput 注释）+ 两条用户消息
         val history = buildList {
             repeat(5) { add(longOutput("old$it")) }
             add(msg(TerminalMessageRole.USER, "继续"))
             repeat(5) { add(longOutput("new$it")) }
         }
-        // 预算 900：约等于最新三条输出 + 全部对话，必须占位掉较早的输出才装得下。
         val t = AssistantContext.buildTranscript(history, "现在呢", budgetTokens = 900)
         assertTrue("超预算应触发压缩", t.compacted)
         assertTrue("应至少占位一条命令输出", t.omittedOutputs >= 1)
-        // 对话本身（用户的诉求）不该被丢
         assertTrue("用户的提问要保留", t.text.contains("继续"))
         assertTrue("较新的输出要保留", t.text.contains("cmd-new4"))
         assertTrue("应留下占位提示", t.text.contains(AssistantContext.OMITTED_OUTPUT))
@@ -81,14 +101,9 @@ class AssistantContextTest {
     }
 
     // ===== 本轮提问不能重复入参（v0.2.76）=====
-    //
-    // 真 bug（第三次"平行路径只改一条"）：v0.2.74 修了 follow-up 路径，
-    // 首轮没有对应处理。buildTranscript 尾部恒为 `User: $prompt`，而调用方把
-    // "已经写进列表的同一条"也当 history 传进去 → 两份；排队场景三份 + UI 两条气泡。
 
     @Test
     fun historyForPromptDropsTrailingDuplicateQuestion() {
-        // 首轮：先把提问写进列表，再用它当 history → 必须去掉重复的末条
         val q = "看下显存"
         val messages = listOf(msg(TerminalMessageRole.USER, q))
         val history = AssistantContext.historyForPrompt(messages, q)
@@ -97,7 +112,6 @@ class AssistantContextTest {
 
     @Test
     fun firstTurnQuestionAppearsOnceInPrompt() {
-        // 完整链路模拟：首轮"先写进列表 → 再去重 → 拼 prompt"，提问只应出现一次。
         val q = "看下显存"
         val messages = listOf(msg(TerminalMessageRole.USER, q))
         val history = AssistantContext.historyForPrompt(messages, q)
@@ -111,7 +125,6 @@ class AssistantContextTest {
 
     @Test
     fun historyForPromptKeepsDifferentText() {
-        // 回归护栏：只有"末条 == 本轮提问"才丢，不能误删真实历史
         val mixed = listOf(
             msg(TerminalMessageRole.USER, "看下显存"),
             msg(TerminalMessageRole.ASSISTANT, "好的"),
@@ -121,7 +134,6 @@ class AssistantContextTest {
 
     @Test
     fun historyForPromptKeepsEarlierSameTextQuestion() {
-        // 只丢最后一条；更早的同文本提问是真实历史，不能删
         val dup = listOf(
             msg(TerminalMessageRole.USER, "看下显存"),
             msg(TerminalMessageRole.ASSISTANT, "好的"),
@@ -130,83 +142,66 @@ class AssistantContextTest {
         assertEquals(2, AssistantContext.historyForPrompt(dup, "看下显存").size)
     }
 
-    // ===== 角色语义：USER 只表示"人说的话"（v0.2.75）=====
+    // ===== 角色语义（v0.2.75 的教训，v0.2.83 后更简单）=====
+    //
+    // v0.2.75 的 bug：执行标记复用了 USER 角色，导致 `indexOfLast { role == USER }`
+    // 会命中「（已执行）xxx」，重试发出去的是那句话而不是用户的真实问题。
+    // v0.2.83 直接取消了执行标记消息（状态内联在 ToolCall 上），这类"角色语义污染"
+    // 从根上不可能再发生。这里锁住：执行过的命令**不会**产生额外的 USER 消息。
 
     @Test
-    fun executedMarkIsNotUserRole() {
-        // 「（已执行）xxx」以前复用 USER 角色，只为 UI 上右对齐气泡。
-        // 但 retryLastAssistantRequest 用 `indexOfLast { role == USER }` 找
-        // 最后一条用户输入 → 会命中这句话，重发出去的是"（已执行）nvidia-smi"
-        // 而不是用户的真实问题（真机触发序列：问 A 成功 → 问 B 失败 → 点执行 →
-        // 点重试）。
-        //
-        // 这条锁定：执行标记必须是独立角色，不能等于 USER。
-        assertTrue(
-            "EXECUTED_MARK 必须是独立于 USER 的角色",
-            TerminalMessageRole.EXECUTED_MARK != TerminalMessageRole.USER,
-        )
+    fun executedCommandDoesNotProduceExtraUserMessage() {
         val messages = listOf(
             msg(TerminalMessageRole.USER, "帮我看看显存"),
-            msg(TerminalMessageRole.EXECUTED_MARK, "（已执行）nvidia-smi"),
+            outputMessage("nvidia-smi", "V100 32G"),
         )
-        // 模拟 retryLastAssistantRequest 的定位逻辑
         val lastUserIndex = messages.indexOfLast { it.role == TerminalMessageRole.USER }
-        assertEquals(0, lastUserIndex)
+        assertEquals("USER 只能是最初那句提问", 0, lastUserIndex)
         assertEquals("帮我看看显存", messages[lastUserIndex].text)
     }
 
-    @Test
-    fun executedMarkIsLabelledAsSystemInPrompt() {
-        // 发给模型时，执行标记要归为 System（机器旁注），不能是 User。
-        // 否则又变成"这是用户的要求"。
-        val messages = listOf(
-            msg(TerminalMessageRole.USER, "看下插件"),
-            msg(TerminalMessageRole.EXECUTED_MARK, "（已执行）ls ~"),
-        )
-        val t = AssistantContext.buildTranscript(messages, "然后呢")
-        assertTrue(t.text.contains("System: （已执行）ls ~"))
-        assertFalse("执行标记不能被标成 User", t.text.contains("User: （已执行）"))
-    }
-
-    // ===== 跟进轮的历史准备（v0.2.74）=====
+    // ===== 跟进轮的历史准备（v0.2.74 / v0.2.83）=====
 
     @Test
-    fun followUpHistoryDropsTrailingCommandOutput() {
-        // 跟进轮会把命令结果作为 followUp 单独传入，而那条结果同时也已追加进消息列表。
-        // 不丢掉的话，同一份结果会进 prompt 两次，且第二次标签是 `User:`——
+    fun followUpHistoryClearsTrailingToolOutput() {
+        // 跟进轮会把命令结果作为 followUp 单独传入，而那条结果同时也在 toolCall 上。
+        // 不清掉的话同一份结果会进 prompt 两次，且第二次标签是 `User:`——
         // 与"让模型分清机器输出与用户的话"直接冲突。
         val messages = listOf(
             msg(TerminalMessageRole.USER, "看下插件"),
-            msg(TerminalMessageRole.ASSISTANT, "先列目录"),
-            msg(TerminalMessageRole.TERMINAL_OUTPUT, "\$ ls\ncustom_nodes"),
+            outputMessage("ls", "\$ ls\ncustom_nodes"),
         )
         val history = AssistantContext.historyForFollowUp(messages)
-        assertEquals(2, history.size)
-        assertTrue("尾部的命令输出要被丢掉", history.none { it.role == TerminalMessageRole.TERMINAL_OUTPUT })
+        assertEquals("消息条数不变（只清输出，不删消息）", 2, history.size)
+        assertTrue(
+            "尾部工具调用的输出要被清掉",
+            history.last().toolCalls.all { it.output.isBlank() },
+        )
     }
 
     @Test
-    fun followUpHistoryKeepsEarlierCommandOutputs() {
-        // 只丢**尾部连续**的输出：更早的输出是模型理解"前面发生了什么"的依据，必须留。
+    fun followUpHistoryKeepsEarlierToolOutputs() {
         val messages = listOf(
             msg(TerminalMessageRole.USER, "看下显存"),
-            msg(TerminalMessageRole.TERMINAL_OUTPUT, "\$ nvidia-smi\nV100"),
+            outputMessage("nvidia-smi", "\$ nvidia-smi\nV100", id = "call-1"),
             msg(TerminalMessageRole.ASSISTANT, "显存 32G，够用"),
             msg(TerminalMessageRole.USER, "那就装吧"),
-            msg(TerminalMessageRole.TERMINAL_OUTPUT, "\$ pip install x\n成功"),
+            outputMessage("pip", "\$ pip install x\n成功", id = "call-2"),
         )
         val history = AssistantContext.historyForFollowUp(messages)
-        // 5 条消息，只丢掉尾部那 1 条命令输出 → 剩 4 条
-        assertEquals(4, history.size)
-        assertTrue("较早的输出必须保留", history.any { it.role == TerminalMessageRole.TERMINAL_OUTPUT })
-        assertFalse(
-            "尾部那条已被丢掉",
-            history.last().role == TerminalMessageRole.TERMINAL_OUTPUT,
+        assertEquals("消息条数不变", 5, history.size)
+        assertTrue(
+            "较早的输出必须保留",
+            history[1].toolCalls.any { it.output.isNotBlank() },
+        )
+        assertTrue(
+            "尾部那条已被清掉",
+            history[4].toolCalls.all { it.output.isBlank() },
         )
     }
 
     @Test
-    fun followUpHistoryIsUnchangedWhenNoTrailingOutput() {
+    fun followUpHistoryIsUnchangedWhenNoToolOutput() {
         val messages = listOf(
             msg(TerminalMessageRole.USER, "你好"),
             msg(TerminalMessageRole.ASSISTANT, "在的"),
@@ -214,15 +209,15 @@ class AssistantContextTest {
         assertEquals(messages, AssistantContext.historyForFollowUp(messages))
     }
 
-    // ===== 角色标记（v0.2.72）=====
+    // ===== 角色标记（v0.2.72 / v0.2.83）=====
 
     @Test
     fun terminalOutputGetsItsOwnSpeakerNotSystem() {
-        // P1：命令输出以前在历史轮被标成 "System"，与「已排队 N 条」这类旁注
-        // 长得一样——守则承诺的「终端输出标记」在历史轮根本不成立，防注入失效。
+        // 命令输出在 prompt 里有**自己的**标记，不能与「已排队 N 条」这类旁注
+        // 混为同一个 speaker——守则承诺的「终端输出标记」是防间接注入的关键。
         val history = listOf(
             msg(TerminalMessageRole.USER, "看下插件"),
-            msg(TerminalMessageRole.TERMINAL_OUTPUT, "$ ls\ncustom_nodes"),
+            outputMessage("ls", "$ ls\ncustom_nodes"),
             msg(TerminalMessageRole.SYSTEM_NOTE, "已排队 1 条"),
         )
         val t = AssistantContext.buildTranscript(history, "然后呢")
@@ -237,8 +232,6 @@ class AssistantContextTest {
 
     @Test
     fun speakerNameMatchesPlaybookWording() {
-        // 守则文案写的是「终端输出:」开头——两边必须是同一个字符串，
-        // 否则模型收到的标记与我承诺的不一致（P1 的根因就是两处各写一遍）。
         assertEquals("终端输出", AssistantContext.TERMINAL_OUTPUT_SPEAKER)
         val playbook = com.local.comfyuimobile.network.TerminalPlaybook.RESULT_NOTICE
         assertTrue(
@@ -247,11 +240,30 @@ class AssistantContextTest {
         )
     }
 
+    @Test
+    fun noMatchOutputIsLabelledAsNotAnError() {
+        // grep 无匹配（rc=1 且无输出）不是错误——prompt 里也要如实说明，
+        // 否则模型会把"ComfyUI 没在跑"当成命令失败。
+        val message = msg(TerminalMessageRole.ASSISTANT, "查一下").copy(
+            toolCalls = listOf(
+                ToolCall(
+                    id = "call-1",
+                    command = "ps aux | grep -i \"[c]omfy\"",
+                    status = ToolCallStatus.OK,
+                    riskTier = RiskTier.READ_ONLY,
+                    exitCode = 1,
+                    output = "",
+                ),
+            ),
+        )
+        val t = AssistantContext.buildTranscript(listOf(message), "然后呢")
+        assertTrue("应说明无匹配不是出错", t.text.contains("无匹配"))
+    }
+
     // ===== 压缩计数分类（v0.2.72）=====
 
     @Test
     fun omittedNotesCountedSeparatelyFromOutputs() {
-        // P2：以前旁注被算进 omittedOutputs，界面提示"已省略 N 条命令输出"与实际不符。
         val history = buildList {
             repeat(4) { add(longOutput("out$it")) }
             add(msg(TerminalMessageRole.SYSTEM_NOTE, "已排队 1 条"))
@@ -262,13 +274,11 @@ class AssistantContextTest {
         assertTrue("应触发压缩", t.compacted)
         assertTrue("命令输出计数应大于 0", t.omittedOutputs > 0)
         assertTrue("旁注计数应大于 0", t.omittedNotes > 0)
-        // 两类之和才是总占位数
         val totalOmitted = t.omittedOutputs + t.omittedNotes
         assertEquals(
             "总占位数应等于两类之和",
             totalOmitted,
-            Regex(Regex.escape(AssistantContext.OMITTED_OUTPUT))
-                .findAll(t.text).count(),
+            Regex(Regex.escape(AssistantContext.OMITTED_OUTPUT)).findAll(t.text).count(),
         )
     }
 
@@ -276,7 +286,6 @@ class AssistantContextTest {
 
     @Test
     fun dropsOldestTurnsWhenStillOverBudgetAfterOutputCompaction() {
-        // 全是用户消息（没有可压缩的输出），只能丢较早的整轮
         val history = (1..40).map { msg(TerminalMessageRole.USER, "提问$it " + "y".repeat(500)) }
         val t = AssistantContext.buildTranscript(history, "最新一条", budgetTokens = 800)
         assertTrue("应丢弃较早的对话", t.omittedTurns > 0)
@@ -287,7 +296,6 @@ class AssistantContextTest {
 
     @Test
     fun alwaysKeepsAtLeastRecentMessages() {
-        // 极端情况：单条就远超预算，也不能把历史清空——模型至少该看到最近发生了什么
         val history = listOf(
             msg(TerminalMessageRole.USER, "z".repeat(50_000)),
             msg(TerminalMessageRole.USER, "w".repeat(50_000)),
@@ -310,7 +318,6 @@ class AssistantContextTest {
 
     @Test
     fun estimatesChineseAsOneTokenPerChar() {
-        // 中文按 1 字 1 token 估：量级对就行，预算本身留了余量
         assertEquals(4, AssistantContext.estimateTokens("你好世界"))
     }
 

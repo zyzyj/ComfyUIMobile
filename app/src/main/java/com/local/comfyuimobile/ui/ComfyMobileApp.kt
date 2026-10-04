@@ -90,6 +90,11 @@ import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.runtime.derivedStateOf
+import com.local.comfyuimobile.model.RiskTier
+import com.local.comfyuimobile.model.ToolCall
+import com.local.comfyuimobile.model.ToolCallStatus
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
@@ -182,6 +187,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.toMutableStateList
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -237,7 +243,6 @@ import com.local.comfyuimobile.AiStudioLoginActivity
 import com.local.comfyuimobile.bridge.ComfyBridge
 import com.local.comfyuimobile.bridge.FieldValidator
 import com.local.comfyuimobile.data.CachePolicy
-import com.local.comfyuimobile.data.CommandInsightParser
 import com.local.comfyuimobile.data.RecentWorkflows
 import com.local.comfyuimobile.data.UrlQuery
 import com.local.comfyuimobile.model.InsightCard
@@ -517,11 +522,28 @@ private fun AiAssistantScreen(
     val failedPrompt by viewModel.assistantFailedPrompt.collectAsStateWithLifecycle()
     val queuedPrompts by viewModel.queuedAssistantPrompts.collectAsStateWithLifecycle()
     val focusRequester = remember { FocusRequester() }
+    val scope = rememberCoroutineScope()
 
-    // 新消息到达时滚到底部，否则用户看不到最新回复。
-    // v0.2.82：待确认命令已从列表里移出、吸底显示，不再计入滚动目标。
+    // v0.2.83：只在用户**本来就贴着底部**时才自动跟随。
+    //
+    // 以前无条件 scrollToItem(lastIndex)：AI 每回一段就抢视线，用户上滑读历史/输出时
+    // 会被硬拽回底部（"来不及看"）。现在不打扰，改用底部一条「↓ 有新内容」胶囊提示。
+    var hasNewContent by remember { mutableStateOf(false) }
+    val atBottom by remember {
+        derivedStateOf {
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()
+                ?: return@derivedStateOf true
+            last.index >= listState.layoutInfo.totalItemsCount - 2
+        }
+    }
     LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+        if (messages.isEmpty()) return@LaunchedEffect
+        if (atBottom) {
+            listState.animateScrollToItem(messages.lastIndex)
+            hasNewContent = false
+        } else {
+            hasNewContent = true
+        }
     }
 
     Column(Modifier.fillMaxSize().padding(contentPadding)) {
@@ -555,41 +577,76 @@ private fun AiAssistantScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(messages, key = { it.id }) { message ->
-                    AssistantMessageItem(message)
+                    AssistantMessageItem(
+                        message = message,
+                        level = level,
+                        terminalConnected = state.aiStudio.consoleConnected,
+                        running = running,
+                        viewModel = viewModel,
+                    )
                 }
             }
         }
 
-        // v0.2.82：待确认命令**吸底**（固定在输入框上方），不再接在对话列表末尾。
-        //
-        // 以前它接在列表末尾：AI 给完命令后用户往往已经上滑在读历史/输出，命令卡片
-        // 就在屏幕外，要手动滑到底才看得到（用户反馈「命令在哪」的高频来源）。
-        // 固定在输入框上方后，无论滚到哪里都一眼可见。
-        // 数量多时（最多 10 条）给个高度上限 + 内部滚动，不把对话区挤没。
-        if (pending.isNotEmpty()) {
+        // v0.2.83：待确认命令**内联在消息卡片里**（见 ToolCallCard），底部不再重复列出。
+        // 这里只在"有多条待执行"时给一条**吸底快捷条**——单条时卡片本身就在视野里，
+        // 不必再多一行；多条时给「全部执行」，省掉逐个点（学 Aider 的 ConfirmGroup）。
+        if (pending.size >= 2) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 2.dp,
             ) {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 300.dp)
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = ChatGutter, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                Row(
+                    Modifier.padding(horizontal = ChatGutter, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    PendingCommandLabel(pending.size)
-                    pending.forEach { item ->
-                        PendingCommandCard(
-                            item = item,
-                            level = level,
-                            terminalConnected = state.aiStudio.consoleConnected,
-                            running = running,
-                            viewModel = viewModel,
-                        )
-                    }
+                    Text(
+                        "${pending.size} 条待执行",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "全部执行",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(
+                                enabled = state.aiStudio.consoleConnected && !running,
+                                onClick = viewModel::executeAllPending,
+                            )
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                }
+            }
+        }
+
+        // v0.2.83：「↓ 有新内容」胶囊。用户上滑读历史时新回复不抢视线，改为给一个
+        // 可点的提示——点了才滚到底。以前无条件自动滚动，用户会被硬拽回底部。
+        if (hasNewContent) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = ChatGutter, vertical = 4.dp),
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.clickable {
+                        hasNewContent = false
+                        scope.launch {
+                            if (messages.isNotEmpty()) {
+                                listState.animateScrollToItem(messages.lastIndex)
+                            }
+                        }
+                    },
+                ) {
+                    Text(
+                        "↓ 有新内容",
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                    )
                 }
             }
         }
@@ -789,126 +846,207 @@ private fun ColumnScope.AssistantEmptyState(onPick: (String) -> Unit) {
     }
 }
 
-/** 命令区的小标签（v0.2.65：一行小字，不再是大标题）。 */
-@Composable
-private fun PendingCommandLabel(count: Int) {
-    Text(
-        if (count > 1) "$count 条命令待处理" else "有条命令待处理",
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(top = 4.dp, bottom = 2.dp),
-    )
-}
-
 /**
- * 待确认命令（v0.2.65 重做视觉）。
+ * 一次工具调用的卡片（v0.2.83 重构）。
  *
- * 以前是「淡灰卡片 + 图标 + 标签 + 命令 + 两个按钮」，一个只读命令也占这么大一块，
- * 视觉上与对话内容等重，主次不分。现在：
- *  - 危险命令：保留醒目底色（红容器色），因为真的需要用户停下来看清楚；
- *  - 其余：中性底色 + 左侧一道竖线做"引用块"感，比整块卡片轻得多。
- * 命令文本用等宽字体排在深色小底上，与 AI 回复里的代码块视觉一致。
+ * 学 OpenHands 的「观察就地替换动作」+ Claude Code 的「一个工具调用 = 一个可折叠块」：
+ * **命令、状态、耗时、输出、可视化卡片同处一卡**，状态原地迁移
+ * （待确认 → 执行中 → 结果）。以前这些散在 4 条消息 + 1 个列表外卡片里。
+ *
+ * 卡片头一行：`$ 命令` + 右侧状态（待确认时右侧直接是「执行 / 跳过」）。
+ * 时长必显示——40 秒的 npm install 会被读成"AI 在想"，除非卡片写着 40s。
  */
 @Composable
-private fun PendingCommandCard(
-    item: MainViewModel.PendingCommand,
+private fun ToolCallCard(
+    call: ToolCall,
     level: Int,
     terminalConnected: Boolean,
     running: Boolean,
     viewModel: MainViewModel,
 ) {
-    var confirming by remember(item.id) { mutableStateOf(false) }
-    val confirmRequired = TerminalCommandSafety.requiresConfirmation(item.command, level)
-    val tag = when {
-        item.dangerous -> "危险命令"
-        item.install -> "安装 / 下载"
-        item.readOnly -> "只读命令"
-        else -> "命令"
+    var confirming by remember(call.id) { mutableStateOf(false) }
+    // 白名单命中（call.trusted，ViewModel 侧算好）就不用再弹二次确认；
+    // 否则按权限档位判。与执行路径同一套规则（requiresConfirmation 内部仍先判灾难熔断）。
+    val confirmRequired = !call.trusted &&
+        TerminalCommandSafety.requiresConfirmation(call.command, level)
+    var outputExpanded by remember(call.id) { mutableStateOf(false) }
+
+    val (accent, container) = when (call.riskTier) {
+        RiskTier.DESTRUCTIVE -> MaterialTheme.colorScheme.error to MaterialTheme.colorScheme.errorContainer
+        RiskTier.WRITE -> MaterialTheme.colorScheme.primary to MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+        RiskTier.READ_ONLY -> MaterialTheme.colorScheme.outline to MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
     }
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = if (item.dangerous) MaterialTheme.colorScheme.errorContainer
-        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+        color = container,
         shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
     ) {
         Column(
             Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            // ── 卡片头：命令 + 状态 ──
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (item.dangerous) {
-                    Icon(Icons.Outlined.Warning, null, Modifier.size(14.dp))
-                    Spacer(Modifier.width(5.dp))
-                }
                 Text(
-                    tag,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    "$ " + call.command,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
-                Spacer(Modifier.weight(1f))
-                if (!terminalConnected) {
-                    Text(
-                        "终端未连接",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
+                Spacer(Modifier.width(8.dp))
+                ToolCallStatusBadge(call, terminalConnected)
             }
-            Text(
-                item.command,
-                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (confirming) {
-                    Button(
-                        onClick = {
-                            confirming = false
-                            viewModel.executeAssistantCommand(item)
-                        },
-                        enabled = terminalConnected && !running,
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-                    ) { Text("确认执行", style = MaterialTheme.typography.labelLarge) }
-                    Text(
-                        "取消",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { confirming = false }
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                    )
-                } else {
-                    Button(
-                        onClick = {
-                            if (confirmRequired) confirming = true
-                            else viewModel.executeAssistantCommand(item)
-                        },
-                        enabled = terminalConnected && !running,
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-                    ) {
+
+            // ── 待确认：卡片头下直接给操作按钮 ──
+            if (call.status == ToolCallStatus.NEEDS_CONFIRM) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (call.trusted) {
                         Text(
-                            if (confirmRequired) "执行（需确认）" else "执行",
-                            style = MaterialTheme.typography.labelLarge,
+                            "已信任，将直接执行",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Text(
-                        "跳过",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { viewModel.dismissPendingCommand(item.id) }
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                    )
+                    Spacer(Modifier.weight(1f))
+                    if (confirming) {
+                        Button(
+                            onClick = {
+                                confirming = false
+                                viewModel.executeAssistantCommand(call)
+                            },
+                            enabled = terminalConnected && !running,
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                        ) { Text("确认执行", style = MaterialTheme.typography.labelLarge) }
+                        Text(
+                            "取消",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { confirming = false }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                    } else {
+                        Button(
+                            onClick = {
+                                if (confirmRequired) confirming = true
+                                else viewModel.executeAssistantCommand(call)
+                            },
+                            enabled = terminalConnected && !running,
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                        ) {
+                            Text(
+                                if (confirmRequired) "执行（需确认）" else "执行",
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                        Text(
+                            "跳过",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { viewModel.dismissPendingCommand(call.id) }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+            }
+
+            // ── 结果：可视化卡片（有就显示）+ 折叠的原始输出 ──
+            if (call.status != ToolCallStatus.NEEDS_CONFIRM) {
+                call.insight?.let { InsightCardView(it) }
+                if (call.output.isNotBlank()) {
+                    val lines = remember(call.output) { call.output.lines() }
+                    val collapsible = lines.size > TERMINAL_OUTPUT_COLLAPSE_LINES ||
+                        call.output.length > TERMINAL_OUTPUT_COLLAPSE_CHARS
+                    val shown = if (outputExpanded || !collapsible) {
+                        call.output
+                    } else {
+                        lines.take(TERMINAL_OUTPUT_COLLAPSE_LINES).joinToString("\n")
+                    }
+                    TerminalOutputText(shown)
+                    if (collapsible) {
+                        Text(
+                            if (outputExpanded) "收起" else "原始输出（共 ${lines.size} 行）▾",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { outputExpanded = !outputExpanded }
+                                .padding(vertical = 2.dp),
+                        )
+                    }
                 }
             }
         }
+    }
+}
+
+/** 卡片右侧的状态徽标：图标 + 耗时（v0.2.83）。 */
+@Composable
+private fun ToolCallStatusBadge(call: ToolCall, terminalConnected: Boolean) {
+    val (text, tint, icon) = when (call.status) {
+        ToolCallStatus.NEEDS_CONFIRM -> when {
+            !terminalConnected -> Triple("终端未连接", MaterialTheme.colorScheme.error, Icons.Outlined.Warning)
+            call.riskTier == RiskTier.DESTRUCTIVE ->
+                Triple("破坏性", MaterialTheme.colorScheme.error, Icons.Outlined.Warning)
+            call.riskTier == RiskTier.WRITE ->
+                Triple("写操作", MaterialTheme.colorScheme.primary, Icons.Outlined.Warning)
+            else -> Triple("只读", MaterialTheme.colorScheme.onSurfaceVariant, Icons.Outlined.Info)
+        }
+        ToolCallStatus.RUNNING -> Triple("执行中…", MaterialTheme.colorScheme.primary, null)
+        ToolCallStatus.OK -> Triple(withDuration(call, if (call.noMatch) "无匹配" else "成功"), MaterialTheme.colorScheme.primary, Icons.Outlined.CheckCircle)
+        ToolCallStatus.FAILED -> Triple(withDuration(call, "失败"), MaterialTheme.colorScheme.error, Icons.Outlined.Warning)
+        ToolCallStatus.TIMEOUT -> Triple("超时", MaterialTheme.colorScheme.error, Icons.Outlined.Warning)
+        ToolCallStatus.SKIPPED -> Triple("已跳过", MaterialTheme.colorScheme.onSurfaceVariant, null)
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (call.status == ToolCallStatus.RUNNING) {
+            CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
+        } else if (icon != null) {
+            Icon(icon, null, Modifier.size(13.dp), tint = tint)
+        }
+        Text(text, style = MaterialTheme.typography.labelSmall, color = tint)
+    }
+}
+
+/** 把耗时拼进状态文案：`成功 · 0.4s`。 */
+private fun withDuration(call: ToolCall, label: String): String {
+    val ms = call.durationMs ?: return label
+    val seconds = ms / 1000.0
+    val shown = if (seconds < 10) String.format(java.util.Locale.US, "%.1fs", seconds)
+    else "${ms / 1000}s"
+    return "$label · $shown"
+}
+
+/** 原始输出块（v0.2.83 从 TerminalOutputBlock 抽出的纯文本部分，供卡片内复用）。 */
+@Composable
+private fun TerminalOutputText(text: String) {
+    val scrollState = rememberScrollState()
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+        shape = RoundedCornerShape(6.dp),
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            softWrap = false,
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(scrollState)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+        )
     }
 }
 
@@ -922,11 +1060,14 @@ private fun PendingCommandCard(
  *  - 系统：居中的细灰字，与对话明显区分（它不是"谁说的话"，是旁注）
  */
 @Composable
-private fun AssistantMessageItem(message: TerminalChatMessage) {
-    // v0.2.75：执行标记（「（已执行）xxx」）与用户消息一样渲染成右侧气泡——
-    // 拆分角色只为让 prompt 层不把它当"人说的话"，UI 表现不变。
-    val isUser = message.role == TerminalMessageRole.USER ||
-        message.role == TerminalMessageRole.EXECUTED_MARK
+private fun AssistantMessageItem(
+    message: TerminalChatMessage,
+    level: Int,
+    terminalConnected: Boolean,
+    running: Boolean,
+    viewModel: MainViewModel,
+) {
+    val isUser = message.role == TerminalMessageRole.USER
     val isNote = message.role == TerminalMessageRole.SYSTEM_NOTE
 
     if (isNote) {
@@ -938,23 +1079,6 @@ private fun AssistantMessageItem(message: TerminalChatMessage) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
-        }
-        return
-    }
-
-    // 命令输出（v0.2.66）：**左对齐的等宽块**，不是居中的旁注。
-    // 以前它与系统旁注同类，于是 `ls` 的列对齐被居中打散、多行输出挤成一团。
-    // 终端输出的列对齐是它承载信息的方式，必须保留——所以横竖都铺满、不换行折行。
-    //
-    // v0.2.82：若能解析成可视化卡片（nvidia-smi / df …），卡片在上、原文仍可展开。
-    if (message.role == TerminalMessageRole.TERMINAL_OUTPUT) {
-        val card = remember(message.sourceCommand, message.text) {
-            if (message.sourceCommand.isBlank()) null
-            else CommandInsightParser.parse(message.sourceCommand, message.text)
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            card?.let { InsightCardView(it) }
-            TerminalOutputBlock(message.text)
         }
         return
     }
@@ -976,6 +1100,7 @@ private fun AssistantMessageItem(message: TerminalChatMessage) {
             } else {
                 Modifier.fillMaxWidth().wrapContentWidth(Alignment.Start)
             },
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (isUser) {
                 Surface(
@@ -1003,6 +1128,17 @@ private fun AssistantMessageItem(message: TerminalChatMessage) {
                             )
                         }
                     }
+                }
+                // v0.2.83：工具调用**内联在 AI 文本之后**（不再是列表外的独立卡片区）。
+                // 这样"AI 说了什么"与"它要做什么/做了什么"就在同一个视觉单元里。
+                message.toolCalls.forEach { call ->
+                    ToolCallCard(
+                        call = call,
+                        level = level,
+                        terminalConnected = terminalConnected,
+                        running = running,
+                        viewModel = viewModel,
+                    )
                 }
             }
         }
@@ -1104,57 +1240,6 @@ private fun InsightCardView(card: InsightCard) {
                         }
                     }
                 }
-            }
-        }
-    }
-}
-
-/**
- * 命令输出块（v0.2.66，v0.2.82 加折叠）。
- *
- * 与代码块（AI 给的命令）区别开：命令是**待执行**的，输出是**已执行**的结果。
- * 视觉上刻意不同——输出用浅底、左对齐、可横向滚动。
- *
- * 为什么要横向滚动：终端输出的列对齐（`ls -l`、`nvidia-smi`、表格）靠空格排版，
- * 一旦折行就彻底乱掉、看不出哪列是哪列。宁可让用户横滑，也不要破坏对齐。
- *
- * v0.2.82：长输出默认折叠成前几行 + 「展开全部」。以前一大段（如 40 行）铺满一屏，
- * 直接把对话顶走（用户反馈"一堆看不完"）。折叠后每段输出只占几行，需要时才展开。
- */
-@Composable
-private fun TerminalOutputBlock(text: String) {
-    val lines = remember(text) { text.lines() }
-    // 行数或字符数任一超阀就默认折叠（宽行少行也能霸屏）。
-    val collapsible = lines.size > TERMINAL_OUTPUT_COLLAPSE_LINES || text.length > TERMINAL_OUTPUT_COLLAPSE_CHARS
-    var expanded by remember(text) { mutableStateOf(!collapsible) }
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-        shape = RoundedCornerShape(10.dp),
-    ) {
-        val scrollState = rememberScrollState()
-        Column {
-            val shown = if (expanded) text else lines.take(TERMINAL_OUTPUT_COLLAPSE_LINES).joinToString("\n")
-            Text(
-                shown,
-                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                softWrap = false,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(scrollState)
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-            )
-            if (collapsible) {
-                Text(
-                    if (expanded) "收起" else "展开全部（共 ${lines.size} 行）",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { expanded = !expanded }
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                )
             }
         }
     }
@@ -1378,6 +1463,7 @@ private fun ConnectedScaffold(
 ) {
     /** v0.2.59：AI 模型配置弹窗（挂在 AI 助手页，不再只从设置进）。 */
     var showModelConfig by remember { mutableStateOf(false) }
+    var showTrustedCommands by remember { mutableStateOf(false) }
     Scaffold(
         topBar = {
             // v0.1.91：账号/控制台页显示页面标题（它们不是「连接到某台 ComfyUI」
@@ -1498,6 +1584,28 @@ private fun ConnectedScaffold(
                                         },
                                     )
                                 }
+                                HorizontalDivider()
+                                // v0.2.83：白名单入口。命中即直接执行、零提示——
+                                // 重度用户真正省掉点击的地方。
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(
+                                                "已信任命令（${state.trustedCommands.size} 条）",
+                                                style = MaterialTheme.typography.labelLarge,
+                                            )
+                                            Text(
+                                                "命中即直接执行、不再询问",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        levelMenu = false
+                                        showTrustedCommands = true
+                                    },
+                                )
                             }
                         }
                         // 有没有对话消息要问 ViewModel——它不在 AppUiState 里。
@@ -1633,6 +1741,81 @@ private fun ConnectedScaffold(
     if (showModelConfig) {
         LlmConfigDialog(state = state, viewModel = viewModel, onDismiss = { showModelConfig = false })
     }
+    // v0.2.83：已信任命令管理（白名单）。
+    if (showTrustedCommands) {
+        TrustedCommandsDialog(
+            patterns = state.trustedCommands,
+            onDismiss = { showTrustedCommands = false },
+            onSave = { viewModel.setTrustedCommands(it); showTrustedCommands = false },
+        )
+    }
+}
+
+/**
+ * 已信任命令管理弹窗（v0.2.83）。
+ *
+ * 学 Cursor 的 Allowlist：让用户**预批准具体命令**（glob 匹配）。命中即直接执行、
+ * 零提示。预置了 nvidia-smi / df -h* / free -h / ls * / ps aux* / cat *。
+ *
+ * 明确的边界提示：**灾难性命令永远需要确认，不会因为进了白名单就放行**。
+ * 用户误把 `rm *` 加进来也不会有危险——那正是熔断器的意义。
+ */
+@Composable
+private fun TrustedCommandsDialog(
+    patterns: List<String>,
+    onDismiss: () -> Unit,
+    onSave: (List<String>) -> Unit,
+) {
+    val items = remember(patterns) { patterns.toMutableStateList() }
+    var draft by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("已信任命令") },
+        text = {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "命中这些模式的命令会直接执行，不再询问。支持 * 通配（如 df -h*）。\n" +
+                        "灾难性命令（清空根目录、格式化等）永远需要确认，不受此列表影响。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                items.forEachIndexed { index, pattern ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            pattern,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(onClick = { items.removeAt(index) }) {
+                            Icon(Icons.Outlined.Close, "删除 ${'$'}pattern", Modifier.size(16.dp))
+                        }
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        label = { Text("新增模式，如 git status*") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        onClick = {
+                            val value = draft.trim()
+                            if (value.isNotBlank() && value !in items) items.add(value)
+                            draft = ""
+                        },
+                    ) { Text("添加") }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(items.toList()) }) { Text("保存") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 /**

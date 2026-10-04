@@ -30,7 +30,13 @@ data class InsightBar(
     val used: Double,
     val total: Double,
     val ratio: Double,
+    /** 主数字（v0.2.83：磁盘这里是"剩余 xxG"，直接回答"够不够"）。 */
     val display: String,
+    /**
+     * 副行（v0.2.83）：总量 / 已用 / 百分比这类参考信息放这里，小字弱化。
+     * 主数字只放用户真正要用的那个（磁盘=剩余），不逼他心算。
+     */
+    val secondary: String = "",
 )
 
 /** 一个并排小指标：`label  value`。 */
