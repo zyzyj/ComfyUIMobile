@@ -178,25 +178,36 @@ object TerminalCommandSafety {
     )
 
     /**
-     * 把命令整理成能安全嵌入 `{ … ; }` 包装的形态（v0.2.78）。
+     * 把命令整理成能安全嵌入 `{ … ; }` 包装的形态（v0.2.78，v0.2.79 补不配对检测）。
      *
-     * 模型给的命令直接拼进包装会破坏包装本身，已实测两类：
+     * 模型给的命令直接拼进包装会破坏包装本身，已实测三类：
      *  - 行尾 `# 注释`：`#` 后整段（含闭合 `}` 与结束标记）都被注释吃掉 →
      *    bash 报语法错误、BEGIN/END 一个都不输出 → 命令白等满 10 分钟超时。
-     *  - 行尾悬空的 `;` / `&&` / `||` / `|` / `&`：拼成 `{ cmd; ; }` 同样语法错误，
-     *    后果相同。
+     *  - 行尾悬空的 `;` / `&&` / `||` / `|` / `&`：拼成 `{ cmd; ; }` 同样语法错误。
+     *  - 引号 / 行尾反斜杠不配对：shell 进入续行等待（交互式）或报错中止，
+     *    同样没有结束标记。这种命令**本来就无法执行**（是模型写坏了），
+     *    所以返回一条立即报错的哨兵命令，而不是让终端挂住。
      *
      * 只清理**引号外**的内容（引号内 `#`、分号是命令的一部分，如 `echo "a # b"`）；
      * `#` 只在词首才算注释（`echo a#b` 里的 `#` 是字面量）。
      * 清理后若什么都不剩，返回 `:`（no-op）——至少能让这条命令正常"完成"。
      */
     fun sanitizeCommand(command: String): String {
-        val trimmed = stripTrailingEmptyOperators(stripUnquotedComment(command))
+        val commentStripped = stripUnquotedComment(command) ?: return UNBALANCED_QUOTE_FALLBACK
+        val trimmed = stripTrailingEmptyOperators(commentStripped)
         return trimmed.ifBlank { ":" }
     }
 
-    /** 截断引号外的行尾注释；引号内的 `#` 与转义的 `\#` 保留。 */
-    private fun stripUnquotedComment(command: String): String {
+    /** 引号不配对时的哨兵命令：立即报错（rc=1）并告诉用户怎么回事，绝不让终端挂住。 */
+    private const val UNBALANCED_QUOTE_FALLBACK =
+        "echo '[App] 命令的引号不配对，已跳过执行（否则终端会挂住）；请让 AI 修正后重发。' >&2; false"
+
+    /**
+     * 截断引号外的行尾注释；引号内的 `#` 与转义的 `\#` 保留。
+     *
+     * @return 清理后的命令；**null 表示引号或行尾反斜杠不配对**（命令本身有语法错误）。
+     */
+    private fun stripUnquotedComment(command: String): String? {
         var inSingle = false
         var inDouble = false
         var prev: Char? = null
@@ -206,10 +217,17 @@ object TerminalCommandSafety {
             when {
                 inSingle -> if (c == '\'') inSingle = false
                 inDouble -> when (c) {
-                    '\\' -> i++ // 双引号内反斜杠转义
+                    '\\' -> {
+                        // 行尾反斜杠：转义对象不存在，shell 会等待续行 → 视为不配对。
+                        if (i == command.length - 1) return null
+                        i++ // 双引号内反斜杠转义
+                    }
                     '"' -> inDouble = false
                 }
-                c == '\\' -> i++ // 引号外的反斜杠转义
+                c == '\\' -> {
+                    if (i == command.length - 1) return null
+                    i++ // 引号外的反斜杠转义
+                }
                 c == '\'' -> inSingle = true
                 c == '"' -> inDouble = true
                 c == '#' && (prev == null || prev.isWhitespace() || prev in "|&;()<>") ->
@@ -218,7 +236,7 @@ object TerminalCommandSafety {
             prev = c
             i++
         }
-        return command
+        return if (inSingle || inDouble) null else command
     }
 
     /**
@@ -249,16 +267,25 @@ object TerminalCommandSafety {
      * 再把退出码打出来，模型就能准确知道：结束标记之间的就是本次输出，`exit=N` 是结果。
      *
      * v0.2.78 两处加固（都是"生成物交给真实 shell 后语义变了"类问题的实测修复）：
-     *  - 包装前先 [sanitizeCommand]，防行尾注释/悬空分隔符破坏包装；
+     *  - 包装前先 [sanitizeCommand]，防行尾注释/悬空分隔符/不配对引号破坏包装；
      *  - 子 shell 里打开 pipefail：守则建议过的 `cmd | tail -N` 写法会让 `$?` 取
      *    最后一段（tail）的退出码——安装失败也报 rc=0。pipefail 让管道取首个非零值。
      *    141（SIGPIPE，下游提前关闭管道）归一化为 0：`cat big | head` 属正常用法。
      *    用完 restore，避免污染这个长期存活的终端会话。
+     *
+     * v0.2.79 修兼容性回归：v0.2.78 直接 `set -o pipefail`，而 **dash < 0.5.13
+     * 不认识这个选项**（Ubuntu 22.04 及更早的 `/bin/sh`）。`set` 是 POSIX 的
+     * "特殊内建"——它失败时会中止**整条命令**，`|| true` 和 `2>/dev/null` 都挡不住
+     * （实测：BEGIN 出现、END 永不出现 → 所有命令挂满 10 分钟，不只是管道命令）。
+     * 现在改成**先探测再设置**：不支持的 shell 上跳过，退化为无 pipefail 的旧语义。
+     * 探测必须用 `if` 而不是 `cond && cmd` 短路——grep 失败会让短路式返回 1 污染 rc。
      */
     fun wrap(command: String, token: String): String =
-        "echo __AI_${token}_BEGIN__ && { set -o pipefail 2>/dev/null || true; " +
+        "echo __AI_${token}_BEGIN__ && { " +
+            "if set -o 2>/dev/null | grep -q pipefail 2>/dev/null; then set -o pipefail; fi; " +
             "${sanitizeCommand(command)} ; rc=\$? ; if [ \$rc -eq 141 ]; then rc=0; fi; " +
-            "set +o pipefail 2>/dev/null || true; } ; echo __AI_${token}_END__ rc=\$rc"
+            "if set -o 2>/dev/null | grep -q pipefail 2>/dev/null; then set +o pipefail; fi; " +
+            "} ; echo __AI_${token}_END__ rc=\$rc"
 
     fun beginMarker(token: String): String = "__AI_${token}_BEGIN__"
     fun endMarker(token: String): String = "__AI_${token}_END__"
