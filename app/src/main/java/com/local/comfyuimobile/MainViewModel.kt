@@ -103,6 +103,7 @@ import com.local.comfyuimobile.network.ExecutionNodeResolver
 import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.network.LanScanner
 import com.local.comfyuimobile.network.LlmPrompts
+import com.local.comfyuimobile.mcp.McpServerManager
 import com.local.comfyuimobile.network.LlmProtocol
 import com.local.comfyuimobile.network.TerminalPlaybook
 import com.local.comfyuimobile.network.NodeAvailability
@@ -238,6 +239,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 端点等于把 AI Studio 的登录态发给别人。
      */
     private val llm = LlmRepository()
+    // ===== v0.2.85 MCP server（供同机 AiCode 连接） =====
+    private val mcpServer = McpServerManager(
+        client = client,
+        currentWorkflowPath = { _state.value.quickWorkflowPath },
+        refreshCookie = { refreshComfyAuthCookie() },
+        clientId = clientId,
+    )
     private var aiAssistJob: Job? = null
     /** 拉取模型列表的任务（v0.2.56）。 */
     private var llmModelsJob: Job? = null
@@ -298,6 +306,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     @Volatile private var pendingAccountId: String? = null
 
+    /** MCP 自动拉起只试一次：偏好每次推送都重试会形成"启了又停"的抖动。 */
+    private var mcpAutoStartAttempted = false
+
     init {
         // v0.2.81：把令牌刷新器接入两个 client。刷新出新 bdToken 后由 applyRefreshedToken
         // 回写账号并落盘（client 不知道账号列表与 DataStore）。
@@ -352,6 +363,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         llmConfig = stored.llmConfig,
                         customPresets = stored.customPresets,
                         commandPermissionLevel = stored.commandPermissionLevel,
+                        mcpServerEnabled = stored.mcpServerEnabled,
+                        mcpServerToken = stored.mcpServerToken,
+                        mcpServerPort = if (mcpServer.isRunning) mcpServer.port else 0,
                         trustedCommands = stored.trustedCommands,
                         aiStudio = _state.value.aiStudio.copy(
                             accounts = stored.aiStudioAccounts,
@@ -375,6 +389,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 我们今天签过没），偏好每次推送都调也无害。
                 autoDailyTasksEnabled = stored.autoDailyTasks
                 if (stored.autoDailyTasks) aiStudioAutoDailyTasks()
+                // v0.2.85：偏好恢复后按开关自动拉起 MCP 服务（用户开着开关重启 App 时
+                // 不该要再手动开一次）。只在从未启动过时拉一次，不在每次偏好推送时重启。
+                if (stored.mcpServerEnabled && !mcpServer.isRunning && !mcpAutoStartAttempted) {
+                    mcpAutoStartAttempted = true
+                    val token = stored.mcpServerToken
+                    if (token.isNotBlank()) {
+                        val bound = runCatching { mcpServer.start(token) }
+                            .onFailure { AppLogger.warn("MCP 自动启动失败（可在设置里手动重开）", it) }
+                            .getOrNull()
+                        _state.update { it.copy(mcpServerPort = bound ?: 0, mcpServerEnabled = bound != null) }
+                    }
+                }
                 if (!stored.localDraftsEnabled) {
                     // v0.1.86：只在"用户主动把开关关掉"的那一刻清一次。
                     //
@@ -3950,6 +3976,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ===== v0.2.85 MCP server =====
+
+    /**
+     * 开关内嵌的 MCP server。
+     *
+     * 开启需要 token：首次开启时自动生成一个并持久化，之后 AiCode 侧的配置不必再改。
+     * 绑定失败（如 8765 被占用）时如实上报并把开关拨回去，不静默失败。
+     */
+    fun setMcpServerEnabled(enabled: Boolean) {
+        if (enabled) {
+            val token = _state.value.mcpServerToken.ifBlank {
+                val generated = McpServerManager.newToken()
+                viewModelScope.launch { runCatching { preferences.setMcpServerToken(generated) } }
+                generated
+            }
+            val bound = runCatching { mcpServer.start(token) }
+                .onFailure { AppLogger.error("MCP server 启动失败", it) }
+                .getOrNull()
+            if (bound == null) {
+                _state.update { it.copy(mcpServerEnabled = false, mcpServerPort = 0, notice = "MCP 服务启动失败：端口 ${McpServerManager.PORT} 可能被占用") }
+                return
+            }
+            _state.update { it.copy(mcpServerEnabled = true, mcpServerPort = bound, mcpServerToken = token, notice = "MCP 服务已启动：127.0.0.1:$bound") }
+            AppLogger.info("MCP 服务已启动：127.0.0.1:$bound")
+        } else {
+            mcpServer.stop()
+            _state.update { it.copy(mcpServerEnabled = false, mcpServerPort = 0, notice = "MCP 服务已停止") }
+        }
+        viewModelScope.launch {
+            runCatching { preferences.setMcpServerEnabled(enabled) }
+                .onFailure { AppLogger.error("保存 MCP 开关失败", it) }
+        }
+    }
+
+    /** 重新生成访问令牌。服务在跑的话一并重启，否则新令牌不生效。 */
+    fun regenerateMcpToken() {
+        val token = McpServerManager.newToken()
+        _state.update { it.copy(mcpServerToken = token) }
+        viewModelScope.launch { runCatching { preferences.setMcpServerToken(token) } }
+        if (_state.value.mcpServerEnabled) {
+            mcpServer.stop()
+            val bound = runCatching { mcpServer.start(token) }
+                .onFailure { AppLogger.error("MCP 重启失败", it) }
+                .getOrNull()
+            _state.update { it.copy(mcpServerPort = bound ?: 0, mcpServerEnabled = bound != null) }
+        }
+    }
+
     /** 设置 AI 助手的命令执行权限等级（v0.2.59）：1=每条都问 / 2=仅危险命令 / 3=不问。 */
     fun setCommandPermissionLevel(level: Int) {
         val clamped = level.coerceIn(1, 3)
@@ -7516,6 +7590,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         client.closeWebSocket()
         kernelClient.closeTerminal()
+        // v0.2.85：MCP 服务随 ViewModel 一起收掉，不在进程里留一个没人管的监听端口。
+        mcpServer.stop()
         // v0.1.86：App 真正退出时把"已连接"常驻通知一起撤掉，别在通知栏留孤儿。
         // 注意这只清保活标记：如果还有生图任务在后台跑，服务自己的 stopIfIdle 会
         // 保留前台通知，任务不受影响。

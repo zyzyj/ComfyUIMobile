@@ -91,6 +91,7 @@ import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.runtime.derivedStateOf
+import com.local.comfyuimobile.mcp.McpServerManager
 import com.local.comfyuimobile.model.RiskTier
 import com.local.comfyuimobile.model.ToolCall
 import com.local.comfyuimobile.model.ToolCallStatus
@@ -105,6 +106,7 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.FileOpen
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.FavoriteBorder
@@ -5110,6 +5112,68 @@ private fun JobCard(job: JobSummary, viewModel: MainViewModel, tracked: Boolean)
 }
 
 /**
+ * v0.2.85：设置页里的 MCP 服务区。
+ *
+ * 开启后本 App 会在 `127.0.0.1:8765` 上提供一个 MCP 端点，供同机的 AiCode 连接，
+ * 从而用外部强模型操作这个 App 连着的 ComfyUI。
+ *
+ * 界面只做三件事：开关、展示 token 与配置片段、重新生成 token。所有细节
+ * （协议、工具、文件端点）在 AiCode 那一侧，用户不需要看到。
+ */
+@Composable
+private fun McpSettingsSection(
+    state: AppUiState,
+    viewModel: MainViewModel,
+    context: android.content.Context,
+) {
+    val snippet = state.mcpServerToken.takeIf { it.isNotBlank() }
+        ?.let { McpServerManager.configSnippet(it) }
+    SettingsSection("MCP 服务（供 AiCode 连接）", icon = Icons.Outlined.Extension) {
+        Text(
+            "开启后，同机的 AiCode 可通过 127.0.0.1 操作本 App 连着的 ComfyUI" +
+                "（列出模型、列出工作流、出图）。只监听本机，局域网内其他设备连不上。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        SettingsToggleRow(
+            title = "开启 MCP 服务",
+            subtitle = if (state.mcpServerEnabled) {
+                "正在监听 127.0.0.1:${state.mcpServerPort}"
+            } else {
+                "关闭中 —— 开启需要一个访问令牌（首次会自动生成）"
+            },
+            checked = state.mcpServerEnabled,
+            onCheckedChange = viewModel::setMcpServerEnabled,
+        )
+        if (snippet != null) {
+            Text(
+                "把下面这段写到 AiCode 的 .aicode/mcp.json（工作区项目级优先）：",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SelectionContainer {
+                Text(
+                    snippet,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                        .padding(10.dp),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = {
+                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("AiCode MCP 配置", snippet))
+                }) { Text("复制配置") }
+                TextButton(onClick = viewModel::regenerateMcpToken) { Text("重新生成令牌") }
+            }
+        }
+    }
+}
+
+/**
  * v0.1.88：设置页里的 AI 大模型配置区。
  *
  * 只认一种协议 —— OpenAI 兼容的 `/v1/chat/completions`。理由是这个形态事实上已经
@@ -5897,6 +5961,9 @@ private fun SettingsContent(
             onSaveCustomPresets = viewModel::saveCustomPresets,
             onTest = viewModel::testLlmConnection,
         )
+
+        // —— MCP 服务（v0.2.85）——
+        McpSettingsSection(state = state, viewModel = viewModel, context = context)
 
         // —— 图片保存 ——
         SettingsSection("图片保存", icon = Icons.Outlined.Download) {

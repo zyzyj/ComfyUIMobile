@@ -1,0 +1,291 @@
+package com.local.comfyuimobile.mcp
+
+import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.io.ByteArrayOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+
+/**
+ * MCP server 的**真实 socket 端到端**测试（v0.2.85）。
+ *
+ * 起一个真的 `ServerSocket`、用真的 HTTP 客户端连它。这比"解析函数各自正确"更有价值：
+ * 上一批 bug 里有一类正是"两个函数各自正确、串起来坏"（组合失效），只有端到端能抓到。
+ *
+ * 假 host 提供确定性结果，不碰网络与 ComfyUI。
+ */
+class McpServerTest {
+
+    private class FakeHost : McpToolHost {
+        var lastRequest: GenerateRequest? = null
+
+        override suspend fun listModels(type: String?): String =
+            if (type == "lora") "loras:\n  a.safetensors" else "checkpoints:\n  sd_xl.safetensors"
+
+        override suspend fun listWorkflows(): String = "demo  (workflows/demo.json)"
+
+        override suspend fun generate(request: GenerateRequest, awaitMillis: Long): GenerateOutcome {
+            lastRequest = request
+            if (request.prompt == "fail") return GenerateOutcome.Failed("假失败")
+            if (request.prompt == "slow") return GenerateOutcome.Running("job-run", 120, "仍在跑")
+            return GenerateOutcome.Done(
+                "job-1",
+                listOf(McpMedia("out.png", "png", "image/png", byteArrayOf(1, 2, 3, 4))),
+            )
+        }
+
+        override suspend fun jobStatus(jobId: String): GenerateOutcome =
+            GenerateOutcome.Done(jobId, listOf(McpMedia("done.png", "png", "image/png", byteArrayOf(9))))
+    }
+
+    private class Fixture {
+        val host = FakeHost()
+        val files = McpFileStore()
+        private val portHolder = intArrayOf(-1)
+        val server = McpServer(
+            port = 0,
+            token = TOKEN,
+            tools = McpToolRegistry(host, files) { "http://127.0.0.1:${portHolder[0]}/files/" },
+        )
+
+        fun start(): Int {
+            server.start()
+            portHolder[0] = server.boundPort
+            return server.boundPort
+        }
+    }
+
+    private fun withServer(block: (Int, Fixture) -> Unit) {
+        val fixture = Fixture()
+        val port = fixture.start()
+        try {
+            block(port, fixture)
+        } finally {
+            fixture.server.stop()
+        }
+    }
+
+    /** 发一个 MCP 请求，返回 (HTTP 状态码, 响应体)。 */
+    private fun postMcp(port: Int, body: String, token: String = TOKEN): Pair<Int, String> {
+        val payload = body.toByteArray()
+        val connection = (URL("http://127.0.0.1:$port/mcp").openConnection() as HttpURLConnection)
+        connection.requestMethod = "POST"
+        connection.doOutput = true
+        // 固定长度：与 AiCode 的 OkHttp （`String.toRequestBody`）一致，避免
+        // HttpURLConnection 对大 body 自动转 chunked——那会撞上我们刻意拒绝的路径。
+        connection.setFixedLengthStreamingMode(payload.size)
+        connection.setRequestProperty("Content-Type", "application/json")
+        connection.setRequestProperty("Accept", "application/json, text/event-stream")
+        if (token.isNotEmpty()) connection.setRequestProperty("Authorization", "Bearer $token")
+        connection.outputStream.use { it.write(payload) }
+        val code = connection.responseCode
+        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+        val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        connection.disconnect()
+        return code to text
+    }
+
+    private fun get(port: Int, path: String): Triple<Int, ByteArray, String> {
+        val connection = (URL("http://127.0.0.1:$port$path").openConnection() as HttpURLConnection)
+        val code = connection.responseCode
+        val contentType = connection.contentType.orEmpty()
+        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+        val bytes = stream?.use { input ->
+            val out = ByteArrayOutputStream()
+            input.copyTo(out)
+            out.toByteArray()
+        } ?: ByteArray(0)
+        connection.disconnect()
+        return Triple(code, bytes, contentType)
+    }
+
+    // ===== 握手 =====
+
+    @Test
+    fun completesHandshakeSequence() = withServer { port, fixture ->
+        val (initCode, initBody) = postMcp(
+            port,
+            """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"ai-code-editor","version":"1.0.0"}}}""",
+        )
+        assertEquals(200, initCode)
+        val init = JSONObject(initBody).getJSONObject("result")
+        assertEquals("2025-06-18", init.getString("protocolVersion"))
+        assertEquals("comfy", init.getJSONObject("serverInfo").getString("name"))
+
+        // 通知：无 id，回 202 且空体（AiCode 按 spec 期望这个形态）。
+        val (notifyCode, notifyBody) = postMcp(
+            port,
+            """{"jsonrpc":"2.0","method":"notifications/initialized"}""",
+        )
+        assertEquals(202, notifyCode)
+        assertEquals("", notifyBody)
+
+        val (listCode, listBody) = postMcp(port, """{"jsonrpc":"2.0","id":2,"method":"tools/list"}""")
+        assertEquals(200, listCode)
+        val tools = JSONObject(listBody).getJSONObject("result").getJSONArray("tools")
+        val names = (0 until tools.length()).map { tools.getJSONObject(it).getString("name") }
+        assertEquals(setOf("list_models", "list_workflows", "generate", "job_status"), names.toSet())
+    }
+
+    @Test
+    fun sessionIdIsEchoedWhenProvided() = withServer { port, _ ->
+        val payload = """{"jsonrpc":"2.0","id":1,"method":"ping"}""".toByteArray()
+        val connection = (URL("http://127.0.0.1:$port/mcp").openConnection() as HttpURLConnection)
+        connection.requestMethod = "POST"
+        connection.doOutput = true
+        connection.setFixedLengthStreamingMode(payload.size)
+        connection.setRequestProperty("Authorization", "Bearer $TOKEN")
+        connection.setRequestProperty("Mcp-Session-Id", "sess-42")
+        connection.outputStream.use { it.write(payload) }
+        assertEquals(200, connection.responseCode)
+        assertEquals("sess-42", connection.getHeaderField("Mcp-Session-Id"))
+        connection.disconnect()
+    }
+
+    @Test
+    fun rejectsMissingOrWrongToken() = withServer { port, _ ->
+        val (noToken, _) = postMcp(port, """{"jsonrpc":"2.0","id":1,"method":"initialize"}""", token = "")
+        assertEquals(401, noToken)
+        val (badToken, _) = postMcp(port, """{"jsonrpc":"2.0","id":1,"method":"initialize"}""", token = "wrong")
+        assertEquals(401, badToken)
+    }
+
+    @Test
+    fun unknownMethodReturnsJsonRpcError() = withServer { port, _ ->
+        val (code, body) = postMcp(port, """{"jsonrpc":"2.0","id":5,"method":"does/not/exist"}""")
+        assertEquals(200, code)
+        assertEquals(-32601, JSONObject(body).getJSONObject("error").getInt("code"))
+    }
+
+    @Test
+    fun malformedJsonReturnsParseError() = withServer { port, _ ->
+        val (code, body) = postMcp(port, "{not json")
+        assertEquals(200, code)
+        assertEquals(-32700, JSONObject(body).getJSONObject("error").getInt("code"))
+    }
+
+    // ===== 工具调用 =====
+
+    @Test
+    fun callsListModelsThroughRealHttp() = withServer { port, _ ->
+        val (code, body) = postMcp(
+            port,
+            """{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_models","arguments":{"type":"lora"}}}""",
+        )
+        assertEquals(200, code)
+        val text = JSONObject(body).getJSONObject("result")
+            .getJSONArray("content").getJSONObject(0).getString("text")
+        assertTrue(text.contains("a.safetensors"))
+    }
+
+    @Test
+    fun generateReturnsDownloadableUrlAndFileIsServable() = withServer { port, fixture ->
+        val (code, body) = postMcp(
+            port,
+            """{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"generate","arguments":{"prompt":"a cat"}}}""",
+        )
+        assertEquals(200, code)
+        val text = JSONObject(body).getJSONObject("result")
+            .getJSONArray("content").getJSONObject(0).getString("text")
+        val payload = JSONObject(text)
+        assertEquals("done", payload.getString("status"))
+
+        // 关键链路：响应里给出的 URL 必须真的能取到同样的字节。
+        val url = payload.getJSONArray("images").getJSONObject(0).getString("url")
+        val path = url.substringAfter("http://127.0.0.1:$port")
+        val (fileCode, bytes, contentType) = get(port, path)
+        assertEquals(200, fileCode)
+        assertEquals("image/png", contentType)
+        assertEquals(listOf<Byte>(1, 2, 3, 4), bytes.toList())
+    }
+
+    @Test
+    fun generateTimeoutReturnsRunningWithJobId() = withServer { port, _ ->
+        val (_, body) = postMcp(
+            port,
+            """{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"generate","arguments":{"prompt":"slow"}}}""",
+        )
+        val text = JSONObject(body).getJSONObject("result")
+            .getJSONArray("content").getJSONObject(0).getString("text")
+        val payload = JSONObject(text)
+        assertEquals("running", payload.getString("status"))
+        assertEquals("job-run", payload.getString("job_id"))
+    }
+
+    @Test
+    fun toolFailureIsReportedAsNormalResultNotRpcError() = withServer { port, _ ->
+        // 工具执行失败按 MCP 约定回 isError=true 的**正常结果**，让模型能看到原因并调整，
+        // 而不是把整轮 JSON-RPC 弄成错误。
+        val (code, body) = postMcp(
+            port,
+            """{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"generate","arguments":{"prompt":"fail"}}}""",
+        )
+        assertEquals(200, code)
+        val result = JSONObject(body).getJSONObject("result")
+        assertTrue(result.getBoolean("isError"))
+    }
+
+    @Test
+    fun unknownToolIsReportedAsError() = withServer { port, _ ->
+        val (_, body) = postMcp(
+            port,
+            """{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"nope","arguments":{}}}""",
+        )
+        assertTrue(JSONObject(body).getJSONObject("result").getBoolean("isError"))
+    }
+
+    // ===== 文件端点 =====
+
+    @Test
+    fun unknownFileIdReturns404() = withServer { port, _ ->
+        val (code, _, _) = get(port, "/files/does-not-exist.png")
+        assertEquals(404, code)
+    }
+
+    @Test
+    fun healthEndpointResponds() = withServer { port, _ ->
+        val (code, bytes, _) = get(port, "/health")
+        assertEquals(200, code)
+        assertTrue(String(bytes).contains("true"))
+    }
+
+    @Test
+    fun unknownPathReturns404() = withServer { port, _ ->
+        val (code, _, _) = get(port, "/nope")
+        assertEquals(404, code)
+    }
+
+    @Test
+    fun stoppedServerReleasesPort() = withServer { port, fixture ->
+        assertEquals(200, get(port, "/health").first)
+        fixture.server.stop()
+        val failed = runCatching { get(port, "/health") }.isFailure
+        assertTrue("停止后不应还能连上", failed)
+    }
+
+    @Test
+    fun generateRequestParsesAllArguments() = runBlocking {
+        val host = FakeHost()
+        val registry = McpToolRegistry(host, McpFileStore()) { "http://x/files/" }
+        registry.dispatch(
+            "tools/call",
+            JSONObject(
+                """{"name":"generate","arguments":{"prompt":"p","negative":"n","count":99}}""",
+            ),
+            "1",
+        )
+        val request = host.lastRequest
+        assertNotNull(request)
+        assertEquals("p", request!!.prompt)
+        assertEquals("n", request.negative)
+        assertEquals("count 必须夹到 1..8", 8, request.count)
+    }
+
+    private companion object {
+        const val TOKEN = "test-token-123"
+    }
+}

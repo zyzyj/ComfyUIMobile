@@ -83,6 +83,13 @@ data class StoredSettings(
      * 用户一旦增删过就以他自己的为准（含删到空：那时表示"什么都不信任"）。
      */
     val trustedCommands: List<String> = emptyList(),
+    /**
+     * 内嵌 MCP server 开关与凭证（v0.2.85）。
+     *
+     * 默认关闭；token 持久化以便 App 重启后 AiCode 侧的配置不用改。
+     */
+    val mcpServerEnabled: Boolean = false,
+    val mcpServerToken: String = "",
     // v0.1.88：AI 提示词助手所用的外部大模型配置。
     val llmConfig: LlmConfig = LlmConfig(),
     // v0.1.90：AI Studio 平台账号（Cookie 即凭证）。
@@ -115,6 +122,8 @@ class AppPreferences(private val context: Context) {
         val customPresets = stringPreferencesKey("custom_prompt_presets")
         val commandPermissionLevel = intPreferencesKey("command_permission_level")
         val trustedCommands = stringPreferencesKey("trusted_commands")
+        val mcpServerEnabled = booleanPreferencesKey("mcp_server_enabled")
+        val mcpServerToken = stringPreferencesKey("mcp_server_token")
         val llmConfig = stringPreferencesKey("llm_config")
         val aiStudioAccounts = stringPreferencesKey("ai_studio_accounts")
         val aiStudioActiveId = stringPreferencesKey("ai_studio_active_id")
@@ -151,6 +160,8 @@ class AppPreferences(private val context: Context) {
             trustedCommands = preferences[Keys.trustedCommands]
                 ?.let { decodeStrings(it) }
                 ?: CommandAllowlist.DEFAULT_PATTERNS,
+            mcpServerEnabled = preferences[Keys.mcpServerEnabled] ?: false,
+            mcpServerToken = preferences[Keys.mcpServerToken].orEmpty(),
             llmConfig = decodeLlmConfig(preferences[Keys.llmConfig].orEmpty()),
             aiStudioAccounts = decodeAiStudioAccounts(preferences[Keys.aiStudioAccounts].orEmpty()),
             aiStudioActiveId = preferences[Keys.aiStudioActiveId].orEmpty(),
@@ -301,6 +312,14 @@ class AppPreferences(private val context: Context) {
     suspend fun setTrustedCommands(patterns: List<String>) {
         val cleaned = patterns.map(String::trim).filter(String::isNotBlank).distinct()
         context.dataStore.edit { it[Keys.trustedCommands] = encodeStrings(cleaned) }
+    }
+
+    suspend fun setMcpServerEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.mcpServerEnabled] = enabled }
+    }
+
+    suspend fun setMcpServerToken(token: String) {
+        context.dataStore.edit { it[Keys.mcpServerToken] = token }
     }
 
     suspend fun saveCustomPresets(presets: List<PromptPreset>) {
