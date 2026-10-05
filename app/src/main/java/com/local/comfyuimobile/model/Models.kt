@@ -260,25 +260,6 @@ data class AppUiState(
     val seedMode: SeedMode = SeedMode.RANDOM,
     val saveFolderUri: String? = null,
     val quickWorkflowPath: String? = null,
-    /** 用户自建的提示词预设（v0.2.54）。内置预设由 PromptPresets 提供，不入此列表。 */
-    val customPresets: List<PromptPreset> = emptyList(),
-    /** 已拉取的大模型列表（v0.2.56）；空表示未拉取或拉取失败。 */
-    val llmModels: List<String> = emptyList(),
-    val llmModelsLoading: Boolean = false,
-    /**
-     * AI 助手的命令执行权限等级（v0.2.59）。
-     *
-     * 1 = 每条都问（最保守）；2 = 仅危险命令问（默认）；3 = 不问直接执行。
-     * 用户自己选，因为不同人对“哪些命令危险”的容忍度不同。
-     */
-    val commandPermissionLevel: Int = 2,
-    /**
-     * 用户预批准的命令模式（v0.2.83）。命中即直接执行、零提示。
-     *
-     * 从偏好里来（空时用 [CommandAllowlist.DEFAULT_PATTERNS]），
-     * 权限判定（requiresConfirmation / autoRunnable）在灾难熔断之后才看它。
-     */
-    val trustedCommands: List<String> = CommandAllowlist.DEFAULT_PATTERNS,
     /**
      * MCP server（v0.2.85）：是否开启内嵌的 MCP 服务，供同机 AiCode 连接。
      *
@@ -289,15 +270,6 @@ data class AppUiState(
     val mcpServerPort: Int = 0,
     /** MCP 的 Bearer token，供用户复制到 AiCode 配置里。 */
     val mcpServerToken: String = "",
-    /** 命令是否正在执行（用于禁用按钮，避免重复提交）。 */
-    val assistantCommandRunning: Boolean = false,
-    /**
-     * 是否正在等大模型回复（v0.2.62）。
-     *
-     * 以前请求期间界面没有任何反馈——用户不知道是在等回复还是卡死了，
-     * 只能反复点发送。现在据此显示进度与「停止」按钮（对齐 Claude Code 的 Esc 中断）。
-     */
-    val assistantThinking: Boolean = false,
     val quickWorkflowName: String? = null,
     val quickFields: List<ParameterField> = emptyList(),
     val quickEnabledParams: List<String> = emptyList(),
@@ -321,12 +293,6 @@ data class AppUiState(
     val updateDownloading: Boolean = false,
     val updateDownloadProgress: Float? = null,
     val updateDownloadSource: String? = null,
-    // ===== v0.1.88 AI 提示词助手 =====
-    val llmConfig: LlmConfig = LlmConfig(),
-    /** 非 null 即表示 AI 助手对话框应该打开，并指向这个字段。 */
-    val aiAssistTarget: AiAssistTarget? = null,
-    val aiAssistBusy: Boolean = false,
-    val aiAssistError: String? = null,
     // ===== v0.1.89 节点缺失预检 =====
     /**
      * 当前工作流用到、但服务器上没注册的节点类型。
