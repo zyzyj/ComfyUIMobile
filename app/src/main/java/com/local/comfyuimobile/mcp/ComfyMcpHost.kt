@@ -85,22 +85,22 @@ internal class ComfyMcpHost(
         if (entries.isEmpty()) return "服务器上没有可用的工作流。"
         // 标出是否 API 格式：`generate` 只吃 API 格式，不标的话 AI 只能一个个试错
         // （调一次报一次错）。读文件只为判定格式，失败就当未知，不阻断列表。
-        return entries.joinToString("\n") { entry ->
-            val format = runCatching {
-                val text = client.readWorkflow(entry.path)
-                val root = JSONObject(text)
-                when {
-                    WorkflowFormat.isApiPrompt(root) -> "api"
-                    else -> "canvas"
-                }
+        //
+        // 注意不能在 joinToString 的 lambda 里调 suspend 函数——先在循环里取好格式。
+        val formats = entries.map { entry ->
+            runCatching {
+                val root = JSONObject(client.readWorkflow(entry.path))
+                if (WorkflowFormat.isApiPrompt(root)) "api" else "canvas"
             }.getOrDefault("unknown")
-            val tag = when (format) {
+        }
+        return entries.mapIndexed { index, entry ->
+            val tag = when (formats[index]) {
                 "api" -> "[可直用]"
                 "canvas" -> "[画布格式，需先 Export (API)]"
                 else -> "[格式未知]"
             }
             "${entry.name}  ${entry.path}  $tag"
-        }
+        }.joinToString("\n")
     }
 
     override suspend fun generate(request: GenerateRequest, awaitMillis: Long): GenerateOutcome {

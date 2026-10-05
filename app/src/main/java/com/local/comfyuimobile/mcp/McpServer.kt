@@ -36,7 +36,7 @@ internal class McpServer(
     private val port: Int,
     private val token: String,
     private val tools: McpToolRegistry,
-    private val files: McpFileStore = McpFileStore(),
+    private val files: McpFileStore,
 ) {
 
     private var serverSocket: ServerSocket? = null
