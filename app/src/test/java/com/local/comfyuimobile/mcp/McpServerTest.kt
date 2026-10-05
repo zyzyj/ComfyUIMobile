@@ -58,6 +58,15 @@ class McpServerTest {
             )
         }
 
+        /** 批量查询：这里按 id 后缀给出不同阶段，便于断言 queued/running/done。 */
+        override suspend fun jobStatusBatch(ids: List<String>): String = ids.joinToString("\n") { id ->
+            when {
+                id.endsWith("q") -> "$id  queued · 位置 2 · 排队中，前面还有 1 个"
+                id.endsWith("r") -> "$id  running · 位置 1 · 执行中"
+                else -> "$id  done · 已完成"
+            }
+        }
+
         override suspend fun jobStatus(jobId: String): GenerateOutcome = GenerateOutcome.Done(
             jobId,
             listOf(
@@ -282,6 +291,31 @@ class McpServerTest {
         assertEquals(200, fileCode)
         assertEquals("image/png", contentType)
         assertEquals(listOf<Byte>(1, 2, 3, 4), bytes.toList())
+    }
+
+    @Test
+    fun jobStatusAcceptsMultipleIds() = withServer { port, _ ->
+        // 提交多个任务后逐个查要 8 轮往返——一次传数组。
+        val (code, body) = postMcp(
+            port,
+            """{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"job_status","arguments":{"job_ids":["aaa","bbbq","cccr"]}}}""",
+        )
+        assertEquals(200, code)
+        val text = JSONObject(body).getJSONObject("result")
+            .getJSONArray("content").getJSONObject(0).getString("text")
+        assertTrue("应逐行给出每个 id 的状态", text.contains("aaa") && text.contains("bbbq") && text.contains("cccr"))
+        assertTrue("排队中必须单独标出来", text.contains("queued"))
+        assertTrue(text.contains("running"))
+    }
+
+    @Test
+    fun jobStatusWithoutIdReportsError() = withServer { port, _ ->
+        // 缺参数要回错误（模型据此补参数），不是静默返回空结果。
+        val (_, body) = postMcp(
+            port,
+            """{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"job_status","arguments":{}}}""",
+        )
+        assertTrue(JSONObject(body).getJSONObject("result").getBoolean("isError"))
     }
 
     @Test
