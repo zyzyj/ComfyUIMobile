@@ -4103,8 +4103,8 @@ private fun McpScreen(
                     }
                 }
                 Text(
-                    "未来的 terminal 工具（让 AI 执行命令）会在这里出现，默认关闭。
-                        紧急停止也在常驻通知里 —— AI 批量出图时可一键清队列并停服务。",
+                    "未来的 terminal 工具（让 AI 执行命令）会在这里出现，默认关闭。" +
+                        "紧急停止也在常驻通知里 —— AI 批量出图时可一键清队列并停服务。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
