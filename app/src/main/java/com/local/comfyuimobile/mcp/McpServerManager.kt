@@ -1,6 +1,7 @@
 package com.local.comfyuimobile.mcp
 
 import com.local.comfyuimobile.data.AppLogger
+import com.local.comfyuimobile.model.ResultMedia
 import com.local.comfyuimobile.network.ComfyClient
 import java.io.File
 import java.security.SecureRandom
@@ -43,7 +44,11 @@ class McpServerManager(
      * @param requestedPort 用户配置的端口。
      * @return 绑定成功的端口；失败抛异常由调用方提示。
      */
-    fun start(token: String, requestedPort: Int = DEFAULT_PORT): Int {
+    fun start(
+        token: String,
+        requestedPort: Int = DEFAULT_PORT,
+        resultSink: (suspend (ResultMedia, File) -> Unit)? = null,
+    ): Int {
         if (isRunning) return port
         require(token.isNotBlank()) { "缺少访问令牌，请先生成" }
         // 每次启动都重建（连同文件登记）：stop 会清掉临时文件，重启后不该还指着它们。
@@ -55,6 +60,7 @@ class McpServerManager(
                 currentWorkflowPath = currentWorkflowPath,
                 refreshCookie = refreshCookie,
                 clientId = clientId,
+                resultSink = resultSink,
             ),
             files = store,
         ) { "http://127.0.0.1:$port/files/" }

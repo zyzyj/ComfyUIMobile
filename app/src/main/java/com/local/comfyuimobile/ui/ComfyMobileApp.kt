@@ -91,7 +91,9 @@ import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.runtime.derivedStateOf
+import com.local.comfyuimobile.mcp.McpCallLog
 import com.local.comfyuimobile.mcp.McpServerManager
+import com.local.comfyuimobile.mcp.McpToolRegistry
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
@@ -742,7 +744,7 @@ private fun ConnectedScaffold(
                         MainPage.TASKS -> TaskScreen(state, viewModel)
                         MainPage.QUICK -> QuickGenScreen(state, viewModel)
                         MainPage.STORAGE -> StorageScreen(state, viewModel)
-                        MainPage.MCP -> McpScreen(state, viewModel, onBack = { goBack() })
+                        MainPage.MCP -> McpScreen(state, viewModel, onBack = onBack)
                     }
                 }
             }
