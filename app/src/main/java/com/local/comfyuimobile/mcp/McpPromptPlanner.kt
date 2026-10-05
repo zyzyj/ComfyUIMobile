@@ -1,6 +1,8 @@
 package com.local.comfyuimobile.mcp
 
 import com.local.comfyuimobile.data.ApiPromptParser
+import com.local.comfyuimobile.model.ParameterField
+import com.local.comfyuimobile.model.ParameterKind
 import org.json.JSONObject
 
 /**
@@ -39,6 +41,69 @@ internal object McpPromptPlanner {
      * @param basePrompt API 格式的工作流
      * @param request 用户/模型给的参数
      */
+    /**
+     * 列出工作流里可调的字段（v0.2.91，`describe_workflow` 用）。
+     *
+     * 只返回**可注入**的字段：连线型（linked）改不动，交给模型只会让它白试。
+     * 每项给出 key（注入时用）、name（节点里的字段名）、当前值、可选值或范围。
+     */
+    fun fields(basePrompt: JSONObject): List<ParameterField> =
+        runCatching { ApiPromptParser.parse(basePrompt) }.getOrNull()?.fields.orEmpty()
+            .filter { !it.linked && it.kind != ParameterKind.UNSUPPORTED }
+
+    /**
+     * 按 field key 注入任意参数（v0.2.91）。
+     *
+     * 与 [plan] 分开：提示词/模型那几个字段有专门的定位逻辑（要找节点、要判连线），
+     * 而这里是模型**明确指名**的 key，直接写即可。混在一起两边都难改。
+     *
+     * 未识别的 key 必须报出来——静默忽略会让模型以为改了 steps 其实没改，
+     * 出的图与预期不符还查不出原因。
+     */
+    fun applyParams(prompt: JSONObject, params: Map<String, String>): ParamsResult {
+        if (params.isEmpty()) return ParamsResult(prompt.toString(), emptyList(), emptyList())
+        val target = JSONObject(prompt.toString())
+        val available = fields(target).associateBy { it.key }
+        val applied = mutableListOf<String>()
+        val unknown = mutableListOf<String>()
+        for ((key, raw) in params) {
+            val field = available[key] ?: run {
+                unknown += key
+                return@run
+            }
+            val decoded = decodeForKind(raw, field.kind) ?: run {
+                unknown += key
+                return@run
+            }
+            val inputs = target.optJSONObject(field.nodeId)?.optJSONObject("inputs") ?: run {
+                unknown += key
+                return@run
+            }
+            inputs.put(field.name, decoded)
+            applied += "$key=$raw"
+        }
+        return ParamsResult(target.toString(), applied, unknown)
+    }
+
+    data class ParamsResult(
+        val promptJson: String,
+        val applied: List<String>,
+        val unknownKeys: List<String>,
+    )
+
+    /**
+     * 把模型给的字符串还原成工作流要的原生类型。
+     *
+     * 直接塞字符串有两种无声错误：要么服务端报类型错，要么（更糟）把 seed 的 "12"
+     * 当成别的。整数字段必须是数字。
+     */
+    private fun decodeForKind(raw: String, kind: ParameterKind): Any? = when (kind) {
+        ParameterKind.INTEGER -> raw.toLongOrNull() ?: raw.toDoubleOrNull()?.toLong()
+        ParameterKind.DECIMAL -> raw.toDoubleOrNull()
+        ParameterKind.BOOLEAN -> raw.toBooleanStrictOrNull()
+        else -> raw
+    }
+
     fun plan(basePrompt: JSONObject, request: GenerateRequest): Result {
         val prompt = JSONObject(basePrompt.toString())
         val parsed = runCatching { ApiPromptParser.parse(prompt) }.getOrNull()

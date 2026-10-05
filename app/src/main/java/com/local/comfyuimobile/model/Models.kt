@@ -120,7 +120,7 @@ data class AppNavigationRequest(
 )
 
 enum class MediaKind { IMAGE, VIDEO }
-enum class ResultSource { LOCAL, CLOUD }
+enum class ResultSource { LOCAL, CLOUD, MCP }
 
 data class ResultMedia(
     val jobId: String,

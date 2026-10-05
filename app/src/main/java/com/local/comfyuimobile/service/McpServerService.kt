@@ -13,6 +13,7 @@ import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.data.AppPreferences
 import com.local.comfyuimobile.data.AuthCookieProvider
 import com.local.comfyuimobile.data.LocalResultCache
+import com.local.comfyuimobile.model.ResultSource
 import com.local.comfyuimobile.mcp.McpServerManager
 import com.local.comfyuimobile.network.ComfyClient
 import kotlinx.coroutines.CoroutineScope
@@ -46,8 +47,8 @@ class McpServerService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopServer()
+        if (intent?.action == ACTION_STOP || intent?.action == ACTION_PANIC) {
+            if (intent.action == ACTION_PANIC) panicStop() else stopServer()
             return START_NOT_STICKY
         }
         val token = intent?.getStringExtra(EXTRA_TOKEN).orEmpty()
@@ -98,7 +99,7 @@ class McpServerService : Service() {
             // 0 会被 ServerSocket 理解成"系统随机分配"——UI 显示 23456、
             // 配置片段也生成 23456，服务却绑在随机端口上，AiCode 必然连不上。
             requestedPort = McpServerManager.resolvePort(stored?.mcpServerPort ?: 0),
-            resultSink = { media, file -> resultCache.add(media, file) },
+            resultSink = { media, file -> resultCache.add(media, file, ResultSource.MCP) },
             onSubmitted = { promptId -> adoptSubmittedJob(promptId) },
         )
         markRunning(true)
@@ -234,6 +235,14 @@ class McpServerService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        // 紧急停止：一键清队列 + 停服务。AI 批量提交后要能立刻刹车，
+        // 而翻设置太慢（任务在远端队列里，晚一秒就多跑一张）。
+        val panic = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, McpServerService::class.java).setAction(ACTION_PANIC),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("MCP 服务运行中")
@@ -247,16 +256,48 @@ class McpServerService : Service() {
                 },
             )
             .setContentIntent(open)
+            .addAction(
+                Notification.Action.Builder(
+                    android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_launcher_foreground),
+                    "紧急停止",
+                    panic,
+                ).build(),
+            )
             .setCategory(Notification.CATEGORY_SERVICE)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .build()
     }
 
+    /**
+     * 紧急停止（v0.2.91）：清空远端队列 + 停掉本服务。
+     *
+     * 关服务**不等于**停任务——任务在 ComfyUI 的队列里，所以两件事都要做。
+     * 队列操作失败也要继续停服务：至少本地不再接受新的出图请求。
+     */
+    private fun panicStop() {
+        val client = this.client
+        if (client != null) {
+            runCatching {
+                scope.launch {
+                    runCatching { client.clearPending() }
+                    runCatching {
+                        client.queue()
+                            .filter { it.state == com.local.comfyuimobile.model.JobState.RUNNING }
+                            .forEach { runCatching { client.cancel(it) } }
+                    }
+                }
+            }
+            AppLogger.warn("MCP 紧急停止：已请求清空队列并中断执行中的任务")
+        }
+        stopServer()
+    }
+
     companion object {
         const val CHANNEL_ID = "comfy_mcp"
         private const val FOREGROUND_ID = 4201
         const val ACTION_STOP = "com.local.comfyuimobile.mcp.STOP"
+        const val ACTION_PANIC = "com.local.comfyuimobile.mcp.PANIC"
         const val EXTRA_TOKEN = "mcp_token"
 
         /**

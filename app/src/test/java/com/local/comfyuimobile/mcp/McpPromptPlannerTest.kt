@@ -36,7 +36,66 @@ class McpPromptPlannerTest {
         checkpoint: String? = null,
         lora: String? = null,
         count: Int = 1,
-    ) = GenerateRequest(prompt, negative, workflow, checkpoint, lora, count)
+        params: Map<String, String> = emptyMap(),
+    ) = GenerateRequest(prompt, negative, workflow, checkpoint, lora, count, params)
+
+    // ===== v0.2.91：任意参数注入 =====
+
+    @Test
+    fun applyParamsWritesIntegerFieldsAsNumbers() {
+        // seed/steps 这类整数字段必须是数字：直接塞字符串会让服务端报类型错，
+        // 或者（更糟）被当成别的东西。
+        val result = McpPromptPlanner.applyParams(apiWorkflow(), mapOf("3::steps" to "30"))
+        val prompt = JSONObject(result.promptJson)
+        val steps = prompt.getJSONObject("3").getJSONObject("inputs").get("steps")
+        assertTrue("steps 必须是数字而非字符串", steps is Int || steps is Long)
+        assertEquals(30L, (steps as Number).toLong())
+        assertEquals(1, result.applied.size)
+        assertTrue(result.unknownKeys.isEmpty())
+    }
+
+    @Test
+    fun applyParamsReportsUnknownKeys() {
+        // 静默忽略最危险：模型以为改了其实没改。必须报出来。
+        val result = McpPromptPlanner.applyParams(apiWorkflow(), mapOf("3::nonexistent" to "1"))
+        assertTrue(result.unknownKeys.contains("3::nonexistent"))
+        assertTrue(result.applied.isEmpty())
+    }
+
+    @Test
+    fun applyParamsRejectsNonNumericForIntegerField() {
+        val result = McpPromptPlanner.applyParams(apiWorkflow(), mapOf("3::steps" to "abc"))
+        assertTrue("类型不对应算未识别，不该写坏工作流", result.unknownKeys.contains("3::steps"))
+    }
+
+    @Test
+    fun applyParamsDoesNotMutateInput() {
+        val base = apiWorkflow()
+        McpPromptPlanner.applyParams(base, mapOf("3::steps" to "30"))
+        assertEquals(20, base.getJSONObject("3").getJSONObject("inputs").getInt("steps"))
+    }
+
+    @Test
+    fun applyParamsWithEmptyMapIsNoop() {
+        val base = apiWorkflow()
+        val result = McpPromptPlanner.applyParams(base, emptyMap())
+        assertTrue(result.unknownKeys.isEmpty())
+        assertTrue(result.applied.isEmpty())
+    }
+
+    @Test
+    fun fieldsExposesInjectableKeys() {
+        // describe_workflow 靠它给模型 key 清单；至少要有采样器那几个整数字段。
+        val keys = McpPromptPlanner.fields(apiWorkflow()).map { it.key }
+        assertTrue("应能列出 steps", keys.any { it.endsWith("steps") })
+        // 连线字段（如 KSampler 的 positive）改不动，不能出现在清单里。
+        assertTrue("连线字段不该被列出", keys.none { it.endsWith("positive") })
+    }
+
+    @Test
+    fun fieldsIsEmptyForInvalidWorkflow() {
+        assertTrue(McpPromptPlanner.fields(JSONObject("{\"nodes\":[]}")).isEmpty())
+    }
 
     private fun ok(result: McpPromptPlanner.Result): McpPromptPlanner.Result.Ok {
         assertTrue("期望成功，实际 $result", result is McpPromptPlanner.Result.Ok)

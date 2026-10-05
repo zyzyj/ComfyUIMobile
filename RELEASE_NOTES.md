@@ -1,3 +1,46 @@
+# v0.2.91 — 清队列紧急刹车 + describe_workflow + 结果页区分 AI 生成
+
+第二批 MCP 补缺（第一批进度优化已在 v0.2.90 完成）。
+
+## 2.1 紧急刹车
+
+此前 `generate` / `job_status` 都**无法中止** AI 已提交的任务——**关掉 MCP 服务
+不等于停任务**（任务在远端 ComfyUI 的队列里）。
+
+- 新增 MCP 工具 `cancel_jobs`：不传 `job_id` 清空整个待执行队列并中断执行中的任务；
+  传 `job_id` 只中止那一个
+- 常驻通知加「紧急停止」按钮：一键清队列 + 停服务，不用翻设置
+
+实现上修正一处清单的误判：`/interrupt` 是 `ComfyClient.cancel(job)` 的**内部动作**
+（它确认任务仍在 `queue_running` 后才发），不是公开方法，所以执行中的任务走 `cancel`。
+
+## 2.2 结果页区分 AI 生成
+
+MCP 出图也存进 `LocalResultCache`，此前与 App 内保存的图混在一起分不出。
+
+- `ResultSource` 增加 `MCP`，MCP 落盘时标记
+- 结果页「本地」视图加「仅 AI 生成」筛选开关（默认不筛，不改变既有习惯）
+
+## 2.4 `describe_workflow` + params 注入
+
+此前 `generate` 只有 prompt / negative / checkpoint / lora / count——**尺寸、steps、
+cfg、采样器、seed 全动不了**，AI 说"帮我调一下"无从下手。
+
+- 新增 `describe_workflow`：列出工作流里可调的字段（key、当前值、可选值或范围），
+  常用项（steps/cfg/sampler/seed/尺寸）排在最前
+- `generate` 支持 `params={key: value}` 注入任意字段
+
+两条关键约束：
+- **未识别的 key 必须报错**——静默忽略会让模型以为改了其实没改，出的图与预期
+  不符还查不出原因
+- **整数字段必须写成数字**：seed/steps 塞字符串会让服务端报类型错，或（更糟）被
+  当成别的东西
+- 格式判定（是否 API 格式）统一走 `readApiWorkflow`，`generate` 与
+  `describe_workflow` 共用，不再两处各判一次
+
+## 工具清单（现 6 个）
+
+list_models / list_workflows / describe_workflow / generate / job_status / cancel_jobs
 # v0.2.90 — 生图进度可见性 + MCP 出图纳入界面跟踪 + job_status 判据统一
 
 ## 1 · WebSocket 重连间隔 2s → 200ms
