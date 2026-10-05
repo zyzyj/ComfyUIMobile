@@ -59,7 +59,7 @@ internal class McpFileStore(
     private fun sweepOrphans() {
         runCatching {
             cacheDir.listFiles()?.forEach { file ->
-                if (file.isFile && file.name !in entries) runCatching { file.delete() }
+                if (file.isFile && !entries.containsKey(file.name)) runCatching { file.delete() }
             }
         }
     }
