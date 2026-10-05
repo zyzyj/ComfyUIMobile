@@ -75,6 +75,11 @@ data class StoredSettings(
      */
     val mcpServerEnabled: Boolean = false,
     val mcpServerToken: String = "",
+    /**
+     * MCP 端口（v0.2.88）：用户改过一次就一直用。0 表示从未设置，用 [com.local.comfyuimobile.mcp.McpServerManager.DEFAULT_PORT]。
+     * 端口持久化是为了不让 AiCode 那三行配置悄悄失效——端口一变就要重新复制配置。
+     */
+    val mcpServerPort: Int = 0,
     // v0.1.90：AI Studio 平台账号（Cookie 即凭证）。
     val aiStudioAccounts: List<AiStudioAccount> = emptyList(),
     val aiStudioActiveId: String = "",
@@ -104,6 +109,7 @@ class AppPreferences(private val context: Context) {
         val quickWorkflowPath = stringPreferencesKey("quick_workflow_path")
         val mcpServerEnabled = booleanPreferencesKey("mcp_server_enabled")
         val mcpServerToken = stringPreferencesKey("mcp_server_token")
+        val mcpServerPort = intPreferencesKey("mcp_server_port")
         val aiStudioAccounts = stringPreferencesKey("ai_studio_accounts")
         val aiStudioActiveId = stringPreferencesKey("ai_studio_active_id")
     }
@@ -136,6 +142,7 @@ class AppPreferences(private val context: Context) {
             quickWorkflowPath = preferences[Keys.quickWorkflowPath].orEmpty(),
             mcpServerEnabled = preferences[Keys.mcpServerEnabled] ?: false,
             mcpServerToken = preferences[Keys.mcpServerToken].orEmpty(),
+            mcpServerPort = preferences[Keys.mcpServerPort] ?: 0,
             aiStudioAccounts = decodeAiStudioAccounts(preferences[Keys.aiStudioAccounts].orEmpty()),
             aiStudioActiveId = preferences[Keys.aiStudioActiveId].orEmpty(),
         )
@@ -283,6 +290,11 @@ class AppPreferences(private val context: Context) {
 
     suspend fun setMcpServerToken(token: String) {
         context.dataStore.edit { it[Keys.mcpServerToken] = token }
+    }
+
+    /** 持久化 MCP 端口（0 表示回到默认）。 */
+    suspend fun setMcpServerPort(port: Int) {
+        context.dataStore.edit { it[Keys.mcpServerPort] = port }
     }
 
     /**

@@ -179,9 +179,15 @@ internal class McpServer(
     private fun serveFile(id: String, output: BufferedOutputStream) {
         val entry = files.get(id)
         if (entry == null) {
+            McpCallLog.log("GET /files/${id.take(8)}…", ok = false, detail = "不存在或已过期")
             output.write(McpHttp.jsonResponse("""{"error":"not found or expired"}""", status = 404))
             return
         }
+        McpCallLog.log(
+            "GET /files/${id.take(8)}…",
+            ok = true,
+            detail = "${entry.filenameDisplay()} ${formatBytes(entry.size)}",
+        )
         output.write(McpHttp.fileHeader(entry.size, entry.contentType))
         runCatching { entry.file.inputStream().use { it.copyTo(output, FILE_COPY_BUFFER) } }
             .onFailure { AppLogger.warn("MCP 发送文件失败：${entry.file.name}", it) }
@@ -205,12 +211,16 @@ internal class McpServer(
             ?.let { listOf("Mcp-Session-Id" to it) }
             .orEmpty()
 
+        val startedAt = System.currentTimeMillis()
         val result = tools.dispatch(rpc.method, rpc.params, rpc.id)
+        val elapsed = System.currentTimeMillis() - startedAt
         if (result == null) {
-            // 通知：无 id，回 202 空体（AiCode 按 spec 期望这个形态）。
+            // 通知：无 id，回 202 空体（AiCode 按 spec 期望这个形态）。通知不进日志
+            // ——它没有结果，每次握手都记一条只会淹没真正的调用。
             if (rpc.id == null) {
                 output.write(McpHttp.emptyResponse(202))
             } else {
+                McpCallLog.log(rpc.method, ok = false, detail = "未知方法（${elapsed}ms）")
                 val body = McpProtocol.error(
                     rpc.id,
                     McpProtocol.ErrorCode.METHOD_NOT_FOUND,
@@ -220,12 +230,21 @@ internal class McpServer(
             }
             return
         }
+        // 工具调用记一行（成功带耗时；失败带原因——isError 与 JSON-RPC error 都算失败）。
+        val failed = result.optBoolean("isError", false) || result.has("error")
+        McpCallLog.log(rpc.method, ok = !failed, detail = "${elapsed}ms")
         output.write(McpHttp.jsonResponse(result.toString(), extraHeaders = sessionHeader))
+    }
+
+    /** 日志用的人读字节大小。 */
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1 shl 20 -> "%.1fMB".format(bytes / 1048576.0)
+        bytes >= 1 shl 10 -> "%.1fKB".format(bytes / 1024.0)
+        else -> "${bytes}B"
     }
 
     private companion object {
         const val LOOPBACK = "127.0.0.1"
-
         /** 单次请求读超时：对端连上却不发数据时，不让线程永久占着。 */
         const val READ_TIMEOUT_MILLIS = 30_000
 

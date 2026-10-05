@@ -268,6 +268,11 @@ data class AppUiState(
     val mcpServerEnabled: Boolean = false,
     /** MCP server 实际监听端口（开启后才有意义；0 表示未启动）。 */
     val mcpServerPort: Int = 0,
+    /**
+     * 用户配置的 MCP 端口（v0.2.88）。0 表示未设置（用 [com.local.comfyuimobile.mcp.McpServerManager.DEFAULT_PORT]）。
+     * 与 [mcpServerPort]（实际绑定）分开：配置改了但服务未重启时两者不同。
+     */
+    val mcpServerConfiguredPort: Int = 0,
     /** MCP 的 Bearer token，供用户复制到 AiCode 配置里。 */
     val mcpServerToken: String = "",
     val quickWorkflowName: String? = null,
