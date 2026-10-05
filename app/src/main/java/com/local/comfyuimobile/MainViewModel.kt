@@ -3188,6 +3188,95 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** v0.2.33：打开全屏图片查看器（由根 Box 以浮层渲染，不用独立 Dialog 窗口）。 */
+    fun openGalleryViewer(items: List<ResultMedia>, initialIndex: Int, fromResults: Boolean) {
+        if (items.isEmpty()) return
+        _state.update {
+            it.copy(
+                galleryViewer = GalleryViewerRequest(
+                    items = items,
+                    initialIndex = initialIndex.coerceIn(items.indices),
+                    fromResults = fromResults,
+                ),
+            )
+        }
+    }
+
+    fun dismissGalleryViewer() {
+        _state.update { it.copy(galleryViewer = null) }
+    }
+
+    /**
+     * 在查看器里删掉一张本地缓存后，把它从浮层列表里移除；
+     * 删到最后一张时直接关掉查看器，避免停在一个空列表上。
+     */
+    fun removeFromGalleryViewer(media: ResultMedia) {
+        _state.update { current ->
+            val request = current.galleryViewer ?: return@update current
+            val remaining = request.items.filterNot { it.stableKey() == media.stableKey() }
+            current.copy(
+                galleryViewer = if (remaining.isEmpty()) {
+                    null
+                } else {
+                    request.copy(items = remaining, initialIndex = request.initialIndex.coerceIn(remaining.indices))
+                },
+            )
+        }
+    }
+
+    private suspend fun ensureBridgeReadyForQuick() {
+        // 参数页可能在快捷页之后加载了别的工作流，桥接画布因此指向了别的图；
+        // 快捷生成前必须确保桥接侧就是快捷页选中的工作流，否则参数会写错图。
+        val path = _state.value.quickWorkflowPath ?: return
+        if (bridgeLoadedPath != path) {
+            val raw = readWorkflowWithFallback(_state.value.activeServer?.baseUrl.orEmpty(), path)
+            (bridge ?: error("前端桥接不可用")).loadWorkflow(rawJson = raw, workflowPath = path)
+            bridgeLoadedPath = path
+        }
+    }
+
+    // ===== v0.1.83 批量 LoRA 对比 =====
+
+    /**
+     * 开始一次批量对比：固定种子与其他参数，只轮换 LoRA 字段的值，逐张提交。
+     *
+     * 候选来自快捷参数面板里 LoRA 下拉的 options（服务器 /object_info 枚举），
+     * 已在 UI 层做过启发式标黄，这里只做截断与兑底校验。
+     */
+    fun startBatchCompare(fieldKey: String, candidates: List<String>) {
+        if (batchJob?.isActive == true) return
+        val st = _state.value
+        val workflowPath = st.quickWorkflowPath ?: return
+        val workflowName = st.quickWorkflowName ?: return
+        if (st.status != ConnectionStatus.CONNECTED || !st.bridgeReady) {
+            _state.update { it.copy(notice = "尚未连接服务器或页面未就绪，无法开始批量") }
+            return
+        }
+        val field = st.quickFields.firstOrNull { it.key == fieldKey } ?: return
+        val queue = BatchCompareLogic.truncate(candidates)
+        if (queue.isEmpty()) return
+        val seed = st.quickFields
+            .firstOrNull { it.kind == ParameterKind.INTEGER && it.name.contains("seed", ignoreCase = true) }
+            ?.displayValue.orEmpty()
+        AppLogger.info("批量对比开始：$workflowPath，LoRA 字段=${field.key}，候选 ${queue.size} 项，种子=$seed")
+        batchCancelRequested = false
+        batchPauseGate.value = false
+        _batchRun.value = BatchRun(
+            id = UUID.randomUUID().toString().take(8),
+            workflowPath = workflowPath,
+            workflowName = workflowName,
+            loraFieldKey = fieldKey,
+            loraNodeTitle = field.nodeTitle.ifBlank { field.nodeType },
+            seed = seed,
+            originalLoraValue = field.displayValue,
+            pending = queue,
+            phase = BatchPhase.RUNNING,
+            startedAt = System.currentTimeMillis(),
+            plannedTotal = queue.size,
+        )
+        batchJob = viewModelScope.launch { runBatchLoop() }
+    }
+
     // ===== v0.2.52 LoRA 强度矩阵（控制变量法） =====
 
     /**
