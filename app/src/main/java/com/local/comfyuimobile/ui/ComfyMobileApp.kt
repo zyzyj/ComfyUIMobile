@@ -265,6 +265,7 @@ import com.local.comfyuimobile.model.BatchCompareLogic
 import com.local.comfyuimobile.model.BatchPhase
 import com.local.comfyuimobile.model.BatchRun
 import com.local.comfyuimobile.model.ConnectionStatus
+import com.local.comfyuimobile.model.JobProgressText
 import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.JobSummary
 import com.local.comfyuimobile.model.MediaKind
