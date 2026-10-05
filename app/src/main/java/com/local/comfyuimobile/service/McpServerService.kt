@@ -90,10 +90,13 @@ class McpServerService : Service() {
                 }
             },
             clientId = "comfy-mobile-mcp",
-            resultSink = { media, file -> resultCache.add(media, file) },
         )
         this.manager = manager
-        val bound = manager.start(resolvedToken, requestedPort = stored?.mcpServerPort ?: 0)
+        val bound = manager.start(
+            resolvedToken,
+            requestedPort = stored?.mcpServerPort ?: 0,
+            resultSink = { media, file -> resultCache.add(media, file) },
+        )
         markRunning(true)
         AppLogger.info("MCP 前台服务已就绪：127.0.0.1:$bound")
         startForeground(FOREGROUND_ID, buildNotification(bound))
