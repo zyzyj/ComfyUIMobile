@@ -144,6 +144,28 @@ class McpFileStoreTest {
     }
 
     @Test
+    fun orphanFilesAreSweptOnNewFile() {
+        // 进程在下载中途被强杀会留下未登记的半截文件；newFile 必须顺手扫掉。
+        val store = store()
+        val dir = File(tempFolder.root, "mcp_files")
+        val leftover = File(dir, "deadbeef.png").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        assertTrue(leftover.exists())
+        store.newFile("png")
+        assertFalse("未登记的孤儿文件应被清理", leftover.exists())
+    }
+
+    @Test
+    fun registeredFilesSurviveOrphanSweep() {
+        // 清理只针对未登记文件，不能误伤已登记的（否则 /files 会 404）。
+        val store = store()
+        val id = store.write(byteArrayOf(9))
+        val file = store.get(id)!!.file
+        store.newFile("png")
+        assertTrue("已登记的文件不能被孤儿清理误删", file.exists())
+        assertNotNull(store.get(id))
+    }
+
+    @Test
     fun contentTypeIsInferredFromExtension() {
         assertEquals("image/png", McpFileStore.contentTypeOf("png"))
         assertEquals("image/jpeg", McpFileStore.contentTypeOf("JPG"))

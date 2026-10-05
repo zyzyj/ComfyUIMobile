@@ -30,6 +30,7 @@ internal class ComfyMcpHost(
 ) : McpToolHost {
 
     override suspend fun listModels(type: String?): String {
+        requireConnected()
         val info = client.objectInfo()
         val wanted = type?.lowercase()
         val lines = mutableListOf<String>()
@@ -80,6 +81,7 @@ internal class ComfyMcpHost(
     }
 
     override suspend fun listWorkflows(): String {
+        requireConnected()
         val entries = client.listWorkflows()
             .filter { !it.isDirectory && it.path.endsWith(".json", ignoreCase = true) }
         if (entries.isEmpty()) return "服务器上没有可用的工作流。"
@@ -104,6 +106,7 @@ internal class ComfyMcpHost(
     }
 
     override suspend fun generate(request: GenerateRequest, awaitMillis: Long): GenerateOutcome {
+        requireConnected()
         val path = request.workflow?.takeIf { it.isNotBlank() }
             ?: currentWorkflowPath()?.takeIf { it.isNotBlank() }
             ?: return GenerateOutcome.Failed(
@@ -147,10 +150,26 @@ internal class ComfyMcpHost(
         return finishOrRunning(response.promptId, awaitMillis, startedAt = System.currentTimeMillis())
     }
 
-    override suspend fun jobStatus(jobId: String): GenerateOutcome =
+    override suspend fun jobStatus(jobId: String): GenerateOutcome {
+        requireConnected()
         // 查询时不再长等：已经知道任务在跑了，给一次短窗口即可，避免把 job_status 变成
         // 第二个会卡住的 generate。
-        finishOrRunning(jobId, awaitMillis = 0L, startedAt = System.currentTimeMillis())
+        return finishOrRunning(jobId, awaitMillis = 0L, startedAt = System.currentTimeMillis())
+    }
+
+    /**
+     * 未连接 ComfyUI 时给出**可操作**的提示，而不是网络层的异常。
+     *
+     * 服务可以在未连接时先启动（通知也会提示），但每个工具都该明确告诉模型
+     * "现在不能用、该做什么"，否则模型会把连接拒绝当成工具本身坏了。
+     */
+    private fun requireConnected() {
+        if (client.serverUrl().isBlank()) {
+            throw IllegalStateException(
+                "App 尚未连接 ComfyUI：请先打开 ComfyUIMobile 连接服务器（账号页或设置），然后重试",
+            )
+        }
+    }
 
     private suspend fun finishOrRunning(
         promptId: String,
