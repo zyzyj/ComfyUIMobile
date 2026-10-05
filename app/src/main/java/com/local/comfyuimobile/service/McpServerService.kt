@@ -99,11 +99,28 @@ class McpServerService : Service() {
             // 配置片段也生成 23456，服务却绑在随机端口上，AiCode 必然连不上。
             requestedPort = McpServerManager.resolvePort(stored?.mcpServerPort ?: 0),
             resultSink = { media, file -> resultCache.add(media, file) },
+            onSubmitted = { promptId -> adoptSubmittedJob(promptId) },
         )
         markRunning(true)
         AppLogger.info("MCP 前台服务已就绪：127.0.0.1:$bound")
         startForeground(FOREGROUND_ID, buildNotification(bound))
         observePreferences(created, bound)
+    }
+
+    /**
+     * 把 MCP 提交的任务并入"本机提交过"的偏好集合（v0.2.90）。
+     *
+     * ViewModel 观察这个偏好：id 一进来就会被纳入界面任务跟踪（进度、通知、结果页）。
+     * 走偏好而不是直接回调 ViewModel，是因为服务可能比界面先起、也可能在界面被
+     * 回收后仍然活着——偏好是两者之间唯一稳定的通道。
+     */
+    private suspend fun adoptSubmittedJob(promptId: String) {
+        if (promptId.isBlank()) return
+        val preferences = AppPreferences(this)
+        val current = runCatching { preferences.settings.first().submittedJobs }.getOrDefault(emptySet())
+        if (promptId in current) return
+        runCatching { preferences.saveSubmittedJobs(current + promptId) }
+            .onFailure { AppLogger.warn("MCP 任务登记失败：$promptId", it) }
     }
 
     /**

@@ -15,6 +15,7 @@ import com.local.comfyuimobile.data.AppPreferences
 import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.data.CachePolicy
 import com.local.comfyuimobile.data.LocalResultCache
+import com.local.comfyuimobile.model.JobProgressText
 import com.local.comfyuimobile.network.ComfyClient
 import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.network.ResultParser
@@ -66,6 +67,7 @@ class JobMonitorService : Service() {
         serverUrls.remove(promptId)
         progressUpdatedAt.remove(promptId)
         staleNotified.remove(promptId)
+        startedAt.remove(promptId)
         authCookies.remove(promptId)
     }
 
@@ -83,6 +85,8 @@ class JobMonitorService : Service() {
      * 轮询线程据此把"长时间没新进度"的通知改成不确定进度条，至少不骗人。
      */
     private val progressUpdatedAt = ConcurrentHashMap<String, Long>()
+    /** 各任务的开始时刻（v0.2.90）：通知里的"已用时间"由它算出，不依赖网络。 */
+    private val startedAt = ConcurrentHashMap<String, Long>()
     /** 超过这么久没收到新进度，就把通知改成不确定进度条。 */
     private val progressStaleMillis = 20_000L
     /** 已把通知切成"不确定进度"的任务；重新收到真实进度时移除。 */
@@ -196,11 +200,14 @@ class JobMonitorService : Service() {
             // 记下"刚收到真实进度"，轮询线程据此判断通知里的进度是不是已经陈旧。
             progressUpdatedAt[promptId] = System.currentTimeMillis()
             staleNotified.remove(promptId)
+            val elapsed = startedAt[promptId]?.let { System.currentTimeMillis() - it }
             startForeground(
                 FOREGROUND_ID,
                 notification(
-                    "正在生成${if (percent >= 0) " $percent%" else ""}",
-                    listOf(name, node).filter { it.isNotBlank() }.joinToString(" · "),
+                    // 标题给"节点名/已用时间"，副标题给工作流名——与界面卡片共用
+                    // JobProgressText，避免两处各写一套文案。
+                    JobProgressText.title(node, elapsed, percent.takeIf { it >= 0 }),
+                    JobProgressText.subtitle(node, name),
                     ongoing = true,
                     progress = percent,
                     promptId = promptId,
@@ -220,6 +227,7 @@ class JobMonitorService : Service() {
         workflowNames[promptId] = workflowName
         workflowPaths[promptId] = workflowPath
         serverUrls[promptId] = baseUrl
+        startedAt[promptId] = System.currentTimeMillis()
         AppLogger.info("后台开始监控任务：$promptId，工作流=$workflowName")
         startForeground(
             FOREGROUND_ID,

@@ -2909,7 +2909,9 @@ private fun TaskScreen(state: AppUiState, viewModel: MainViewModel) {
         }
         if (jobs.isEmpty()) EmptyState(Icons.AutoMirrored.Filled.List, "暂无任务记录")
         else LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(jobs, key = { it.id }) { job -> JobCard(job, viewModel, tracked = state.activeJobId == job.id) }
+            items(jobs, key = { it.id }) { job ->
+                JobCard(job, viewModel, tracked = state.activeJobId == job.id, state = state)
+            }
         }
     }
 }
@@ -3875,8 +3877,19 @@ private fun QuickParamRow(
 }
 
 @Composable
-private fun JobCard(job: JobSummary, viewModel: MainViewModel, tracked: Boolean) {
+private fun JobCard(
+    job: JobSummary,
+    viewModel: MainViewModel,
+    tracked: Boolean,
+    state: AppUiState,
+) {
     val trackable = job.state in setOf(JobState.RUNNING, JobState.PENDING)
+    // 已用时间只在跟踪本任务时有意义（generationStartedAt 属于当前跟踪的那个）。
+    val elapsed = if (tracked) {
+        state.generationStartedAt?.let { System.currentTimeMillis() - it }
+    } else null
+    val node = job.currentNode?.takeIf { it.isNotBlank() }
+    val percent = job.progress?.let { (it * 100).toInt() }?.takeIf { it > 0 }
     OutlinedCard(
         Modifier
             .fillMaxWidth()
@@ -3898,7 +3911,13 @@ private fun JobCard(job: JobSummary, viewModel: MainViewModel, tracked: Boolean)
                 )
             }
             if (tracked) {
-                Text("正在跟踪中 · 点击可查看参数", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                // v0.2.90：节点名 + 已用时间为主，百分比降级为辅助。反代下百分比
+                // 经常丢失且不可补发，节点名却能被重连补发救回来。
+                Text(
+                    JobProgressText.compact(node, elapsed, percent),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             } else if (trackable) {
                 Text("点击接管此任务并打开对应工作流", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             }

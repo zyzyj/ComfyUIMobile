@@ -3226,6 +3226,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         generating = false,
                         nodeProblems = emptyMap(),
                         activeJobId = response.promptId,
+                        generationStartedAt = System.currentTimeMillis(),
                         currentExecutingNodeId = null,
                         generationProgress = null,
                         generationMessage = "已经加入队列，等待服务器执行",
@@ -3605,6 +3606,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 submittedJobIds = submitted,
                 activeJobId = response.promptId,
+                generationStartedAt = System.currentTimeMillis(),
                 currentExecutingNodeId = null,
                 generationProgress = null,
                 generationMessage = "强度测试 ${_strengthRun.value?.let { r -> "${r.finished + 1}/${r.total}" }.orEmpty()}：${task.label}",
@@ -3789,6 +3791,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 submittedJobIds = submitted,
                 activeJobId = response.promptId,
+                generationStartedAt = System.currentTimeMillis(),
                 currentExecutingNodeId = null,
                 generationProgress = null,
                 generationMessage = "批量 ${_batchRun.value?.let { r -> "${r.finished + 1}/${r.total}" }.orEmpty()}：$loraName",
@@ -3887,6 +3890,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         generating = false,
                         nodeProblems = emptyMap(),
                         activeJobId = response.promptId,
+                        generationStartedAt = System.currentTimeMillis(),
                         currentExecutingNodeId = null,
                         generationProgress = null,
                         generationMessage = "已经加入队列，等待服务器执行",
@@ -4731,6 +4735,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update {
             it.copy(
                 activeJobId = job.id,
+                generationStartedAt = System.currentTimeMillis(),
                 currentExecutingNodeId = ExecutionNodeResolver.resolve(
                     job.currentNode,
                     it.selectedWorkflow?.nodes.orEmpty(),
@@ -5417,6 +5422,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _state.update {
                             it.copy(
                                 activeJobId = id,
+                                generationStartedAt = generationStartedAt ?: System.currentTimeMillis(),
                                 currentExecutingNodeId = null,
                                 // v0.1.76：执行开始阶段（加载模型/CLIP/VAE）没有进度消息，
                                 // 置 null 让 UI 显示不确定进度条，不再停在 0% 假装卡住。
@@ -5544,6 +5550,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _state.update {
                             it.copy(
                                 activeJobId = id,
+                                generationStartedAt = generationStartedAt ?: System.currentTimeMillis(),
                                 currentExecutingNodeId = nodeId.ifBlank { null },
                                 generationProgress = null,
                                 generationMessage = "生成失败：$detail",
@@ -5783,6 +5790,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 ui.copy(
                     jobs = updatedJobs,
                     activeJobId = active.id,
+                    generationStartedAt = generationStartedAt ?: System.currentTimeMillis(),
                     currentExecutingNodeId = resolvedNode,
                     generationProgress = progress,
                     generationMessage = when {
@@ -6087,6 +6095,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { ui ->
                 if (promptId != ui.activeJobId && promptId !in ui.submittedJobIds) ui else ui.copy(
                     activeJobId = promptId,
+                    generationStartedAt = generationStartedAt ?: System.currentTimeMillis(),
                     currentExecutingNodeId = resolvedNodeId,
                     generationProgress = progress ?: ui.generationProgress,
                     generationMessage = executionMessage(
@@ -6632,8 +6641,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val TERMINAL_LOCALE_FIX =
             " locale -a 2>/dev/null | grep -qi '^C\\.UTF-8\$' && " +
                 "export LANG=C.UTF-8 LC_ALL=C.UTF-8; true"
-        /** 静默重开 WebSocket 的最小退避。 */
-        const val WS_RECONNECT_MIN_MS = 2_000L
+        /**
+         * 有活跃任务时的重连间隔（v0.2.90：2s → 200ms）。
+         *
+         * 反代实测每约 2.3 秒掐断一次 WebSocket，而重连要等 2 秒——断线占比一度
+         * 高达 50%。ComfyUI 重连**不补发百分比**（只补发当前节点名），所以断线
+         * 期间的 progress 是永久丢失，缩短间隔是唯一直接有效的办法。
+         *
+         * 只在有活跃任务时用这个间隔（见 scheduleReconnect 的 hasRunningJob）；
+         * 空闲时仍走指数退避省电，别把省电逻辑一起改掉。
+         */
+        const val WS_RECONNECT_MIN_MS = 200L
         /** WebSocket 重连退避封顶。反代抬断频繁，等太久会让进度长时间不动。 */
         const val WS_RECONNECT_MAX_MS = 10_000L
         const val DRAFT_SAVE_DEBOUNCE_MILLIS = 250L

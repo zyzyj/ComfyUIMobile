@@ -28,6 +28,9 @@ internal interface McpToolHost {
 
     /** 查一次已有任务的状态。 */
     suspend fun jobStatus(jobId: String): GenerateOutcome
+
+    /** 批量查询多个任务的状态（v0.2.90）：返回给模型的文本，不走 GenerateOutcome。 */
+    suspend fun jobStatusBatch(ids: List<String>): String
 }
 
 internal data class GenerateRequest(
@@ -44,7 +47,24 @@ internal sealed interface GenerateOutcome {
     data class Done(val jobId: String, val media: List<McpMedia>) : GenerateOutcome
 
     /** 仍在跑：告诉对端 job_id 与已等时长，让它自行决定是否轮询。 */
-    data class Running(val jobId: String, val elapsedSec: Long, val message: String) : GenerateOutcome
+    data class Running(
+        val jobId: String,
+        val elapsedSec: Long,
+        val message: String,
+        /** 队内位置（1 起）；排队时才有意义。 */
+        val position: Int? = null,
+    ) : GenerateOutcome
+
+    /**
+     * 排队中（v0.2.90）：与 running 分开——排队时模型不该反复查询，
+     * 而运行中已经开始了，值得继续等。
+     */
+    data class Queued(
+        val jobId: String,
+        val elapsedSec: Long,
+        val position: Int?,
+        val message: String,
+    ) : GenerateOutcome
 
     data class Failed(val message: String) : GenerateOutcome
 }
@@ -116,11 +136,28 @@ internal class McpToolRegistry(
         TOOL_LIST_WORKFLOWS -> ToolResult(host.listWorkflows())
         TOOL_GENERATE -> renderGenerate(host.generate(parseGenerate(args), generateAwaitMillis))
         TOOL_JOB_STATUS -> {
-            val jobId = args.optString("job_id").trim()
-            if (jobId.isBlank()) throw IllegalArgumentException("缺少 job_id")
-            renderGenerate(host.jobStatus(jobId))
+            val ids = parseJobIds(args)
+            // 提交多个任务后逐个查要好多轮往返——支持一次传多个 id。
+            if (ids.size > 1) ToolResult(host.jobStatusBatch(ids))
+            else renderGenerate(host.jobStatus(ids.first()))
         }
         else -> throw IllegalArgumentException("未知工具：$name")
+    }
+
+    /** job_id 支持单个字符串或数组。缺参数时明确报错，不要静默当空。 */
+    private fun parseJobIds(args: JSONObject): List<String> {
+        val single = args.optString("job_id").trim()
+        val array = args.optJSONArray("job_ids")
+        val ids = buildList {
+            if (single.isNotBlank()) add(single)
+            if (array != null) {
+                for (i in 0 until array.length()) {
+                    array.optString(i).trim().takeIf { it.isNotBlank() }?.let { add(it) }
+                }
+            }
+        }.distinct().take(MAX_BATCH_IDS)
+        if (ids.isEmpty()) throw IllegalArgumentException("缺少 job_id（或 job_ids）")
+        return ids
     }
 
     private fun parseGenerate(args: JSONObject): GenerateRequest {
@@ -141,6 +178,16 @@ internal class McpToolRegistry(
     /** 把结果渲染成给模型看的文本。图片只给 URL——AiCode 不渲染 image content block。 */
     private fun renderGenerate(outcome: GenerateOutcome): ToolResult = when (outcome) {
         is GenerateOutcome.Failed -> ToolResult("生成失败：${outcome.message}", isError = true)
+        is GenerateOutcome.Queued -> ToolResult(
+            JSONObject()
+                .put("status", "queued")
+                .put("job_id", outcome.jobId)
+                .put("elapsed_sec", outcome.elapsedSec)
+                .apply { outcome.position?.let { put("position", it) } }
+                .put("message", outcome.message)
+                .put("hint", "排队中，过几秒再用 job_status 查；排队不影响你先做别的")
+                .toString(),
+        )
         is GenerateOutcome.Running -> ToolResult(
             JSONObject()
                 .put("status", "running")
@@ -217,10 +264,18 @@ internal class McpToolRegistry(
         put(
             McpProtocol.toolDescriptor(
                 TOOL_JOB_STATUS,
-                "查询一次生成任务的状态；完成则返回图片 URL。",
+                "查询一次生成任务的状态，返回 queued / running / done / failed。" +
+                    "可传 job_id（单个）或 job_ids（数组，最多 16 个）一次查多个；完成时给图片 URL。",
                 schema(
-                    JSONObject().put("job_id", JSONObject().put("type", "string").put("description", "generate 返回的 job_id")),
-                    required = JSONArray().put("job_id"),
+                    JSONObject()
+                        .put("job_id", JSONObject().put("type", "string").put("description", "generate 返回的 job_id"))
+                        .put(
+                            "job_ids",
+                            JSONObject()
+                                .put("type", "array")
+                                .put("description", "一次查多个任务的 id")
+                                .put("items", JSONObject().put("type", "string")),
+                        ),
                 ),
             ),
         )
@@ -243,6 +298,9 @@ internal class McpToolRegistry(
          * 600 秒太长（无进度通知，界面会静默干等）——见规划书 §5.2。
          */
         const val DEFAULT_GENERATE_AWAIT_MILLIS = 120_000L
+
+        /** 批量 job_status 一次最多查多少个 id（与 host 侧同一上限）。 */
+        const val MAX_BATCH_IDS = 16
 
         /** 所有工具名（供启动期自检命名约束）。 */
         val TOOL_NAMES = listOf(TOOL_LIST_MODELS, TOOL_LIST_WORKFLOWS, TOOL_GENERATE, TOOL_JOB_STATUS)

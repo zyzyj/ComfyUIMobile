@@ -48,6 +48,7 @@ class McpServerManager(
         token: String,
         requestedPort: Int = DEFAULT_PORT,
         resultSink: (suspend (ResultMedia, File) -> Unit)? = null,
+        onSubmitted: (suspend (promptId: String) -> Unit)? = null,
     ): Int {
         if (isRunning) return port
         require(token.isNotBlank()) { "缺少访问令牌，请先生成" }
@@ -61,6 +62,7 @@ class McpServerManager(
                 refreshCookie = refreshCookie,
                 clientId = clientId,
                 resultSink = resultSink,
+                onSubmitted = onSubmitted,
             ),
             files = store,
         ) { "http://127.0.0.1:$port/files/" }
