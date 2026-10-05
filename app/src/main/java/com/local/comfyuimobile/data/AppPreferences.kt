@@ -10,10 +10,6 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.local.comfyuimobile.model.ServerProfile
 import com.local.comfyuimobile.model.CacheOutputRule
 import com.local.comfyuimobile.model.AiStudioAccount
-import com.local.comfyuimobile.model.CommandAllowlist
-import com.local.comfyuimobile.model.LlmConfig
-import com.local.comfyuimobile.model.PromptPresets
-import com.local.comfyuimobile.model.PromptPreset
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import org.json.JSONArray
@@ -72,17 +68,6 @@ data class StoredSettings(
     val quickBatchCountByWorkflow: Map<String, Int> = emptyMap(),
     val quickSeedModeByWorkflow: Map<String, String> = emptyMap(),
     val quickWorkflowPath: String = "",
-    /** 用户自建的提示词预设（v0.2.54）。内置预设不入库，由代码内置。 */
-    val customPresets: List<PromptPreset> = emptyList(),
-    /** AI 助手的命令执行权限等级（v0.2.59）：1=每条都问 / 2=仅危险命令 / 3=不问。 */
-    val commandPermissionLevel: Int = 2,
-    /**
-     * 用户预批准的命令模式（v0.2.83）：glob 匹配，命中直接执行、零提示。
-     *
-     * 空列表时用 [CommandAllowlist.DEFAULT_PATTERNS]——预置项不入库，
-     * 用户一旦增删过就以他自己的为准（含删到空：那时表示"什么都不信任"）。
-     */
-    val trustedCommands: List<String> = emptyList(),
     /**
      * 内嵌 MCP server 开关与凭证（v0.2.85）。
      *
@@ -90,8 +75,6 @@ data class StoredSettings(
      */
     val mcpServerEnabled: Boolean = false,
     val mcpServerToken: String = "",
-    // v0.1.88：AI 提示词助手所用的外部大模型配置。
-    val llmConfig: LlmConfig = LlmConfig(),
     // v0.1.90：AI Studio 平台账号（Cookie 即凭证）。
     val aiStudioAccounts: List<AiStudioAccount> = emptyList(),
     val aiStudioActiveId: String = "",
@@ -119,12 +102,8 @@ class AppPreferences(private val context: Context) {
         val quickFieldValues = stringPreferencesKey("quick_field_values")
         val quickBatchSettings = stringPreferencesKey("quick_batch_settings")
         val quickWorkflowPath = stringPreferencesKey("quick_workflow_path")
-        val customPresets = stringPreferencesKey("custom_prompt_presets")
-        val commandPermissionLevel = intPreferencesKey("command_permission_level")
-        val trustedCommands = stringPreferencesKey("trusted_commands")
         val mcpServerEnabled = booleanPreferencesKey("mcp_server_enabled")
         val mcpServerToken = stringPreferencesKey("mcp_server_token")
-        val llmConfig = stringPreferencesKey("llm_config")
         val aiStudioAccounts = stringPreferencesKey("ai_studio_accounts")
         val aiStudioActiveId = stringPreferencesKey("ai_studio_active_id")
     }
@@ -155,14 +134,8 @@ class AppPreferences(private val context: Context) {
             quickBatchCountByWorkflow = decodeQuickBatchSettings(preferences[Keys.quickBatchSettings].orEmpty()).first,
             quickSeedModeByWorkflow = decodeQuickBatchSettings(preferences[Keys.quickBatchSettings].orEmpty()).second,
             quickWorkflowPath = preferences[Keys.quickWorkflowPath].orEmpty(),
-            customPresets = decodeCustomPresets(preferences[Keys.customPresets].orEmpty()),
-            commandPermissionLevel = (preferences[Keys.commandPermissionLevel] ?: 2).coerceIn(1, 3),
-            trustedCommands = preferences[Keys.trustedCommands]
-                ?.let { decodeStrings(it) }
-                ?: CommandAllowlist.DEFAULT_PATTERNS,
             mcpServerEnabled = preferences[Keys.mcpServerEnabled] ?: false,
             mcpServerToken = preferences[Keys.mcpServerToken].orEmpty(),
-            llmConfig = decodeLlmConfig(preferences[Keys.llmConfig].orEmpty()),
             aiStudioAccounts = decodeAiStudioAccounts(preferences[Keys.aiStudioAccounts].orEmpty()),
             aiStudioActiveId = preferences[Keys.aiStudioActiveId].orEmpty(),
         )
@@ -304,16 +277,6 @@ class AppPreferences(private val context: Context) {
         }
     }
 
-    suspend fun setCommandPermissionLevel(level: Int) {
-        context.dataStore.edit { it[Keys.commandPermissionLevel] = level.coerceIn(1, 3) }
-    }
-
-    /** 保存用户预批准的命令模式（v0.2.83）。传空列表即"什么都不信任"。 */
-    suspend fun setTrustedCommands(patterns: List<String>) {
-        val cleaned = patterns.map(String::trim).filter(String::isNotBlank).distinct()
-        context.dataStore.edit { it[Keys.trustedCommands] = encodeStrings(cleaned) }
-    }
-
     suspend fun setMcpServerEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.mcpServerEnabled] = enabled }
     }
@@ -321,68 +284,6 @@ class AppPreferences(private val context: Context) {
     suspend fun setMcpServerToken(token: String) {
         context.dataStore.edit { it[Keys.mcpServerToken] = token }
     }
-
-    suspend fun saveCustomPresets(presets: List<PromptPreset>) {
-        context.dataStore.edit { preferences ->
-            preferences[Keys.customPresets] = JSONArray().apply {
-                presets.forEach { preset ->
-                    put(
-                        JSONObject()
-                            .put("id", preset.id)
-                            .put("label", preset.label)
-                            .put("hint", preset.hint)
-                            .put("systemPrompt", preset.systemPrompt),
-                    )
-                }
-            }.toString()
-        }
-    }
-
-    private fun decodeCustomPresets(raw: String): List<PromptPreset> = runCatching {
-        val array = JSONArray(raw.ifBlank { "[]" })
-        buildList {
-            repeat(array.length()) { index ->
-                val item = array.optJSONObject(index) ?: return@repeat
-                val id = item.optString("id")
-                val prompt = item.optString("systemPrompt")
-                // id 与正文缺一不可：没有正文的预设选中后 AI 会退回内置规则，容易让用户困惑。
-                if (id.isBlank() || prompt.isBlank()) return@repeat
-                add(
-                    PromptPreset(
-                        id = id,
-                        label = item.optString("label").ifBlank { "自定义" },
-                        hint = item.optString("hint"),
-                        systemPrompt = prompt,
-                        builtin = false,
-                    ),
-                )
-            }
-        }
-    }.getOrDefault(emptyList())
-
-    suspend fun saveLlmConfig(config: LlmConfig) {
-        context.dataStore.edit { preferences ->
-            preferences[Keys.llmConfig] = JSONObject()
-                .put("baseUrl", config.baseUrl.trim())
-                .put("apiKey", config.apiKey.trim())
-                .put("model", config.model.trim())
-                .put("preset", config.presetId)
-                .put("temperature", config.temperature.toDouble())
-                .toString()
-        }
-    }
-
-    private fun decodeLlmConfig(raw: String): LlmConfig = runCatching {
-        if (raw.isBlank()) return@runCatching LlmConfig()
-        val item = JSONObject(raw)
-        LlmConfig(
-            baseUrl = item.optString("baseUrl"),
-            apiKey = item.optString("apiKey"),
-            model = item.optString("model"),
-            presetId = item.optString("preset").ifBlank { PromptPresets.DEFAULT_PRESET_ID },
-            temperature = LlmConfig.normalizeTemperature(item.optDouble("temperature", LlmConfig.DEFAULT_TEMPERATURE.toDouble()).toFloat()),
-        )
-    }.getOrDefault(LlmConfig())
 
     /**
      * 保存 AI Studio 账号。

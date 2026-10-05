@@ -1,3 +1,57 @@
+# v0.2.86 — 删除内置 AI 助手 + MCP 复审修复（P0×2）
+
+两条线：**按复审修 MCP 的必现 bug**，然后**删除整个内置 AI 助手板块**。
+
+## MCP 复审修复（P0/P1）
+
+复审（源码级推导）确认了四个问题，全部修复：
+
+**P0-1 · 重启必失败（必现、静默）**：`McpServer.workers` 是 val，`stop()` 里
+`shutdownNow()` 后再不重建。第二次 start 能绑上端口、accept 线程也起得来，
+但第一个连接进来就抛 `RejectedExecutionException`、accept 线程当场死掉——
+界面却显示"已启动"。「重新生成令牌」正是 stop→start，几乎必踩。
+修：`start()` 里重建线程池。**加了回归单测**（`restartAfterStopStillServesRequests`），
+断言落到真的发一个请求拿到 200——只查 isRunning 抓不到这种问题。
+
+**P0-2 · 无前台服务**：server 原挂在 ViewModel 上，而用户的用法正是"开着 MCP
+切到 AiCode"——本 App 立刻进后台，AiCode 自己又是内存大户，LMK 下本进程
+首当其冲。进程一死 server 就没了，AiCode 侧只看到连接被拒，无任何提示。
+修：新增 `McpServerService` 前台服务承载监听，通知直接显示 `127.0.0.1:8765`；
+偏好里开着开关时，进程被杀后重启会自动拉起。
+
+**P1 · 图片字节全量驻内存**：一张图 2~10MB、单次最多 8 张，在内存里留一小时
+（TTL），直接抬高被杀概率。改为**落盘 + 流式读盘**：`McpFileStore` 只登记
+文件路径，`/files/{id}` 时边读边发；加总字节上限 128MB；过期/淘汰/停止时删文件。
+
+**P1 · 线程池无上限而注释声称有**：改 `ThreadPoolExecutor(max=8)`，实现与注释一致。
+
+**P2 · `list_workflows` 标出格式**：`generate` 只吃 API 格式工作流，不标的话
+AI 只能一个个试错。现在每条带 `[可直用]` / `[画布格式，需先 Export (API)]` / `[格式未知]`。
+
+## 删除内置 AI 助手（两个都删）
+
+智能助手（终端对话）与 AI 提示词助手（LLM 配置 + 参数页 AI 按钮）**一并删除**，
+App 内不再有任何大模型功能——外部强模型的能力全部走 MCP。
+
+删除范围：11 个源文件（`LlmRepository`/`LlmProtocol`/`TerminalPlaybook`/
+`AssistantContext`/`ToolCall` 等）+ 5 个测试文件 + UI 全部对话/命令卡片/
+AI 配置区/参数页与快捷页的 AI 按钮；`AppUiState` 与 `AppPreferences` 里的
+助手字段与持久化键一并清除。
+
+**保留的引擎**（供未来 `terminal` MCP 工具复用，按复审建议）：
+`TerminalCommandSafety`（含 `parseCommands`/`wrap`/`sliceOutput` 全部能力与单测）、
+`CommandAllowlist`、`CommandInsightParser`、`AnsiText`。`CommandOutputWindow`
+与 `TerminalCommandResult` 从 `AiAssistant.kt` 抽到新的 `TerminalResult.kt`
+保留——它们是引擎的一部分（`sliceOutput` 的返回值、"无匹配不算失败"的判定），
+不是助手专属。
+
+App 瘦身约 2400 行。MCP 是此后唯一的大模型入口。
+
+## 升级注意
+
+- 之前在设置里配过大模型的用户：配置数据随此版本作废（不再读取），如需迁移
+  请把地址与密钥抄到 AiCode 的 MCP/模型配置里。
+- 参数页/快捷页原来的「AI 写」按钮已移除。
 # v0.2.85 — 内嵌 MCP 服务：让同机的 AiCode 直接操作 ComfyUI
 
 新能力：App 里起一个 **MCP server**（`127.0.0.1:8765`），同机的 AiCode（Android AI
