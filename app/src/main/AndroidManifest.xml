@@ -101,5 +101,15 @@
             android:name=".service.JobMonitorService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!--
+          MCP 服务的前台承载。用 connectedDevice 类型（与后台任务服务一致）：
+          这个服务对外提供本机 127.0.0.1 上的接口，在系统看来属于"与外部设备交互"，
+          且本类型不需额外权限。
+        -->
+        <service
+            android:name=".service.McpServerService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
     </application>
 </manifest>

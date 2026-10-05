@@ -36,6 +36,13 @@ class ComfyMobileApplication : Application(), ImageLoaderFactory {
         manager.createNotificationChannel(
             NotificationChannel(UpdateManager.CHANNEL_ID, getString(R.string.update_channel), NotificationManager.IMPORTANCE_DEFAULT),
         )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                com.local.comfyuimobile.service.McpServerService.CHANNEL_ID,
+                getString(R.string.mcp_channel),
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply { description = getString(R.string.mcp_channel_description) },
+        )
     }
 
     /**

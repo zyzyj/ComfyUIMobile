@@ -47,17 +47,40 @@ class McpServerTest {
             if (request.prompt == "slow") return GenerateOutcome.Running("job-run", 120, "仍在跑")
             return GenerateOutcome.Done(
                 "job-1",
-                listOf(McpMedia("out.png", "png", "image/png", byteArrayOf(1, 2, 3, 4))),
+                listOf(
+                    McpMedia(
+                        filename = "out.png",
+                        extension = "png",
+                        contentType = "image/png",
+                        file = tempPng(byteArrayOf(1, 2, 3, 4)),
+                    ),
+                ),
             )
         }
 
-        override suspend fun jobStatus(jobId: String): GenerateOutcome =
-            GenerateOutcome.Done(jobId, listOf(McpMedia("done.png", "png", "image/png", byteArrayOf(9))))
+        override suspend fun jobStatus(jobId: String): GenerateOutcome = GenerateOutcome.Done(
+            jobId,
+            listOf(
+                McpMedia(
+                    filename = "done.png",
+                    extension = "png",
+                    contentType = "image/png",
+                    file = tempPng(byteArrayOf(9)),
+                ),
+            ),
+        )
+
+        /** 真实实现是下载到磁盘的，这里也用真文件，才能测到 /files 的流式发送。 */
+        private fun tempPng(bytes: ByteArray): java.io.File {
+            val dir = java.io.File(System.getProperty("java.io.tmpdir"), "mcp-host-test")
+            dir.mkdirs()
+            return java.io.File.createTempFile("out", ".png", dir).apply { writeBytes(bytes) }
+        }
     }
 
-    private class Fixture {
+    private class Fixture : java.io.Closeable {
         val host = FakeHost()
-        val files = McpFileStore()
+        val files = McpFileStore(cacheDir = java.io.File(System.getProperty("java.io.tmpdir"), "mcp-test-${System.nanoTime()}"))
         private val portHolder = intArrayOf(-1)
         val server = McpServer(
             port = 0,
@@ -73,6 +96,11 @@ class McpServerTest {
             portHolder[0] = server.boundPort
             return server.boundPort
         }
+
+        override fun close() {
+            runCatching { server.stop() }
+            runCatching { files.clear() }
+        }
     }
 
     private fun withServer(block: (Int, Fixture) -> Unit) {
@@ -81,7 +109,36 @@ class McpServerTest {
         try {
             block(port, fixture)
         } finally {
+            fixture.close()
+        }
+    }
+
+    /**
+     * 重启后必须还能处理请求（P0-1 回归）。
+     *
+     * 曾经的 bug：`workers` 是 val、`stop()` 里 shutdownNow 后再不重建，于是第二次
+     * start 能绑上端口、accept 线程也起得来，但第一个连接进来就抛
+     * RejectedExecutionException、accept 线程当场死掉——界面显示"已启动"却一个请求
+     * 都处理不了。「重新生成令牌」正是 stop → start，几乎必踩。
+     *
+     * 断言必须落到**真的发一个请求并拿到响应**，只查 isRunning 是抓不到的。
+     */
+    @Test
+    fun restartAfterStopStillServesRequests() {
+        val fixture = Fixture()
+        try {
+            val firstPort = fixture.start()
+            assertEquals("首次启动应能处理请求", 200, postMcp(firstPort, """{"jsonrpc":"2.0","id":1,"method":"ping"}""").first)
+
             fixture.server.stop()
+
+            val secondPort = fixture.start()
+            val (code, body) = postMcp(secondPort, """{"jsonrpc":"2.0","id":2,"method":"tools/list"}""")
+            assertEquals("重启后必须仍能处理请求", 200, code)
+            val tools = JSONObject(body).getJSONObject("result").getJSONArray("tools")
+            assertTrue("重启后应能列出工具", tools.length() > 0)
+        } finally {
+            fixture.close()
         }
     }
 

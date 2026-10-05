@@ -53,7 +53,8 @@ internal data class McpMedia(
     val filename: String,
     val extension: String,
     val contentType: String,
-    val bytes: ByteArray,
+    /** 已落盘的文件。**不持有字节**——内容经 `/files/{id}` 流式发送。 */
+    val file: java.io.File,
 )
 
 /**
@@ -152,7 +153,7 @@ internal class McpToolRegistry(
         is GenerateOutcome.Done -> {
             val arr = JSONArray()
             for (media in outcome.media) {
-                val fileId = files.put(media.bytes, media.extension, media.contentType)
+                val fileId = files.register(media.file, media.extension, media.contentType)
                 arr.put(
                     JSONObject()
                         .put("filename", media.filename)
@@ -190,7 +191,8 @@ internal class McpToolRegistry(
         put(
             McpProtocol.toolDescriptor(
                 TOOL_LIST_WORKFLOWS,
-                "列出服务器上可用的 ComfyUI 工作流（名称与路径）。",
+                "列出服务器上可用的 ComfyUI 工作流（名称、路径，以及是否为 API 格式）。" +
+                    "generate 只能执行标记为 [可直用] 的工作流。",
                 schema(JSONObject()),
             ),
         )
