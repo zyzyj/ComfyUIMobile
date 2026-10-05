@@ -45,10 +45,23 @@ internal class McpFileStore(
     /**
      * 出图流程用：分配一个新的空文件供调用方写入（边下载边落盘，不经过内存），
      * 写完后调 [register] 登记。
+     *
+     * 顺手清理孤儿：进程在下载中途被强杀时，半截文件不会被 [register] 登记、
+     * 也就不会被 [enforceLimits] 统计到，只能在这里挨目录扫。
      */
     fun newFile(extension: String): File {
         runCatching { cacheDir.mkdirs() }
+        sweepOrphans()
         return File(cacheDir, "${UUID.randomUUID().toString().replace("-", "")}.${extension.ifBlank { "bin" }}")
+    }
+
+    /** 删掉目录里不在登记表中的文件（孤儿）。登记表为空时目录应被清空。 */
+    private fun sweepOrphans() {
+        runCatching {
+            cacheDir.listFiles()?.forEach { file ->
+                if (file.isFile && file.name !in entries) runCatching { file.delete() }
+            }
+        }
     }
 
     /** 登记一个已写好的文件，返回可拼进 URL 的 id。 */

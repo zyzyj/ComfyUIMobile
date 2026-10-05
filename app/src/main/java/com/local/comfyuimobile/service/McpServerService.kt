@@ -37,6 +37,10 @@ class McpServerService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var manager: McpServerManager? = null
+    private var client: ComfyClient? = null
+    /** 服务当前生效的服务器地址与 Cookie；用于跳过偏好流里的重复推送。 */
+    @Volatile private var appliedUrl: String = ""
+    @Volatile private var appliedCookie: String = ""
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -64,29 +68,100 @@ class McpServerService : Service() {
         }
         // 用**服务自己的** ComfyClient：baseUrl / Cookie 从偏好里恢复。
         // 它只被 MCP 工具调用，不与界面里的那份共享状态，避免两边互相改 baseUrl。
-        val client = ComfyClient()
-        val stored = runCatching { AppPreferences(this).settings.first() }.getOrNull()
-        val activeUrl = stored?.activeServerUrl.orEmpty()
-        if (activeUrl.isNotBlank()) {
-            client.setServer(activeUrl)
-            AuthCookieProvider.current = stored?.profiles
-                ?.firstOrNull { it.baseUrl == activeUrl }?.cookie.orEmpty()
-            client.setAuthCookie(AuthCookieProvider.current)
-        }
+        val created = ComfyClient()
+        client = created
+        applyServerFromPreferences(created)
 
-        val created = McpServerManager(
-            client = client,
+        val manager = McpServerManager(
+            client = created,
             cacheDir = filesDir,
             currentWorkflowPath = { null },
-            // 反代会话失效时刷新一次：MCP 侧没有账号上下文，只能用已有 Cookie 重试。
-            refreshCookie = { },
+            // 反代会话失效时重新读偏好：App 内用户刷新过 Cookie 并落盘后，这里就能
+            // 拿到新值。MCP 侧没有账号上下文，无法像界面那样从 kernelClient 导出，
+            // 但"重读偏好"已能覆盖最常见的过期场景（用户回 App 重连一次即可）。
+            refreshCookie = {
+                applyServerFromPreferences(created, forceCookie = true)
+                if (created.authCookie().isBlank()) {
+                    throw IllegalStateException("登录态已失效，请在 App 内重新连接 ComfyUI")
+                }
+            },
             clientId = "comfy-mobile-mcp",
         )
-        val bound = created.start(resolvedToken)
-        manager = created
+        this.manager = manager
+        val bound = manager.start(resolvedToken)
         markRunning(true)
         AppLogger.info("MCP 前台服务已就绪：127.0.0.1:$bound")
         startForeground(FOREGROUND_ID, buildNotification(bound))
+        observePreferences(created, bound)
+    }
+
+    /**
+     * 把偏好里的活跃服务器与 Cookie 应用到 [client]。
+     *
+     * [forceCookie] 为 true 时跳过"与当前相同"的短路——Cookie 在偏好里原地刷新
+     * （地址不变）时必须重新写入 client，否则刷新永远不生效。
+     */
+    private suspend fun applyServerFromPreferences(client: ComfyClient, forceCookie: Boolean = false) {
+        val stored = runCatching { AppPreferences(this).settings.first() }.getOrNull() ?: return
+        val url = stored.activeServerUrl.trim().trimEnd('/')
+        val cookie = stored.profiles.firstOrNull { it.baseUrl == url || it.baseUrl.trim().trimEnd('/') == url }
+            ?.cookie.orEmpty()
+        if (url != appliedUrl) {
+            client.setServer(url)
+            appliedUrl = url
+            appliedCookie = cookie
+            client.setAuthCookie(cookie)
+            AuthCookieProvider.current = cookie
+            if (url.isBlank()) {
+                AppLogger.warn("MCP：尚未连接 ComfyUI，工具调用将返回明确提示")
+            } else {
+                AppLogger.info("MCP 服务器已指向：$url")
+            }
+        } else if (forceCookie && cookie != appliedCookie) {
+            appliedCookie = cookie
+            client.setAuthCookie(cookie)
+            AuthCookieProvider.current = cookie
+            AppLogger.info("MCP 登录态已从偏好刷新")
+        }
+    }
+
+    /**
+     * 观察偏好的活跃服务器/Cookie 变化（v0.2.87）。
+     *
+     * 服务持有自己的 client 是有意隔离，但代价原本是"App 里切服务器后 MCP 仍打
+     * 旧地址，直到重启服务"。collect 偏好流后两边就同步了——这也顺带解决
+     * "App 里刷新过 Cookie、服务内存里还是旧的"那一半。
+     */
+    private fun observePreferences(client: ComfyClient, port: Int) {
+        scope.launch {
+            var lastUrl = appliedUrl
+            var lastCookie = appliedCookie
+            runCatching {
+                AppPreferences(this@McpServerService).settings.collect { stored ->
+                    val url = stored.activeServerUrl.trim().trimEnd('/')
+                    val cookie = stored.profiles
+                        .firstOrNull { it.baseUrl == url || it.baseUrl.trim().trimEnd('/') == url }
+                        ?.cookie.orEmpty()
+                    if (url != lastUrl) {
+                        lastUrl = url
+                        lastCookie = cookie
+                        client.setServer(url)
+                        client.setAuthCookie(cookie)
+                        AuthCookieProvider.current = cookie
+                        appliedUrl = url
+                        appliedCookie = cookie
+                        AppLogger.info(if (url.isBlank()) "MCP：服务器已清空" else "MCP 服务器已切换：$url")
+                        startForeground(FOREGROUND_ID, buildNotification(port, urlBlank = url.isBlank()))
+                    } else if (cookie != lastCookie) {
+                        lastCookie = cookie
+                        client.setAuthCookie(cookie)
+                        AuthCookieProvider.current = cookie
+                        appliedCookie = cookie
+                        AppLogger.info("MCP 登录态已更新（偏好变化）")
+                    }
+                }
+            }.onFailure { AppLogger.warn("MCP 偏好观察中断", it) }
+        }
     }
 
     private fun onStartFailed(error: Throwable) {
@@ -115,7 +190,7 @@ class McpServerService : Service() {
      * 常驻通知。内容里直接给出地址与"点按返回 App"，让用户切到 AiCode 后不必
      * 再切回来确认端口。
      */
-    private fun buildNotification(port: Int): Notification {
+    private fun buildNotification(port: Int, urlBlank: Boolean = false): Notification {
         val open = PendingIntent.getActivity(
             this,
             0,
@@ -126,8 +201,13 @@ class McpServerService : Service() {
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("MCP 服务运行中")
             .setContentText(
-                if (port > 0) "127.0.0.1:$port · AiCode 可连接，点按返回 App"
-                else "正在启动…",
+                when {
+                    // P1-2：没连服务器时不能假装一切正常——否则用户切到 AiCode 后
+                    // 每个工具都失败，还以为是协议或配置问题。
+                    urlBlank -> "未连接 ComfyUI，工具不可用 —— 点按回 App 连接"
+                    port > 0 -> "127.0.0.1:$port · AiCode 可连接，点按返回 App"
+                    else -> "正在启动…"
+                },
             )
             .setContentIntent(open)
             .setCategory(Notification.CATEGORY_SERVICE)
