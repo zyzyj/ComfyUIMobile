@@ -119,13 +119,13 @@ class McpHttpTest {
     }
 
     @Test
-    fun bytesResponseKeepsBinaryPayload() {
-        val payload = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x00, 0xFF.toByte())
-        val bytes = McpHttp.bytesResponse(payload, "image/png")
-        val separator = "\r\n\r\n"
-        val head = String(bytes, Charsets.ISO_8859_1)
-        val bodyStart = head.indexOf(separator) + separator.length
-        val body = bytes.copyOfRange(bodyStart, bytes.size)
-        assertEquals(payload.toList(), body.toList())
+    fun fileHeaderCarriesLengthAndType() {
+        // 流式发送文件时头部必须带准确的 Content-Length：对端靠它定边界，
+        // 本项目不做 chunked。
+        val head = String(McpHttp.fileHeader(4096, "image/png"), Charsets.ISO_8859_1)
+        assertTrue(head.startsWith("HTTP/1.1 200 OK\r\n"))
+        assertTrue(head.contains("Content-Type: image/png\r\n"))
+        assertTrue(head.contains("Content-Length: 4096\r\n"))
+        assertTrue(head.endsWith("Connection: close\r\n\r\n"))
     }
 }

@@ -133,9 +133,6 @@ internal object McpHttp {
         ByteArray(0),
     )
 
-    fun bytesResponse(bytes: ByteArray, contentType: String, status: Int = 200): ByteArray =
-        response(status, reasonFor(status), contentType, bytes)
-
     /**
      * 只出头部，body 由调用方流式写入。
      *
