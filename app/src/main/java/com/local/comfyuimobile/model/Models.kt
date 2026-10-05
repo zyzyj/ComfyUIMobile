@@ -244,6 +244,13 @@ data class AppUiState(
     val currentExecutingNodeId: String? = null,
     val generationProgress: Float? = null,
     val generationMessage: String = "",
+    /**
+     * 当前跟踪任务的开始时刻（v0.2.90，毫秒）。已用时间由它算出，界面与通知共用。
+     *
+     * 它是**唯一不依赖网络**的进度信号：反代环境下百分比经常丢失且不可补发，
+     * 已用时间却总能算出来，于是成为"它到底还在动吗"的主要依据。
+     */
+    val generationStartedAt: Long? = null,
     val navigationRequest: AppNavigationRequest? = null,
     val promptHistory: List<String> = emptyList(),
     val submittedJobIds: Set<String> = emptySet(),

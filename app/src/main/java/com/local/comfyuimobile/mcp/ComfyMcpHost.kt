@@ -36,6 +36,14 @@ internal class ComfyMcpHost(
      * "结果"页里找不到，说不过去。null 表示不落结果页（单测用）。
      */
     private val resultSink: (suspend (ResultMedia, File) -> Unit)? = null,
+    /**
+     * 提交成功后通知上层（v0.2.90）。
+     *
+     * MCP 出图走的不是界面那条链路，原先提交完就"消失"了：界面任务列表、通知进度
+     * 都看不到它，用户只能等完成后在结果页发现——AI 在后台出图时界面完全没反馈。
+     * 回调让上层把这个 promptId 纳入跟踪（写偏好 → ViewModel 观察 → 起监控）。
+     */
+    private val onSubmitted: (suspend (promptId: String) -> Unit)? = null,
 ) : McpToolHost {
 
     override suspend fun listModels(type: String?): String {
@@ -156,6 +164,12 @@ internal class ComfyMcpHost(
         } catch (error: Exception) {
             return GenerateOutcome.Failed("提交生成失败：${error.message}")
         }
+        // 入队成功后交给上层纳入跟踪（界面任务列表/通知进度）。失败只记日志：
+        // 跟踪是锦上添花，不能因为它失败就让已经入队的任务在模型那边变成失败。
+        onSubmitted?.let { callback ->
+            runCatching { callback(response.promptId) }
+                .onFailure { AppLogger.warn("MCP 提交回调失败：${response.promptId}", it) }
+        }
         return finishOrRunning(response.promptId, awaitMillis, startedAt = System.currentTimeMillis())
     }
 
@@ -164,6 +178,35 @@ internal class ComfyMcpHost(
         // 查询时不再长等：已经知道任务在跑了，给一次短窗口即可，避免把 job_status 变成
         // 第二个会卡住的 generate。
         return finishOrRunning(jobId, awaitMillis = 0L, startedAt = System.currentTimeMillis())
+    }
+
+    /**
+     * 批量查询（v0.2.90）：一次拿多个任务的状态。
+     *
+     * AI 提交 8 个不同任务时，逐个查要 8 轮往返——与"提交/验收分离"直接冲突。
+     * 队列只取一次，多个 job 共用同一份快照，既省请求也保证彼此一致。
+     */
+    override suspend fun jobStatusBatch(ids: List<String>): String {
+        requireConnected()
+        val queue = runCatching { client.queue() }.getOrNull()
+        val lines = mutableListOf<String>()
+        for (id in ids.take(MAX_BATCH_IDS)) {
+            val trimmed = id.trim()
+            if (trimmed.isBlank()) continue
+            val history = runCatching { client.history(trimmed) }.getOrNull()
+            val hasOutputs = history?.optJSONObject(trimmed)
+                ?.optJSONObject("outputs")?.keys()?.hasNext() == true
+            val verdict = McpJobState.resolve(trimmed, queue, history, hasOutputs)
+            val detail = StringBuilder()
+                .append(trimmed.take(8))
+                .append("  ")
+                .append(verdict.phase.label)
+            verdict.position?.let { detail.append(" · 位置 $it") }
+            if (verdict.message.isNotBlank()) detail.append(" · ").append(verdict.message)
+            lines += detail.toString()
+        }
+        if (lines.isEmpty()) return "没有可查询的 job_id。"
+        return lines.joinToString("\n")
     }
 
     /**
@@ -186,24 +229,37 @@ internal class ComfyMcpHost(
         startedAt: Long,
     ): GenerateOutcome {
         val deadline = startedAt + awaitMillis
-        var lastMessage = "等待中"
         while (true) {
+            // 统一判据：先队列后历史，两处信号源必须走同一个 resolve，
+            // 否则"排队中"会被 history 缺失误判成运行中/失败。
+            val queue = runCatching { client.queue() }.getOrNull()
             val history = runCatching { client.history(promptId) }.getOrNull()
-            if (history != null && history.has(promptId)) {
-                val media = collectMedia(promptId, history)
-                if (media.isNotEmpty()) {
+            val entry = history?.optJSONObject(promptId)
+            val hasOutputs = entry?.optJSONObject("outputs")?.keys()?.hasNext() == true
+            val verdict = McpJobState.resolve(promptId, queue, history, hasOutputs)
+            val elapsedSec = (System.currentTimeMillis() - startedAt) / 1000
+            when (verdict.phase) {
+                McpJobState.Phase.DONE -> {
+                    val media = collectMedia(promptId, history ?: JSONObject())
+                    if (media.isEmpty()) {
+                        return GenerateOutcome.Failed("任务 $promptId 已结束但没有取到图片")
+                    }
                     return GenerateOutcome.Done(promptId, media)
                 }
-                // 进了 history 却没有输出：多为执行报错，把状态原样带回给模型。
-                lastMessage = errorSummary(history.optJSONObject(promptId))
-                return GenerateOutcome.Failed("任务 $promptId 未产出图片：$lastMessage")
-            }
-            if (System.currentTimeMillis() >= deadline) {
-                return GenerateOutcome.Running(
-                    jobId = promptId,
-                    elapsedSec = (System.currentTimeMillis() - startedAt) / 1000,
-                    message = lastMessage,
-                )
+                McpJobState.Phase.FAILED -> {
+                    val reason = entry?.let { errorSummary(it) }.orEmpty()
+                    return GenerateOutcome.Failed("任务 $promptId 未产出图片：${reason.ifBlank { verdict.message }}")
+                }
+                McpJobState.Phase.QUEUED -> {
+                    if (System.currentTimeMillis() >= deadline) {
+                        return GenerateOutcome.Queued(promptId, elapsedSec, verdict.position, verdict.message)
+                    }
+                }
+                McpJobState.Phase.RUNNING, McpJobState.Phase.UNKNOWN -> {
+                    if (System.currentTimeMillis() >= deadline) {
+                        return GenerateOutcome.Running(promptId, elapsedSec, verdict.message)
+                    }
+                }
             }
             delay(POLL_INTERVAL_MILLIS)
         }
@@ -263,5 +319,8 @@ internal class ComfyMcpHost(
 
         /** 单次取回的最大图片数（批量出图时不让内存爆掉）。 */
         const val MAX_IMAGES = 8
+
+        /** 批量 job_status 一次最多查多少个 id（防超长参数把请求撑爆）。 */
+        const val MAX_BATCH_IDS = 16
     }
 }
