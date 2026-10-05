@@ -4048,7 +4048,7 @@ private fun McpScreen(
             }
 
             // ===== 工具 =====
-            SettingsSection("工具（${McpToolRegistry.TOOL_NAMES.size}）", icon = Icons.Outlined.List) {
+            SettingsSection("工具（${McpToolRegistry.TOOL_NAMES.size}）", icon = Icons.AutoMirrored.Outlined.List) {
                 McpToolRegistry.TOOL_NAMES.forEach { tool ->
                     val description = when (tool) {
                         "list_models" -> "列出服务器上的模型与 LoRA"
