@@ -5422,7 +5422,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _state.update {
                             it.copy(
                                 activeJobId = id,
-                                generationStartedAt = generationStartedAt ?: System.currentTimeMillis(),
+                                generationStartedAt = it.generationStartedAt ?: System.currentTimeMillis(),
                                 currentExecutingNodeId = null,
                                 // v0.1.76：执行开始阶段（加载模型/CLIP/VAE）没有进度消息，
                                 // 置 null 让 UI 显示不确定进度条，不再停在 0% 假装卡住。
@@ -5550,7 +5550,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _state.update {
                             it.copy(
                                 activeJobId = id,
-                                generationStartedAt = generationStartedAt ?: System.currentTimeMillis(),
+                                generationStartedAt = it.generationStartedAt ?: System.currentTimeMillis(),
                                 currentExecutingNodeId = nodeId.ifBlank { null },
                                 generationProgress = null,
                                 generationMessage = "生成失败：$detail",
@@ -5790,7 +5790,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 ui.copy(
                     jobs = updatedJobs,
                     activeJobId = active.id,
-                    generationStartedAt = generationStartedAt ?: System.currentTimeMillis(),
+                    generationStartedAt = ui.generationStartedAt ?: System.currentTimeMillis(),
                     currentExecutingNodeId = resolvedNode,
                     generationProgress = progress,
                     generationMessage = when {
@@ -6095,7 +6095,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { ui ->
                 if (promptId != ui.activeJobId && promptId !in ui.submittedJobIds) ui else ui.copy(
                     activeJobId = promptId,
-                    generationStartedAt = generationStartedAt ?: System.currentTimeMillis(),
+                    generationStartedAt = ui.generationStartedAt ?: System.currentTimeMillis(),
                     currentExecutingNodeId = resolvedNodeId,
                     generationProgress = progress ?: ui.generationProgress,
                     generationMessage = executionMessage(
