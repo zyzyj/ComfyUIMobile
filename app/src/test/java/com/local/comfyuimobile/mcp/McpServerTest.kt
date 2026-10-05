@@ -351,7 +351,10 @@ class McpServerTest {
     @Test
     fun generateRequestParsesAllArguments() = runBlocking {
         val host = FakeHost()
-        val registry = McpToolRegistry(host, McpFileStore()) { "http://x/files/" }
+        val registry = McpToolRegistry(
+            host,
+            McpFileStore(cacheDir = java.io.File(System.getProperty("java.io.tmpdir"), "mcp-arg-test-${System.nanoTime()}")),
+        ) { "http://x/files/" }
         registry.dispatch(
             "tools/call",
             JSONObject(
