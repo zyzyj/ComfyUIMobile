@@ -93,6 +93,18 @@ class McpServerManager(
         const val MIN_PORT = 1024
         const val MAX_PORT = 65535
 
+        /**
+         * 把用户配置解析成实际请求端口。**UI 与服务都必须走这里**。
+         *
+         * 曾经的 P0：服务侧写了 `stored?.mcpServerPort ?: 0`，而 0 传给
+         * `ServerSocket` 的语义是"让系统随机分配"——首次开 MCP（偏好里还是 0）
+         * 就会绑到随机端口，UI 与配置片段却显示 23456，AiCode 必然连不上，
+         * 且每次重启都换。修正逻辑原本只在 UI 写了一份，服务没同步——
+         * 这正是"同一逻辑两处各写一遍"的下场，抽成纯函数让两边没得选。
+         */
+        fun resolvePort(configured: Int): Int =
+            configured.takeIf { it in MIN_PORT..MAX_PORT } ?: DEFAULT_PORT
+
         /** 生成一个新的访问令牌（24 字节十六进制，够长且便于复制）。 */
         fun newToken(): String {
             val bytes = ByteArray(24)
