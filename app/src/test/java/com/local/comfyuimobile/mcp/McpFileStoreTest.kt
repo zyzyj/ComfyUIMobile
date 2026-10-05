@@ -40,7 +40,7 @@ class McpFileStoreTest {
     private fun McpFileStore.write(bytes: ByteArray, extension: String = "png"): String {
         val file = newFile(extension)
         file.writeBytes(bytes)
-        return register(file, extension, contentTypeOf(extension))
+        return register(file, extension, McpFileStore.contentTypeOf(extension))
     }
 
     @Test
