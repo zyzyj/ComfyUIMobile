@@ -67,17 +67,21 @@ internal object McpPromptPlanner {
         val applied = mutableListOf<String>()
         val unknown = mutableListOf<String>()
         for ((key, raw) in params) {
-            val field = available[key] ?: run {
+            val field = available[key]
+            // 三处失败都必须记进 unknown 后跳过：静默忽略会让模型以为改了其实没改。
+            if (field == null) {
                 unknown += key
-                return@run
+                continue
             }
-            val decoded = decodeForKind(raw, field.kind) ?: run {
+            val decoded = decodeForKind(raw, field.kind)
+            if (decoded == null) {
                 unknown += key
-                return@run
+                continue
             }
-            val inputs = target.optJSONObject(field.nodeId)?.optJSONObject("inputs") ?: run {
+            val inputs = target.optJSONObject(field.nodeId)?.optJSONObject("inputs")
+            if (inputs == null) {
                 unknown += key
-                return@run
+                continue
             }
             inputs.put(field.name, decoded)
             applied += "$key=$raw"
