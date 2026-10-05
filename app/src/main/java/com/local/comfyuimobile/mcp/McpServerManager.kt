@@ -1,25 +1,29 @@
 package com.local.comfyuimobile.mcp
 
 import com.local.comfyuimobile.network.ComfyClient
+import java.io.File
 import java.security.SecureRandom
 
 /**
  * MCP server 的生命周期管理（v0.2.85）。
  *
- * 把"MCP 与 ComfyUI 的接线"收在一处，让 [com.local.comfyuimobile.MainViewModel] 只需调用
- * [start]/[stop]，不必知道端口、token、host 实现等细节。
+ * 把"MCP 与 ComfyUI 的接线"收在一处，让调用方（前台服务）只需 [start]/[stop]，
+ * 不必知道端口、token、host 实现等细节。
  *
  * 端口固定 8765：AiCode 侧的配置里要写死这个值，随机端口会让"每次重启都要改配置"。
  * 被占用时启动失败并如实上报，而不是悄悄换一个端口让用户的配置失效。
  */
 class McpServerManager(
     private val client: ComfyClient,
+    /** 出图落盘目录。必须由外部传入（服务侧拿到的是 Service 的 filesDir）。 */
+    private val cacheDir: File,
     private val currentWorkflowPath: () -> String?,
     private val refreshCookie: suspend () -> Unit,
     private val clientId: String,
 ) {
 
     private var server: McpServer? = null
+    private var files: McpFileStore? = null
 
     /** 实际监听端口（未启动为 0）。 */
     val port: Int get() = server?.boundPort ?: 0
@@ -36,31 +40,37 @@ class McpServerManager(
     fun start(token: String): Int {
         if (isRunning) return port
         require(token.isNotBlank()) { "缺少访问令牌，请先生成" }
-        val files = McpFileStore()
+        // 每次启动都重建（连同文件登记）：stop 会清掉临时文件，重启后不该还指着它们。
+        val store = McpFileStore(cacheDir = File(cacheDir, "mcp_files"))
         val registry = McpToolRegistry(
             host = ComfyMcpHost(
                 client = client,
+                files = store,
                 currentWorkflowPath = currentWorkflowPath,
                 refreshCookie = refreshCookie,
                 clientId = clientId,
             ),
-            files = files,
+            files = store,
         ) { "http://127.0.0.1:$PORT/files/" }
-        val created = McpServer(port = PORT, token = token, tools = registry, files = files)
+        val created = McpServer(port = PORT, token = token, tools = registry, files = store)
         created.start()
         server = created
+        files = store
         return created.boundPort
     }
 
     fun stop() {
         server?.stop()
         server = null
+        // 连带清掉出图缓存：里面是完整图片，留着只有风险（服务已停，URL 也没人用了）。
+        files?.clear()
+        files = null
     }
 
     companion object {
         const val PORT = 8765
 
-        /** 生成一个新的访问令牌（32 字节十六进制，够长且便于复制）。 */
+        /** 生成一个新的访问令牌（24 字节十六进制，够长且便于复制）。 */
         fun newToken(): String {
             val bytes = ByteArray(24)
             SecureRandom().nextBytes(bytes)

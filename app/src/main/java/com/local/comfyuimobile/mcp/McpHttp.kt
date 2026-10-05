@@ -136,6 +136,21 @@ internal object McpHttp {
     fun bytesResponse(bytes: ByteArray, contentType: String, status: Int = 200): ByteArray =
         response(status, reasonFor(status), contentType, bytes)
 
+    /**
+     * 只出头部，body 由调用方流式写入。
+     *
+     * Content-Length 必须**事先知道**（这里用文件长度），不能用 chunked——
+     * 本项目刻意不做分块，且对端的 OkHttp 读单条响应也要靠它定边界。
+     */
+    fun fileHeader(contentLength: Long, contentType: String, status: Int = 200): ByteArray {
+        val head = StringBuilder()
+            .append("HTTP/1.1 ").append(status).append(' ').append(reasonFor(status)).append("\r\n")
+            .append("Content-Type: ").append(contentType).append("\r\n")
+            .append("Content-Length: ").append(contentLength).append("\r\n")
+            .append("Connection: close\r\n\r\n")
+        return head.toString().toByteArray(Charsets.ISO_8859_1)
+    }
+
     fun reasonFor(status: Int): String = when (status) {
         200 -> "OK"
         202 -> "Accepted"

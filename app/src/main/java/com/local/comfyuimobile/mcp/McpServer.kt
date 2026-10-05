@@ -8,7 +8,10 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
-import java.util.concurrent.Executors
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -38,9 +41,14 @@ internal class McpServer(
 
     private var serverSocket: ServerSocket? = null
     private val running = AtomicBoolean(false)
-    private val workers = Executors.newCachedThreadPool { runnable ->
-        Thread(runnable, "mcp-worker").apply { isDaemon = true }
-    }
+    /**
+     * 工作线程池。**每次 [start] 都重建**——[stop] 会 `shutdownNow()`，而它是被
+     * 关闭后不可复用的：若不重建，第二次启动能绑上端口、accept 线程也能起，
+     * 但第一个连接进来时 `execute` 就抛 `RejectedExecutionException`，accept 线程
+     * 当场死掉，之后所有连接超时。界面却显示"已启动"——静默失败，最难查的那种。
+     * 「重新生成令牌」正是 stop → start，属设置页常规按钮。
+     */
+    private var workers: ExecutorService = newWorkerPool()
     /** 正在处理的连接。`stop()` 要把它们一并关掉，否则卡在 read 的线程会永远留着。 */
     private val liveSockets = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
 
@@ -54,6 +62,7 @@ internal class McpServer(
     /** 启动监听。绑定失败（端口占用）抛异常，由调用方决定是否提示用户。 */
     fun start() {
         if (!running.compareAndSet(false, true)) return
+        workers = newWorkerPool()
         try {
             // bind 到 loopback：第三个参数 backlog，第四个是绑定地址。
             val socket = ServerSocket(port, 16, InetAddress.getByName(LOOPBACK))
@@ -161,13 +170,21 @@ internal class McpServer(
         return header == "Bearer $token"
     }
 
+    /**
+     * 发送出图文件。
+     *
+     * **流式读盘**，不把内容搬进内存：服务要在后台常驻，而一张图 2~10 MB、
+     * 每小时多次调用，堆里堆着这些字节会显著抬高被杀概率（见 [McpFileStore] 的说明）。
+     */
     private fun serveFile(id: String, output: BufferedOutputStream) {
         val entry = files.get(id)
         if (entry == null) {
             output.write(McpHttp.jsonResponse("""{"error":"not found or expired"}""", status = 404))
             return
         }
-        output.write(McpHttp.bytesResponse(entry.bytes, entry.contentType))
+        output.write(McpHttp.fileHeader(entry.size, entry.contentType))
+        runCatching { entry.file.inputStream().use { it.copyTo(output, FILE_COPY_BUFFER) } }
+            .onFailure { AppLogger.warn("MCP 发送文件失败：${entry.file.name}", it) }
     }
 
     private suspend fun handleRpc(request: HttpRequest, output: BufferedOutputStream) {
@@ -211,5 +228,26 @@ internal class McpServer(
 
         /** 单次请求读超时：对端连上却不发数据时，不让线程永久占着。 */
         const val READ_TIMEOUT_MILLIS = 30_000
+
+        /** 并发处理上限。backlog=16 只限制等待 accept 的队列，不限制 worker 数量。 */
+        const val MAX_WORKERS = 8
+
+        /** 流式发送文件时的拷贝缓冲。16KB 是磁盘顺序读的常见最优粒度。 */
+        const val FILE_COPY_BUFFER = 16 * 1024
+
+        /**
+         * 有上限的线程池：空闲线程 60 秒回收，超过 [MAX_WORKERS] 的请求排队。
+         *
+         * 本项目只服务本机一个客户端，正常最多同时一两个连接；设上限是为了
+         * 万一被扫端口时线程数不无界增长（`newCachedThreadPool` 没有上限）。
+         */
+        fun newWorkerPool(): ExecutorService = ThreadPoolExecutor(
+            0,
+            MAX_WORKERS,
+            60L,
+            TimeUnit.SECONDS,
+            LinkedBlockingQueue(),
+            { runnable -> Thread(runnable, "mcp-worker").apply { isDaemon = true } },
+        )
     }
 }

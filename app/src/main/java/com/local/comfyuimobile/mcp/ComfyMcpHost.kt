@@ -6,7 +6,6 @@ import com.local.comfyuimobile.network.ComfyClient
 import com.local.comfyuimobile.network.ResultParser
 import kotlinx.coroutines.delay
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 
 /**
  * [McpToolHost] 的真实实现：把 MCP 工具调用接到现有的 [ComfyClient] 上（v0.2.85）。
@@ -21,6 +20,8 @@ import java.io.ByteArrayOutputStream
  */
 internal class ComfyMcpHost(
     private val client: ComfyClient,
+    /** 出图落盘用。与 [McpToolRegistry] 同一实例（同一目录），写完直接 register。 */
+    private val files: McpFileStore,
     /** 取"当前工作流路径"；用户没指定 workflow 参数时用它。 */
     private val currentWorkflowPath: () -> String?,
     /** 提交被反代网关拒绝时刷新登录 Cookie（与 App 内出图同一套）。 */
@@ -82,7 +83,24 @@ internal class ComfyMcpHost(
         val entries = client.listWorkflows()
             .filter { !it.isDirectory && it.path.endsWith(".json", ignoreCase = true) }
         if (entries.isEmpty()) return "服务器上没有可用的工作流。"
-        return entries.joinToString("\n") { "${it.name}  (${it.path})" }
+        // 标出是否 API 格式：`generate` 只吃 API 格式，不标的话 AI 只能一个个试错
+        // （调一次报一次错）。读文件只为判定格式，失败就当未知，不阻断列表。
+        return entries.joinToString("\n") { entry ->
+            val format = runCatching {
+                val text = client.readWorkflow(entry.path)
+                val root = JSONObject(text)
+                when {
+                    WorkflowFormat.isApiPrompt(root) -> "api"
+                    else -> "canvas"
+                }
+            }.getOrDefault("unknown")
+            val tag = when (format) {
+                "api" -> "[可直用]"
+                "canvas" -> "[画布格式，需先 Export (API)]"
+                else -> "[格式未知]"
+            }
+            "${entry.name}  ${entry.path}  $tag"
+        }
     }
 
     override suspend fun generate(request: GenerateRequest, awaitMillis: Long): GenerateOutcome {
@@ -163,7 +181,7 @@ internal class ComfyMcpHost(
         }
     }
 
-    /** 从 history 里解析输出并**把图片字节取回来**（后续由 `/files/{id}` 转交）。 */
+    /** 从 history 里解析输出并**直接下载到文件**（不经过内存，见 [McpFileStore] 说明）。 */
     private suspend fun collectMedia(promptId: String, history: JSONObject): List<McpMedia> {
         val parsed = runCatching { ResultParser.parse(client.serverUrl(), history) }.getOrNull()
             ?: return emptyList()
@@ -171,18 +189,21 @@ internal class ComfyMcpHost(
             .take(MAX_IMAGES)
         val result = mutableListOf<McpMedia>()
         for (item in images) {
-            val bytes = runCatching {
-                val buffer = ByteArrayOutputStream()
-                client.downloadTo(item.url, buffer)
-                buffer.toByteArray()
-            }.onFailure { AppLogger.warn("MCP 取图失败：${item.filename}", it) }.getOrNull() ?: continue
-            if (bytes.isEmpty()) continue
             val extension = item.filename.substringAfterLast('.', "png").lowercase()
+            val target = files.newFile(extension)
+            val ok = runCatching {
+                target.outputStream().use { client.downloadTo(item.url, it) }
+            }.onFailure { AppLogger.warn("MCP 取图失败：${item.filename}", it) }.isSuccess
+            // 失败或空文件都不要登记：否则 /files 会交给对方一个 0 字节的"图"。
+            if (!ok || target.length() == 0L) {
+                runCatching { target.delete() }
+                continue
+            }
             result += McpMedia(
                 filename = item.filename,
                 extension = extension,
                 contentType = McpFileStore.contentTypeOf(extension),
-                bytes = bytes,
+                file = target,
             )
         }
         return result
