@@ -94,7 +94,10 @@ class McpServerService : Service() {
         this.manager = manager
         val bound = manager.start(
             resolvedToken,
-            requestedPort = stored?.mcpServerPort ?: 0,
+            // 端口解析必须与 UI 同一条路（resolvePort）：直接传偏好原值的话，
+            // 0 会被 ServerSocket 理解成"系统随机分配"——UI 显示 23456、
+            // 配置片段也生成 23456，服务却绑在随机端口上，AiCode 必然连不上。
+            requestedPort = McpServerManager.resolvePort(stored?.mcpServerPort ?: 0),
             resultSink = { media, file -> resultCache.add(media, file) },
         )
         markRunning(true)
@@ -173,7 +176,16 @@ class McpServerService : Service() {
     }
 
     private fun onStartFailed(error: Throwable) {
-        AppLogger.error("MCP 前台服务启动失败", error)
+        // 绑定失败最常见的原因是端口被占。明确告诉用户"能改端口"——
+        // 只报失败的话，用户不知道出路在哪，也不该静默换端口（那会让配置悄悄失效）。
+        val message = if (error.message?.contains("Bind failed", ignoreCase = true) == true ||
+            error is java.net.BindException
+        ) {
+            "MCP 端口被占用：请到 MCP 服务页 → 高级 → 端口 换一个"
+        } else {
+            error.message.orEmpty()
+        }
+        AppLogger.error("MCP 前台服务启动失败：$message", error)
         stopServer()
     }
 

@@ -918,12 +918,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 实际生效的端口：服务在跑用请求的配置端口，否则用偏好/默认。 */
-    private fun effectiveMcpPort(): Int {
-        val configured = _state.value.mcpServerConfiguredPort
-        return if (configured in McpServerManager.MIN_PORT..McpServerManager.MAX_PORT) configured
-        else McpServerManager.DEFAULT_PORT
-    }
+    /** 实际生效的端口。与服务的端口解析走同一个纯函数，两边不可能再不一致。 */
+    private fun effectiveMcpPort(): Int =
+        McpServerManager.resolvePort(_state.value.mcpServerConfiguredPort)
 
     /**
      * 修改 MCP 端口（v0.2.88）。服务在跑则重启到新端口。
