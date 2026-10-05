@@ -2,10 +2,12 @@ package com.local.comfyuimobile.mcp
 
 import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.data.WorkflowFormat
+import com.local.comfyuimobile.model.ResultMedia
 import com.local.comfyuimobile.network.ComfyClient
 import com.local.comfyuimobile.network.ResultParser
 import kotlinx.coroutines.delay
 import org.json.JSONObject
+import java.io.File
 
 /**
  * [McpToolHost] 的真实实现：把 MCP 工具调用接到现有的 [ComfyClient] 上（v0.2.85）。
@@ -24,9 +26,16 @@ internal class ComfyMcpHost(
     private val files: McpFileStore,
     /** 取"当前工作流路径"；用户没指定 workflow 参数时用它。 */
     private val currentWorkflowPath: () -> String?,
-    /** 提交被反代网关拒绝时刷新登录 Cookie（与 App 内出图同一套）。 */
+    /** 提交被反代网关拒绠时刷新登录 Cookie（与 App 内出图同一套）。 */
     private val refreshCookie: suspend () -> Unit,
     private val clientId: String,
+    /**
+     * MCP 出图同步写入结果页（v0.2.88）。
+     *
+     * 以前图片只进临时目录、1 小时 TTL 后删除——用户用 AI 生成的图在 App 的
+     * "结果"页里找不到，说不过去。null 表示不落结果页（单测用）。
+     */
+    private val resultSink: (suspend (ResultMedia, File) -> Unit)? = null,
 ) : McpToolHost {
 
     override suspend fun listModels(type: String?): String {
@@ -217,6 +226,12 @@ internal class ComfyMcpHost(
             if (!ok || target.length() == 0L) {
                 runCatching { target.delete() }
                 continue
+            }
+            // 同步写入结果页：用户用 AI 生成的图应该和 App 内出图一样能翻到。
+            // 落结果页失败不影响返回给模型（那只是锦上添花），记日志即可。
+            resultSink?.let { sink ->
+                runCatching { sink(item, target) }
+                    .onFailure { AppLogger.warn("MCP 出图写入结果页失败：${item.filename}", it) }
             }
             result += McpMedia(
                 filename = item.filename,

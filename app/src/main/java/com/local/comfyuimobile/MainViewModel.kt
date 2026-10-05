@@ -322,7 +322,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         serverInput = resolvedServerInput,
                         mcpServerEnabled = stored.mcpServerEnabled,
                         mcpServerToken = stored.mcpServerToken,
-                        mcpServerPort = if (McpServerService.isRunning()) McpServerManager.PORT else 0,
+                        mcpServerConfiguredPort = stored.mcpServerPort,
+                        mcpServerPort = if (McpServerService.isRunning()) effectiveMcpPort() else 0,
                         aiStudio = _state.value.aiStudio.copy(
                             accounts = stored.aiStudioAccounts,
                             // v0.2.46：账号字段跟 serverInput 一样需要"内存领先磁盘"的
@@ -903,8 +904,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.update {
                 it.copy(
                     mcpServerEnabled = true,
-                    mcpServerPort = McpServerManager.PORT,
-                    notice = "MCP 服务已启动：127.0.0.1:${McpServerManager.PORT}",
+                    mcpServerPort = effectiveMcpPort(),
+                    notice = "MCP 服务已启动：127.0.0.1:${effectiveMcpPort()}",
                 )
             }
         } else {
@@ -917,6 +918,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** 实际生效的端口：服务在跑用请求的配置端口，否则用偏好/默认。 */
+    private fun effectiveMcpPort(): Int {
+        val configured = _state.value.mcpServerConfiguredPort
+        return if (configured in McpServerManager.MIN_PORT..McpServerManager.MAX_PORT) configured
+        else McpServerManager.DEFAULT_PORT
+    }
+
+    /**
+     * 修改 MCP 端口（v0.2.88）。服务在跑则重启到新端口。
+     *
+     * 端口变更会让 AiCode 侧配置里的 URL 失效——页面在改完后会提醒重新复制配置。
+     * 非法值（超范围）直接拒绝，不静默夹紧：用户应该知道自己的输入没生效。
+     */
+    fun setMcpServerPort(port: Int) {
+        if (port !in McpServerManager.MIN_PORT..McpServerManager.MAX_PORT) {
+            _state.update { it.copy(notice = "端口需在 ${McpServerManager.MIN_PORT} - ${McpServerManager.MAX_PORT} 之间") }
+            return
+        }
+        _state.update { it.copy(mcpServerConfiguredPort = port) }
+        viewModelScope.launch { runCatching { preferences.setMcpServerPort(port) } }
+        if (_state.value.mcpServerEnabled) {
+            McpServerService.stop(app)
+            McpServerService.start(app, _state.value.mcpServerToken)
+            _state.update {
+                it.copy(
+                    mcpServerPort = port,
+                    notice = "端口已改为 $port；AiCode 配置里的 URL 需同步更新并新开会话",
+                )
+            }
+        }
+    }
+
     /** 重新生成访问令牌。服务在跑的话一并重启，否则新令牌不生效。 */
     fun regenerateMcpToken() {
         val token = McpServerManager.newToken()
@@ -925,7 +958,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_state.value.mcpServerEnabled) {
             McpServerService.stop(app)
             McpServerService.start(app, token)
+            _state.update { it.copy(notice = "令牌已重新生成；AiCode 配置里的 Authorization 需同步更新并新开会话") }
         }
+    }
+
+    /**
+     * MCP 链路自检（v0.2.88）：服务监听 → ComfyUI 可达 → 工作流可列。
+     * 每项独立判定，哪层红了直接看见——排查"AI 说调了但没反应"时先跑这个。
+     */
+    suspend fun runMcpDiagnostics(): List<Pair<String, Boolean>> = withContext(Dispatchers.IO) {
+        val results = mutableListOf<Pair<String, Boolean>>()
+        results += "MCP 服务监听中" to (McpServerService.isRunning() && _state.value.mcpServerPort > 0)
+        val url = _state.value.activeServer?.baseUrl.orEmpty()
+        results += "ComfyUI 服务器已连接" to (url.isNotBlank() && _state.value.status == ConnectionStatus.CONNECTED)
+        if (results.all { it.second }) {
+            val probe = runCatching {
+                ComfyClient().apply {
+                    setServer(url)
+                    setAuthCookie(_state.value.serverCookie)
+                }.listWorkflows()
+            }
+            results += "工作流可列（${probe.getOrNull()?.size ?: 0} 个）" to probe.isSuccess
+        }
+        results
     }
 
     /**

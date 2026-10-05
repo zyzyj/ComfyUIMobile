@@ -12,6 +12,7 @@ import com.local.comfyuimobile.R
 import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.data.AppPreferences
 import com.local.comfyuimobile.data.AuthCookieProvider
+import com.local.comfyuimobile.data.LocalResultCache
 import com.local.comfyuimobile.mcp.McpServerManager
 import com.local.comfyuimobile.network.ComfyClient
 import kotlinx.coroutines.CoroutineScope
@@ -58,9 +59,8 @@ class McpServerService : Service() {
     }
 
     private suspend fun startServer(token: String) {
-        val resolvedToken = token.ifBlank {
-            runCatching { AppPreferences(this).settings.first().mcpServerToken }.getOrDefault("")
-        }
+        val stored = runCatching { AppPreferences(this).settings.first() }.getOrNull()
+        val resolvedToken = token.ifBlank { stored?.mcpServerToken.orEmpty() }
         if (resolvedToken.isBlank()) {
             AppLogger.warn("MCP 前台服务启动被拒：没有访问令牌")
             stopServer()
@@ -71,6 +71,10 @@ class McpServerService : Service() {
         val created = ComfyClient()
         client = created
         applyServerFromPreferences(created)
+
+        // MCP 出图同步写入结果页（v0.2.88）：用户用 AI 生成的图，在 App 的
+        // "结果"页里要能翻到——不然 App 本来用来看图的地方反而少了 AI 那部分。
+        val resultCache = LocalResultCache(this)
 
         val manager = McpServerManager(
             client = created,
@@ -86,9 +90,10 @@ class McpServerService : Service() {
                 }
             },
             clientId = "comfy-mobile-mcp",
+            resultSink = { media, file -> resultCache.add(media, file) },
         )
         this.manager = manager
-        val bound = manager.start(resolvedToken)
+        val bound = manager.start(resolvedToken, requestedPort = stored?.mcpServerPort ?: 0)
         markRunning(true)
         AppLogger.info("MCP 前台服务已就绪：127.0.0.1:$bound")
         startForeground(FOREGROUND_ID, buildNotification(bound))

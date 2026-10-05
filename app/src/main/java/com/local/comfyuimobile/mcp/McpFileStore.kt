@@ -34,7 +34,10 @@ internal class McpFileStore(
         val contentType: String,
         val size: Long,
         val expiresAt: Long,
-    )
+    ) {
+        /** 日志用：文件名（日志不记路径，避免带出目录结构）。 */
+        fun filenameDisplay(): String = file.name
+    }
 
     private val entries = ConcurrentHashMap<String, Entry>()
 

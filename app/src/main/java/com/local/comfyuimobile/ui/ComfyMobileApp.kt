@@ -315,6 +315,8 @@ private enum class MainPage(val label: String, val icon: ImageVector, val inBott
     PARAMETERS("参数", Icons.Outlined.Tune, inBottomBar = false),
     // v0.2.36：空间管理页。从设置进入。
     STORAGE("空间管理", Icons.Outlined.Memory, inBottomBar = false),
+    // v0.2.88：MCP 服务页。从设置进入。
+    MCP("MCP 服务", Icons.Outlined.Extension, inBottomBar = false),
     ;
 
     companion object {
@@ -532,6 +534,10 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
                 settings = false
                 pushPage(MainPage.STORAGE)
             },
+            onOpenMcp = {
+                settings = false
+                pushPage(MainPage.MCP)
+            },
         )
     } else {
         ConnectedScaffold(
@@ -596,6 +602,7 @@ private fun ConnectedScaffold(
                         MainPage.ACCOUNT -> null
                         MainPage.CONSOLE -> "控制台"
                         MainPage.STORAGE -> "空间管理"
+                        MainPage.MCP -> "MCP 服务"
                         MainPage.TASKS -> "任务"
                         MainPage.PARAMETERS -> "参数"
                         else -> null
@@ -624,6 +631,7 @@ private fun ConnectedScaffold(
                     val subPageTitle: String? = when (page) {
                         MainPage.CONSOLE -> "控制台"
                         MainPage.STORAGE -> "空间管理"
+                        MainPage.MCP -> "MCP 服务"
                         MainPage.TASKS -> "任务"
                         MainPage.PARAMETERS -> "参数"
                         else -> null
@@ -734,6 +742,7 @@ private fun ConnectedScaffold(
                         MainPage.TASKS -> TaskScreen(state, viewModel)
                         MainPage.QUICK -> QuickGenScreen(state, viewModel)
                         MainPage.STORAGE -> StorageScreen(state, viewModel)
+                        MainPage.MCP -> McpScreen(state, viewModel, onBack = { goBack() })
                     }
                 }
             }
@@ -3918,65 +3927,257 @@ private fun JobCard(job: JobSummary, viewModel: MainViewModel, tracked: Boolean)
 }
 
 /**
- * v0.2.85：设置页里的 MCP 服务区。
+ * v0.2.88：MCP 服务独立页。
  *
- * 开启后本 App 会在 `127.0.0.1:8765` 上提供一个 MCP 端点，供同机的 AiCode 连接，
- * 从而用外部强模型操作这个 App 连着的 ComfyUI。
+ * 设置页原来塞的那几行不够用了：这个功能的可用性取决于三层（服务在跑 → ComfyUI
+ * 连着 → AiCode 配置对），页面上要把三层状态并排摆出来，断在哪一层一眼可见；
+ * 再配上调用日志（排查"AI 说它调了但没反应"的唯一手段）与诊断自检。
  *
- * 界面只做三件事：开关、展示 token 与配置片段、重新生成 token。所有细节
- * （协议、工具、文件端点）在 AiCode 那一侧，用户不需要看到。
+ * 端口等易变项收在"高级"折叠区——主界面只留日常要看的。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun McpSettingsSection(
+private fun McpScreen(
     state: AppUiState,
     viewModel: MainViewModel,
-    context: android.content.Context,
+    onBack: () -> Unit,
 ) {
-    val snippet = state.mcpServerToken.takeIf { it.isNotBlank() }
-        ?.let { McpServerManager.configSnippet(it) }
-    SettingsSection("MCP 服务（供 AiCode 连接）", icon = Icons.Outlined.Extension) {
-        Text(
-            "开启后，同机的 AiCode 可通过 127.0.0.1 操作本 App 连着的 ComfyUI" +
-                "（列出模型、列出工作流、出图）。只监听本机，局域网内其他设备连不上。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+    val context = LocalContext.current
+    val clipboard = remember { context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager }
+    val scope = rememberCoroutineScope()
+    var showAdvanced by remember { mutableStateOf(false) }
+    var portDraft by remember(state.mcpServerConfiguredPort) {
+        mutableStateOf(
+            (state.mcpServerConfiguredPort.takeIf { it != 0 } ?: McpServerManager.DEFAULT_PORT).toString(),
         )
-        SettingsToggleRow(
-            title = "开启 MCP 服务",
-            subtitle = if (state.mcpServerEnabled) {
-                "正在监听 127.0.0.1:${state.mcpServerPort}"
-            } else {
-                "关闭中 —— 开启需要一个访问令牌（首次会自动生成）"
-            },
-            checked = state.mcpServerEnabled,
-            onCheckedChange = viewModel::setMcpServerEnabled,
-        )
-        if (snippet != null) {
-            Text(
-                "把下面这段写到 AiCode 的 .aicode/mcp.json（工作区项目级优先）：",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+    }
+    var diagnosing by remember { mutableStateOf(false) }
+    var diagnoseResult by remember { mutableStateOf<List<Pair<String, Boolean>>>(emptyList()) }
+    var logTick by remember { mutableStateOf(0) } // 日志是内存态，用 tick 驱动重组
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("MCP 服务") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.Outlined.ChevronLeft, "返回") }
+                },
             )
-            SelectionContainer {
+        },
+    ) { padding ->
+        Column(
+            Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            // ===== 状态区 =====
+            SettingsSection("状态", icon = Icons.Outlined.Extension) {
+                SettingsToggleRow(
+                    title = "MCP 服务",
+                    subtitle = when {
+                        state.mcpServerEnabled && state.mcpServerPort > 0 ->
+                            "监听中：127.0.0.1:${state.mcpServerPort}"
+                        state.mcpServerEnabled -> "正在启动…"
+                        else -> "已关闭 —— 开启后同机 AiCode 可操作本 App 连着的 ComfyUI"
+                    },
+                    checked = state.mcpServerEnabled,
+                    onCheckedChange = viewModel::setMcpServerEnabled,
+                )
+                // 第二层：ComfyUI 连接状态。服务活着但 ComfyUI 断着，是"AI 报错"
+                // 的最常见原因，两层并排才能一眼看出断在哪。
+                val comfyStatus = when (state.status) {
+                    ConnectionStatus.CONNECTED -> "已连接 · ${state.activeServer?.name.orEmpty()}"
+                    ConnectionStatus.CONNECTING, ConnectionStatus.RECONNECTING -> "连接中…"
+                    else -> "未连接 —— 工具不可用，请先回工作流页连接服务器"
+                }
                 Text(
-                    snippet,
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                        .padding(10.dp),
+                    "ComfyUI：$comfyStatus",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (state.status == ConnectionStatus.CONNECTED) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
+                )
+                // 第三层：最近调用。服务在跑、ComfyUI 在线，但 AI 半天没动静时看这里。
+                val last = if (state.mcpServerEnabled) McpCallLog.last() else null
+                Text(
+                    if (last != null) {
+                        "最近调用：${McpTime.format(last.timestamp)} · ${last.summary} · ${if (last.ok) "成功" else "失败"}"
+                    } else {
+                        "最近调用：尚无"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = {
-                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                        as android.content.ClipboardManager
-                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("AiCode MCP 配置", snippet))
-                }) { Text("复制配置") }
-                TextButton(onClick = viewModel::regenerateMcpToken) { Text("重新生成令牌") }
+
+            // ===== AiCode 配置 =====
+            val token = state.mcpServerToken
+            if (token.isNotBlank()) {
+                SettingsSection("AiCode 配置", icon = Icons.Outlined.ContentCopy) {
+                    val snippet = McpServerManager.configSnippet(token, state.mcpServerPort.takeIf { it > 0 } ?: effectivePort(state))
+                    SelectionContainer {
+                        Text(
+                            snippet,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                .padding(10.dp),
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = {
+                            clipboard.setPrimaryClip(ClipData.newPlainText("AiCode MCP 配置", snippet))
+                            android.widget.Toast.makeText(context, "已复制；粘贴到 AiCode 的 .aicode/mcp.json", Toast.LENGTH_SHORT).show()
+                        }) { Text("复制配置") }
+                        TextButton(onClick = viewModel::regenerateMcpToken) { Text("重新生成令牌") }
+                    }
+                    Text(
+                        "⚠ 换端口或重新生成令牌后，AiCode 里的配置要同步更新，并新开一次会话才生效",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+
+            // ===== 工具 =====
+            SettingsSection("工具（${McpToolRegistry.TOOL_NAMES.size}）", icon = Icons.Outlined.List) {
+                McpToolRegistry.TOOL_NAMES.forEach { tool ->
+                    val description = when (tool) {
+                        "list_models" -> "列出服务器上的模型与 LoRA"
+                        "list_workflows" -> "列出工作流（标注是否 API 格式）"
+                        "generate" -> "用工作流出图（结果同时存入结果页）"
+                        "job_status" -> "查询一次出图任务的进度"
+                        else -> ""
+                    }
+                    Text(tool, style = MaterialTheme.typography.bodyMedium)
+                    if (description.isNotBlank()) {
+                        Text(
+                            description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Text(
+                    "未来的 terminal 工具（让 AI 执行命令）会在这里出现，默认关闭",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            // ===== 调用日志 =====
+            SettingsSection("调用日志", icon = Icons.Outlined.FileOpen) {
+                key(logTick) {
+                    val entries = McpCallLog.snapshot()
+                    if (entries.isEmpty()) {
+                        Text(
+                            "暂无调用。AiCode 每次连上、调用工具都会记在这里（最多 50 条，不落盘）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        entries.asReversed().forEach { entry ->
+                            Text(
+                                "${McpTime.format(entry.timestamp)}  ${entry.summary}  ${if (entry.ok) "✓" else "✗"} ${entry.detail}",
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                color = if (entry.ok) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                        val text = McpCallLog.snapshot().joinToString("\n") { e ->
+                            "${McpTime.format(e.timestamp)}  ${e.summary}  ${if (e.ok) "OK" else "FAIL"} ${e.detail}"
+                        }
+                        clipboard.setPrimaryClip(ClipData.newPlainText("MCP 调用日志", text))
+                        android.widget.Toast.makeText(context, "已复制日志", Toast.LENGTH_SHORT).show()
+                        logTick++
+                    }) { Text("复制") }
+                    TextButton(onClick = {
+                        McpCallLog.clear()
+                        logTick++
+                    }) { Text("清空") }
+                    TextButton(onClick = { logTick++ }) { Text("刷新") }
+                }
+            }
+
+            // ===== 诊断 =====
+            SettingsSection("诊断", icon = Icons.Outlined.Info) {
+                OutlinedButton(
+                    onClick = {
+                        diagnosing = true
+                        scope.launch {
+                            diagnoseResult = viewModel.runMcpDiagnostics()
+                            diagnosing = false
+                            logTick++
+                        }
+                    },
+                    enabled = !diagnosing,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (diagnosing) "自检中…" else "开始自检")
+                }
+                diagnoseResult.forEach { (name, ok) ->
+                    Text(
+                        "${if (ok) "✓" else "✗"} $name",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (ok) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+
+            // ===== 高级 =====
+            Row(
+                Modifier.fillMaxWidth().clickable { showAdvanced = !showAdvanced },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("高级", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                Icon(if (showAdvanced) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null)
+            }
+            if (showAdvanced) {
+                SettingsSection("端口", icon = Icons.Outlined.Edit) {
+                    Text(
+                        "默认 ${McpServerManager.DEFAULT_PORT}。一般不用改；改了要同步更新 AiCode 配置并新开会话",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = portDraft,
+                            onValueChange = { portDraft = it.filter(Char::isDigit).take(5) },
+                            label = { Text("端口") },
+                            singleLine = true,
+                            modifier = Modifier.width(140.dp),
+                        )
+                        TextButton(onClick = { portDraft = McpServerManager.DEFAULT_PORT.toString() }) { Text("恢复默认") }
+                        TextButton(onClick = { portDraft.toIntOrNull()?.let(viewModel::setMcpServerPort) }) { Text("保存") }
+                    }
+                    Text(
+                        "端口被其他应用占用时服务会启动失败并明确提示，不会静默换端口（那会让 AiCode 配置悄悄失效）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
+}
+
+/** 端口展示用：配置了用配置，否则默认。 */
+private fun effectivePort(state: AppUiState): Int =
+    state.mcpServerConfiguredPort.takeIf { it != 0 } ?: McpServerManager.DEFAULT_PORT
+
+/** 时间格式化（日志用）：HH:mm:ss。 */
+private object McpTime {
+    fun format(timestamp: Long): String =
+        java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.CHINA).format(java.util.Date(timestamp))
 }
 
 /**
@@ -4132,6 +4333,7 @@ private fun SettingsScreen(
     snackbar: SnackbarHostState,
     onBack: () -> Unit,
     onOpenStorage: (() -> Unit)? = null,
+    onOpenMcp: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     var confirmDeleteLocal by remember { mutableStateOf(false) }
@@ -4185,6 +4387,7 @@ private fun SettingsScreen(
             onRequestDeleteLocal = { confirmDeleteLocal = true },
             onRequestClearDrafts = { confirmClearDrafts = true },
             onOpenStorage = onOpenStorage,
+            onOpenMcp = onOpenMcp,
             onShowLog = {
                 diagnosticLog = viewModel.diagnosticLog()
                 showDiagnosticLog = true
@@ -4251,6 +4454,7 @@ private fun SettingsContent(
     onRequestDeleteLocal: () -> Unit,
     onRequestClearDrafts: () -> Unit,
     onOpenStorage: (() -> Unit)?,
+    onOpenMcp: (() -> Unit)? = null,
     onShowLog: () -> Unit,
     onExportLog: () -> Unit,
     onPickSaveFolder: () -> Unit,
@@ -4310,8 +4514,19 @@ private fun SettingsContent(
             )
         }
 
-        // —— MCP 服务（v0.2.85）——
-        McpSettingsSection(state = state, viewModel = viewModel, context = LocalContext.current)
+        // —— MCP 服务（v0.2.88）：入口在独立页 ——
+        SettingsSection("MCP 服务", icon = Icons.Outlined.Extension) {
+            Text(
+                if (state.mcpServerEnabled) "运行中 · 127.0.0.1:${state.mcpServerPort}" else "关闭中",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(onClick = { onOpenMcp?.invoke() }, enabled = onOpenMcp != null, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Outlined.Extension, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("进入 MCP 服务页")
+            }
+        }
 
         // —— 图片保存 ——
         SettingsSection("图片保存", icon = Icons.Outlined.Download) {
