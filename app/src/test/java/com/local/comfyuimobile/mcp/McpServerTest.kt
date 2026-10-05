@@ -67,6 +67,14 @@ class McpServerTest {
             }
         }
 
+        override suspend fun describeWorkflow(workflow: String?): String =
+            "工作流：demo.json（workflows/demo.json）\n" +
+                "可调字段 2 项，用 generate 的 params 传入 key 即可修改：\n" +
+                "  3::steps  [steps]  Steps  当前=20  范围：1.0 ~ 100.0"
+
+        override suspend fun cancelJobs(jobId: String?): String =
+            if (jobId == null) "已清空待执行队列" else "已请求中止 $jobId"
+
         override suspend fun jobStatus(jobId: String): GenerateOutcome = GenerateOutcome.Done(
             jobId,
             listOf(
@@ -291,6 +299,58 @@ class McpServerTest {
         assertEquals(200, fileCode)
         assertEquals("image/png", contentType)
         assertEquals(listOf<Byte>(1, 2, 3, 4), bytes.toList())
+    }
+
+    @Test
+    fun toolsListIncludesNewTools() = withServer { port, _ ->
+        val (_, body) = postMcp(port, """{"jsonrpc":"2.0","id":11,"method":"tools/list"}""")
+        val tools = JSONObject(body).getJSONObject("result").getJSONArray("tools")
+        val names = (0 until tools.length()).map { tools.getJSONObject(it).getString("name") }
+        assertTrue("应含 describe_workflow", "describe_workflow" in names)
+        assertTrue("应含 cancel_jobs", "cancel_jobs" in names)
+        assertTrue("工具名仍需满足 64 字符上限", names.all { it.length <= McpProtocol.MAX_TOOL_NAME_LENGTH })
+    }
+
+    @Test
+    fun describeWorkflowIsCallable() = withServer { port, _ ->
+        val (code, body) = postMcp(
+            port,
+            """{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"describe_workflow","arguments":{}}}""",
+        )
+        assertEquals(200, code)
+        val text = JSONObject(body).getJSONObject("result")
+            .getJSONArray("content").getJSONObject(0).getString("text")
+        assertTrue(text.contains("steps"))
+    }
+
+    @Test
+    fun cancelJobsIsCallable() = withServer { port, _ ->
+        val (code, body) = postMcp(
+            port,
+            """{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"cancel_jobs","arguments":{}}}""",
+        )
+        assertEquals(200, code)
+        val text = JSONObject(body).getJSONObject("result")
+            .getJSONArray("content").getJSONObject(0).getString("text")
+        assertTrue(text.contains("清空"))
+    }
+
+    @Test
+    fun generatePassesParamsThrough() = runBlocking {
+        val host = FakeHost()
+        val registry = McpToolRegistry(
+            host,
+            McpFileStore(cacheDir = java.io.File(System.getProperty("java.io.tmpdir"), "mcp-params-${System.nanoTime()}")),
+        ) { "http://x/files/" }
+        registry.dispatch(
+            "tools/call",
+            JSONObject(
+                """{"name":"generate","arguments":{"prompt":"p","params":{"3::steps":"30","3::cfg":7.5}}}""",
+            ),
+            "1",
+        )
+        assertEquals("30", host.lastRequest?.params?.get("3::steps"))
+        assertEquals("7.5", host.lastRequest?.params?.get("3::cfg"))
     }
 
     @Test

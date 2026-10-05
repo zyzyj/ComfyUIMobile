@@ -37,7 +37,12 @@ class LocalResultCache(context: Context) {
         return File(folder, "${safe(media.nodeId)}-${key(media).hashCode().toUInt()}.$extension")
     }
 
-    suspend fun add(media: ResultMedia, file: File): ResultMedia = withContext(Dispatchers.IO) {
+    suspend fun add(
+        media: ResultMedia,
+        file: File,
+        /** 来源（v0.2.91）：MCP 出图传 [ResultSource.MCP]，好让结果页能把 AI 生成的图单独筛出来。 */
+        source: ResultSource = ResultSource.LOCAL,
+    ): ResultMedia = withContext(Dispatchers.IO) {
         mutex.withLock {
             val key = key(media)
             val records = readIndex().filterNot { it.optString("key") == key }.toMutableList()
@@ -45,7 +50,7 @@ class LocalResultCache(context: Context) {
             writeIndex(records)
             media.copy(
                 url = Uri.fromFile(file).toString(),
-                source = ResultSource.LOCAL,
+                source = source,
                 localPath = file.absolutePath,
             )
         }

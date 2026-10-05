@@ -3,6 +3,8 @@ package com.local.comfyuimobile.mcp
 import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.data.WorkflowFormat
 import com.local.comfyuimobile.model.ResultMedia
+import com.local.comfyuimobile.model.JobState
+import com.local.comfyuimobile.model.ParameterField
 import com.local.comfyuimobile.network.ComfyClient
 import com.local.comfyuimobile.network.ResultParser
 import kotlinx.coroutines.delay
@@ -124,38 +126,38 @@ internal class ComfyMcpHost(
 
     override suspend fun generate(request: GenerateRequest, awaitMillis: Long): GenerateOutcome {
         requireConnected()
-        val path = request.workflow?.takeIf { it.isNotBlank() }
-            ?: currentWorkflowPath()?.takeIf { it.isNotBlank() }
+        val source = readApiWorkflow(request.workflow)
             ?: return GenerateOutcome.Failed(
-                "没有指定工作流，且 App 当前没有打开中的工作流；请传 workflow 参数（见 list_workflows）",
+                "没有可用的 API 格式工作流：请传 workflow 参数（见 list_workflows / describe_workflow），" +
+                    "或先在 App 里打开一个 API 格式工作流",
             )
-
-        val rawWorkflow = try {
-            client.readWorkflow(path)
-        } catch (error: Exception) {
-            return GenerateOutcome.Failed("读取工作流失败（$path）：${error.message}")
-        }
-        val workflowJson = runCatching { JSONObject(rawWorkflow) }.getOrNull()
-            ?: return GenerateOutcome.Failed("工作流不是合法 JSON：$path")
-
-        if (!WorkflowFormat.isApiPrompt(workflowJson)) {
-            return GenerateOutcome.Failed(
-                "工作流「$path」是画布格式，MCP 目前只能执行 API 格式。" +
-                    "请在 ComfyUI 里用 Workflow → Export (API) 另存一份，再用它的路径调用。",
-            )
-        }
+        val path = source.path
+        val workflowJson = source.json
 
         val planned = when (val result = McpPromptPlanner.plan(workflowJson, request)) {
             is McpPromptPlanner.Result.Failure -> return GenerateOutcome.Failed(result.message)
             is McpPromptPlanner.Result.Ok -> result
         }
-        AppLogger.info("MCP 生成：$path，已注入 ${planned.applied.joinToString(",")}")
+
+        // 任意参数注入（steps/cfg/采样器/种子/尺寸…）。未识别的 key 必须报错——
+        // 静默忽略会让模型以为改了其实没改。
+        val params = McpPromptPlanner.applyParams(JSONObject(planned.promptJson), request.params)
+        if (params.unknownKeys.isNotEmpty()) {
+            return GenerateOutcome.Failed(
+                "以下参数在工作流里找不到：${params.unknownKeys.joinToString(", ")}。" +
+                    "请先用 describe_workflow 查看可用的 key",
+            )
+        }
+        val finalPrompt = params.promptJson
+        AppLogger.info(
+            "MCP 生成：$path，已注入 ${(planned.applied + params.applied).joinToString(",")}",
+        )
 
         val name = path.substringAfterLast('/')
         val response = try {
             client.queuePrompt(
-                planned.promptJson,
-                rawWorkflow,
+                finalPrompt,
+                source.raw,
                 clientId,
                 path,
                 name,
@@ -171,6 +173,98 @@ internal class ComfyMcpHost(
                 .onFailure { AppLogger.warn("MCP 提交回调失败：${response.promptId}", it) }
         }
         return finishOrRunning(response.promptId, awaitMillis, startedAt = System.currentTimeMillis())
+    }
+
+    /**
+     * 列出工作流可调参数（v0.2.91）。
+     *
+     * 此前 `generate` 只有 prompt/negative/checkpoint/lora/count——**尺寸、steps、cfg、
+     * 采样器、seed 全动不了**，AI 说"帮我调一下"无从下手。这个工具让它第一次能
+     * "看见"工作流里有什么可调。
+     */
+    override suspend fun describeWorkflow(workflow: String?): String {
+        requireConnected()
+        val source = readApiWorkflow(workflow)
+            ?: return "当前没有可用的 API 格式工作流（请传 workflow 参数，或先在 App 里打开一个）"
+        val path = source.path
+        val fields = McpPromptPlanner.fields(source.json)
+        if (fields.isEmpty()) {
+            return "工作流「${path.substringAfterLast('/')}」没有可调字段（可能全是连线输入）。"
+        }
+        val lines = mutableListOf<String>()
+        lines += "工作流：${path.substringAfterLast('/')}（$path）"
+        lines += "可调字段 ${fields.size} 项，用 generate 的 params 传入 key 即可修改："
+        // 常用项排前面：模型最常改的就是这几类，让他第一屏就看到。
+        val priority = listOf("steps", "cfg", "sampler_name", "scheduler", "seed", "width", "height")
+        val ordered = fields.sortedWith(
+            compareByDescending<ParameterField> { field -> priority.indexOfFirst { field.name.equals(it, ignoreCase = true) } }
+                .thenBy { it.nodeTitle }
+                .thenBy { it.name },
+        )
+        for (field in ordered.take(MAX_DESCRIBE_FIELDS)) {
+            val range = when {
+                field.options.isNotEmpty() -> "可选：${field.options.take(12).joinToString(" | ")}"
+                field.minimum != null || field.maximum != null ->
+                    "范围：${field.minimum ?: "-"} ~ ${field.maximum ?: "-"}"
+                else -> ""
+            }
+            lines += "  ${field.key}  [${field.name}]  ${field.label.ifBlank { field.name }}" +
+                "  当前=${field.displayValue}" +
+                (if (range.isBlank()) "" else "  $range")
+        }
+        if (fields.size > MAX_DESCRIBE_FIELDS) {
+            lines += "  …还有 ${fields.size - MAX_DESCRIBE_FIELDS} 项未列出"
+        }
+        return lines.joinToString("\n")
+    }
+
+    /**
+     * 读一个工作流并确认是 API 格式。返回 (路径, 解析后的 JSON)。
+     * 与 [generate] 共用——判定标准只写一份，不然两边又会对不上。
+     */
+    private suspend fun readApiWorkflow(workflow: String?): WorkflowSource? {
+        val path = workflow?.takeIf { it.isNotBlank() }
+            ?: currentWorkflowPath()?.takeIf { it.isNotBlank() }
+            ?: return null
+        val raw = runCatching { client.readWorkflow(path) }.getOrNull() ?: return null
+        val json = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+        return if (WorkflowFormat.isApiPrompt(json)) WorkflowSource(path, raw, json) else null
+    }
+
+    /** 读到的 API 格式工作流：路径、原始文本（提交时回填 extra_data）、解析后的对象。 */
+    private data class WorkflowSource(val path: String, val raw: String, val json: JSONObject)
+
+    override suspend fun cancelJobs(jobId: String?): String {
+        requireConnected()
+        if (jobId == null) {
+            // 不指定任务：清空待执行队列 + 中断正在执行的那个。AI 批量提交后最常用。
+            // 注意 /interrupt 是 cancel(job) 的内部动作、不是公开方法——所以正在跑的
+            // 那个要走 cancel，它会在确认仍在 queue_running 后才发中断（见 ComfyClient）。
+            runCatching { client.clearPending() }
+                .onFailure { return "清空队列失败：${it.message}" }
+            val running = runCatching { client.queue() }.getOrNull()
+                ?.filter { it.state == JobState.RUNNING }
+                .orEmpty()
+            var interrupted = 0
+            for (job in running) {
+                if (runCatching { client.cancel(job) }.isSuccess) interrupted++
+            }
+            return buildString {
+                append("已清空待执行队列")
+                if (running.isNotEmpty()) {
+                    append("，并请求中断 ${interrupted}/${running.size} 个正在执行的任务")
+                }
+                append("。注意：正在执行的那一张可能仍会产出图片")
+                append("（ComfyUI 在当前步骤结束后才停）。")
+            }
+        }
+        val queue = runCatching { client.queue() }.getOrNull()
+            ?: return "读取队列失败，未能中止 $jobId"
+        val job = queue.firstOrNull { it.id == jobId }
+            ?: return "队列里没有 $jobId（可能已执行完或已被清理）；如要清空整个队列，请不传 job_id"
+        runCatching { client.cancel(job) }
+            .onFailure { return "中止 $jobId 失败：${it.message}" }
+        return "已请求中止 $jobId。"
     }
 
     override suspend fun jobStatus(jobId: String): GenerateOutcome {
@@ -322,5 +416,8 @@ internal class ComfyMcpHost(
 
         /** 批量 job_status 一次最多查多少个 id（防超长参数把请求撑爆）。 */
         const val MAX_BATCH_IDS = 16
+
+        /** describe_workflow 一次最多列多少字段（太长会挤爆模型上下文）。 */
+        const val MAX_DESCRIBE_FIELDS = 40
     }
 }

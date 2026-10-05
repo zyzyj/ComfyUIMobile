@@ -31,6 +31,19 @@ internal interface McpToolHost {
 
     /** 批量查询多个任务的状态（v0.2.90）：返回给模型的文本，不走 GenerateOutcome。 */
     suspend fun jobStatusBatch(ids: List<String>): String
+
+    /** 列出一个工作流里可调的参数（v0.2.91）：返回给模型的文本清单。 */
+    suspend fun describeWorkflow(workflow: String?): String
+
+    /**
+     * 紧急刹车（v0.2.91）：中止 AI 已提交的任务。
+     *
+     * 关掉 MCP 服务**不会**停任务——它们已经在远端 ComfyUI 的队列里了。
+     * AI 一次批量提交 8 个任务时，没有这个能力就只能干等。
+     *
+     * @param jobId 指定任务；为空则清空整个待执行队列并中断当前任务
+     */
+    suspend fun cancelJobs(jobId: String?): String
 }
 
 internal data class GenerateRequest(
@@ -40,6 +53,13 @@ internal data class GenerateRequest(
     val checkpoint: String?,
     val lora: String?,
     val count: Int,
+    /**
+     * 任意参数注入（v0.2.91）：field key → 值。
+     *
+     * key 由 `describe_workflow` 给出。这样才能改 steps / cfg / 采样器 / 种子 / 尺寸
+     * 这些原先动不了的字段——否则 AI 只能改提示词和模型。
+     */
+    val params: Map<String, String> = emptyMap(),
 )
 
 internal sealed interface GenerateOutcome {
@@ -134,6 +154,7 @@ internal class McpToolRegistry(
     private suspend fun invoke(name: String, args: JSONObject): ToolResult = when (name) {
         TOOL_LIST_MODELS -> ToolResult(host.listModels(args.optString("type").takeIf { it.isNotBlank() }))
         TOOL_LIST_WORKFLOWS -> ToolResult(host.listWorkflows())
+        TOOL_DESCRIBE_WORKFLOW -> ToolResult(host.describeWorkflow(args.optString("workflow").trim().takeIf { it.isNotBlank() }))
         TOOL_GENERATE -> renderGenerate(host.generate(parseGenerate(args), generateAwaitMillis))
         TOOL_JOB_STATUS -> {
             val ids = parseJobIds(args)
@@ -141,6 +162,7 @@ internal class McpToolRegistry(
             if (ids.size > 1) ToolResult(host.jobStatusBatch(ids))
             else renderGenerate(host.jobStatus(ids.first()))
         }
+        TOOL_CANCEL -> ToolResult(host.cancelJobs(args.optString("job_id").trim().takeIf { it.isNotBlank() }))
         else -> throw IllegalArgumentException("未知工具：$name")
     }
 
@@ -172,7 +194,21 @@ internal class McpToolRegistry(
             checkpoint = args.optString("checkpoint").trim().takeIf { it.isNotBlank() },
             lora = args.optString("lora").trim().takeIf { it.isNotBlank() },
             count = count,
+            params = parseParams(args),
         )
+    }
+
+    /** `params` 是自由对象：值可能是字符串也可能是数字，统一转成字符串交给注入层解析。 */
+    private fun parseParams(args: JSONObject): Map<String, String> {
+        val obj = args.optJSONObject("params") ?: return emptyMap()
+        val result = LinkedHashMap<String, String>()
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val value = obj.opt(key) ?: continue
+            result[key.trim()] = value.toString().trim()
+        }
+        return result
     }
 
     /** 把结果渲染成给模型看的文本。图片只给 URL——AiCode 不渲染 image content block。 */
@@ -256,8 +292,26 @@ internal class McpToolRegistry(
                         .put("workflow", JSONObject().put("type", "string").put("description", "工作流路径（可选，见 list_workflows；缺省用 App 当前打开的工作流，且必须是 API 格式）"))
                         .put("checkpoint", JSONObject().put("type", "string").put("description", "模型文件名（可选）"))
                         .put("lora", JSONObject().put("type", "string").put("description", "LoRA 文件名（可选）"))
-                        .put("count", JSONObject().put("type", "integer").put("description", "出图张数，1-8，默认 1")),
+                        .put("count", JSONObject().put("type", "integer").put("description", "出图张数，1-8，默认 1"))
+                        .put(
+                            "params",
+                            JSONObject()
+                                .put("type", "object")
+                                .put("description", "按 field key 注入任意参数（steps/cfg/sampler/seed/尺寸等）。先用 describe_workflow 拿到 key 与原值"),
+                        ),
                     required = JSONArray().put("prompt"),
+                ),
+            ),
+        )
+        put(
+            McpProtocol.toolDescriptor(
+                TOOL_DESCRIBE_WORKFLOW,
+                "查看一个工作流里有哪些可调参数（field key、当前值、可选值），并给出每个字段的用途说明。" +
+                    "出图前先调它，才能用 generate 的 params 改 steps / cfg / 采样器 / 尺寸 / 种子等。",
+                schema(
+                    JSONObject()
+                        .put("workflow", JSONObject().put("type", "string").put("description", "工作流路径；缺省用 App 当前打开的工作流")),
+                    required = JSONArray(),
                 ),
             ),
         )
@@ -279,6 +333,14 @@ internal class McpToolRegistry(
                 ),
             ),
         )
+        put(
+            McpProtocol.toolDescriptor(
+                TOOL_CANCEL,
+                "紧急刹车：中止已提交的任务。不传 job_id 则清空整个待执行队列并中断当前任务。" +
+                    "注意：关闭 MCP 服务不会停任务，它们已在远端 ComfyUI 队列里。",
+                schema(JSONObject().put("job_id", JSONObject().put("type", "string").put("description", "要中止的任务 id；省略则清空队列"))),
+            ),
+        )
     }
 
     private fun schema(properties: JSONObject, required: JSONArray = JSONArray()): JSONObject =
@@ -292,6 +354,8 @@ internal class McpToolRegistry(
         const val TOOL_LIST_WORKFLOWS = "list_workflows"
         const val TOOL_GENERATE = "generate"
         const val TOOL_JOB_STATUS = "job_status"
+        const val TOOL_CANCEL = "cancel_jobs"
+        const val TOOL_DESCRIBE_WORKFLOW = "describe_workflow"
 
         /**
          * 120 秒。60 秒太短（SDXL 单图常见 20-60 秒，带高清修复就超），
@@ -303,6 +367,13 @@ internal class McpToolRegistry(
         const val MAX_BATCH_IDS = 16
 
         /** 所有工具名（供启动期自检命名约束）。 */
-        val TOOL_NAMES = listOf(TOOL_LIST_MODELS, TOOL_LIST_WORKFLOWS, TOOL_GENERATE, TOOL_JOB_STATUS)
+        val TOOL_NAMES = listOf(
+            TOOL_LIST_MODELS,
+            TOOL_LIST_WORKFLOWS,
+            TOOL_DESCRIBE_WORKFLOW,
+            TOOL_GENERATE,
+            TOOL_JOB_STATUS,
+            TOOL_CANCEL,
+        )
     }
 }

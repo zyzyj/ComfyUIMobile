@@ -2039,7 +2039,10 @@ private fun ResultScreen(
     var selectedMedia by remember { mutableStateOf<ResultMedia?>(null) }
     var selectedKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
     var confirmDeleteSelection by remember { mutableStateOf(false) }
+    /** v0.2.91：只看 AI（MCP）生成的图。MCP 出图也存进本地缓存，不筛就混在一起。 */
+    var onlyMcp by rememberSaveable { mutableStateOf(false) }
     val media = (if (source == ResultSource.LOCAL) state.localResults else state.results)
+        .let { list -> if (onlyMcp) list.filter { it.source == ResultSource.MCP } else list }
         .sortedWith(compareByDescending<ResultMedia> { it.createdAt }.thenByDescending { it.taskNumber })
     // v0.2.53：相册分组 + 排序加 remember。结果多时（一次批量几十张）每次重组都重算
     // groupBy + 两次 sortedWith，在结果页滚动/多选时很卡。
@@ -2101,13 +2104,24 @@ private fun ResultScreen(
                 if (selectedAlbum != null) {
                     TextButton(onClick = { onSelectedAlbumChange(null) }) { Text("‹ 返回相册") }
                 } else {
-                    Text(
-                        if (source == ResultSource.LOCAL) "手机独立保存的白名单作品" else "ComfyUI 服务器媒体资产",
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextButton(onClick = { onLayoutChange(if (layout == ResultLayout.ALL) ResultLayout.ALBUMS else ResultLayout.ALL) }) {
-                        Text(if (layout == ResultLayout.ALL) "任务相册" else "全部平铺")
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            if (source == ResultSource.LOCAL) "手机独立保存的白名单作品" else "ComfyUI 服务器媒体资产",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (source == ResultSource.LOCAL) {
+                            // AI 出的图也在这个列表里，给个开关分开看（默认不筛，避免改变既有习惯）。
+                            TextButton(onClick = { onlyMcp = !onlyMcp }) {
+                                Text(if (onlyMcp) "仅 AI 生成 ✓" else "仅 AI 生成", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                        TextButton(onClick = { onLayoutChange(if (layout == ResultLayout.ALL) ResultLayout.ALBUMS else ResultLayout.ALL) }) {
+                            Text(if (layout == ResultLayout.ALL) "任务相册" else "全部平铺", style = MaterialTheme.typography.labelSmall)
+                        }
                     }
                 }
                 IconButton(onClick = { if (source == ResultSource.LOCAL) viewModel.refreshLocalResults() else viewModel.refreshResults() }) {
@@ -4073,8 +4087,10 @@ private fun McpScreen(
                     val description = when (tool) {
                         "list_models" -> "列出服务器上的模型与 LoRA"
                         "list_workflows" -> "列出工作流（标注是否 API 格式）"
-                        "generate" -> "用工作流出图（结果同时存入结果页）"
-                        "job_status" -> "查询一次出图任务的进度"
+                        "describe_workflow" -> "查看工作流里可调的参数（steps/cfg/尺寸/种子…）"
+                        "generate" -> "用工作流出图（结果同时存入结果页，标为 AI 生成）"
+                        "job_status" -> "查询任务进度（queued/running/done/failed，可一次查多个）"
+                        "cancel_jobs" -> "紧急刹车：中止任务或清空队列"
                         else -> ""
                     }
                     Text(tool, style = MaterialTheme.typography.bodyMedium)
@@ -4087,7 +4103,8 @@ private fun McpScreen(
                     }
                 }
                 Text(
-                    "未来的 terminal 工具（让 AI 执行命令）会在这里出现，默认关闭",
+                    "未来的 terminal 工具（让 AI 执行命令）会在这里出现，默认关闭。
+                        紧急停止也在常驻通知里 —— AI 批量出图时可一键清队列并停服务。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
