@@ -340,6 +340,7 @@ class ComfyClient {
                         workflowName = workflowName(extraData),
                         workflowPath = workflowPath(extraData),
                         workflowJson = workflowJson(extraData),
+                        origin = origin(extraData),
                         message = failure.ifBlank { statusString },
                         durationMillis = executionDuration(status),
                     ),
@@ -354,6 +355,11 @@ class ComfyClient {
         clientId: String,
         workflowPath: String,
         workflowName: String,
+        /**
+         * 提交来源标记（v0.2.93）：写入 `extra_data.comfy_mobile.origin`。
+         * 之后从 `/queue` 读回时靠它区分「谁提交的」——取消/清理只动自己的。
+         */
+        origin: String = "app",
         /**
          * 遇到**反代网关拒绝**（而非 ComfyUI 参数校验失败）时，用它刷新一次登录 Cookie 再重试。
          *
@@ -373,7 +379,8 @@ class ComfyClient {
                         "comfy_mobile",
                         JSONObject()
                             .put("workflow_path", workflowPath)
-                            .put("workflow_name", workflowName),
+                            .put("workflow_name", workflowName)
+                            .put("origin", origin),
                     ),
             )
         val request = Request.Builder().url("$baseUrl/prompt").post(body.toString().toRequestBody(jsonMedia)).build()
@@ -751,6 +758,7 @@ class ComfyClient {
                             workflowName = workflowName(item.optJSONObject(3)),
                             workflowPath = workflowPath(item.optJSONObject(3)),
                             workflowJson = workflowJson(item.optJSONObject(3)),
+                            origin = origin(item.optJSONObject(3)),
                         ),
                     )
                 }
@@ -770,6 +778,17 @@ class ComfyClient {
 
     private fun workflowPath(extraData: JSONObject?): String =
         extraData?.optJSONObject("comfy_mobile")?.optString("workflow_path").orEmpty()
+
+    /**
+     * 提交来源（v0.2.93）。空 = 不是本 App 提交的（如网页端直接跑）。
+     *
+     * 用自己刻的 `comfy_mobile.origin` 而不是 ComfyUI 的 `client_id`：后者的位置与
+     * 保留情况是外部系统的实现细节（不同版本可能变），而这是我们自己写进去的。
+     * 同时也比 ViewModel 的 `submittedByApp` 可靠——后者按 clientId 比对，
+     * MCP 用独立 client 时永远匹配不上。
+     */
+    private fun origin(extraData: JSONObject?): String =
+        extraData?.optJSONObject("comfy_mobile")?.optString("origin").orEmpty()
 
     private fun workflowJson(extraData: JSONObject?): String? {
         val value = extraData?.optJSONObject("extra_pnginfo")?.opt("workflow") ?: return null

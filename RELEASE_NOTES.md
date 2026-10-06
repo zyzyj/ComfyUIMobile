@@ -1,3 +1,33 @@
+# v0.2.93 — 收窄 cancel_jobs 范围（联调前必修的安全项）
+
+按清单「v0.2.91 核对后追加」的 A 项：`cancel_jobs` 原不传 job_id 时**清空整个
+待执行队列**——队列里可能有用户自己在 App 里提交的图、或网页端正在跑的任务。
+AI 一句「算了重新来」就把它们全清了。这正是「AI 不知道自己的任务边界」那一类，
+而边界必须由 App 侧划定。
+
+## 怎么区分「谁提交的」
+
+清单建议解析 ComfyUI 的 `extra_data.client_id`，但那有两个问题：
+- `client_id` 在 `/queue` 里的位置是**外部系统的实现细节**，换 ComfyUI 版本可能变
+- ViewModel 的 `submittedByApp` 是按 clientId 比对的，而 **MCP 用独立 client，永远匹配不上**
+
+改成**在本 App 自己写入的标记里加来源**：提交时写
+`extra_data.comfy_mobile.origin = "app" | "mcp"`，从 `/queue` 与 `/history` 读回时
+解析进 `JobSummary.origin`。这是自己刻的印记，不依赖外部行为。
+
+## 改动
+
+- `JobSummary` 加 `origin` 字段与 `submittedByThisApp()`
+- `queuePrompt` 加 `origin` 参数（App 界面默认 `app`，MCP 传 `mcp`）
+- **`cancel_jobs` 默认只清本 App 提交的**；另有非本 App 任务时在返回里说明，
+  确需全清才传 `all=true`
+- 抽取 `McpJobState.selectCancellable(queue, includeOthers)` 纯函数——判定要在
+  host 与测试两处用，只改一处就会静默失去保护
+- 老版本提交的任务没有 `origin` 字段 → **保守当成「不是我的」**，宁可不删也不误删
+- 通知里的「紧急停止」保持**全清**语义：那是用户主动按的按钮，与 AI 自主调用
+  刻意不同（已在注释里写明）
+
+新增 4 条单测锁住这个安全边界。
 # v0.2.92 — 修「选不了 GPU 档位」的真根因 + 日志带版本号
 
 用户反馈：**无法选中 GPU 启动，只能默认档位启动**。查了对方提供的诊断日志，

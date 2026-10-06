@@ -110,7 +110,19 @@ data class JobSummary(
     val submittedByApp: Boolean = false,
     val message: String = "",
     val durationMillis: Long? = null,
-)
+    /**
+     * 提交来源（v0.2.93）：`app` / `mcp` / 空（非本 App 提交，如网页端）。
+     *
+     * 来源取自提交时写进 ComfyUI 的 `extra_data.comfy_mobile.origin`——
+     * **由本 App 自己刻的印记**，不依赖 ComfyUI 把 `client_id` 放在 `/queue`
+     * 的哪个位置（那是外部系统行为，换版本可能变），也不依赖上层二次加工的
+     * [submittedByApp]（MCP 用独立 client，那条永远是 false）。
+     */
+    val origin: String = "",
+) {
+    /** 是否由本 App 提交（含 App 界面与 MCP 两条路径）。 */
+    fun submittedByThisApp(): Boolean = origin.isNotBlank()
+}
 
 enum class AppDestination { PARAMETERS, RESULTS, WORKFLOWS }
 

@@ -280,6 +280,9 @@ class McpServerService : Service() {
         if (client != null) {
             runCatching {
                 scope.launch {
+                    // 这里是**用户主动点**的紧急停止，语义就是"全停"——
+                    // 与 MCP 的 cancel_jobs 默认只清本 App 任务**刻意不同**：
+                    // AI 不该决定别人的任务命运，而用户自己按下的按钮应当彻底。
                     runCatching { client.clearPending() }
                     runCatching {
                         client.queue()

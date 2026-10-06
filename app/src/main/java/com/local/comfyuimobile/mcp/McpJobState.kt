@@ -74,4 +74,18 @@ internal object McpJobState {
             else -> Verdict(Phase.UNKNOWN, message = "队列与历史里都查不到该任务（可能已被清理或 job_id 有误）")
         }
     }
+
+    /**
+     * 从队列里选出"允许被取消"的任务（v0.2.93）。
+     *
+     * **这是安全边界，不是普通筛选**：队列里可能有用户自己在 App 界面提交的图、
+     * 或网页端直接跑的任务，而 MCP 的 `cancel_jobs` 是 AI 自主调用的。
+     * 默认只允许动**本 App 提交的**（`origin` 有值——App 界面与 MCP 两条路径都刻了
+     * 这个印记）。只有显式传 `all=true` 时才放手全部。
+     *
+     * 抽成纯函数的原因与 resolvePort 一致：判定要在 host 与测试两处用，
+     * 只改一处就会静默失去保护。
+     */
+    fun selectCancellable(queue: List<JobSummary>, includeOthers: Boolean): List<JobSummary> =
+        if (includeOthers) queue else queue.filter { it.submittedByThisApp() }
 }

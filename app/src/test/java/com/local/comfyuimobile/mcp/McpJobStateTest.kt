@@ -68,9 +68,45 @@ class McpJobStateTest {
         assertEquals(McpJobState.Phase.UNKNOWN, verdict("").phase)
     }
 
+    // ===== v0.2.93：cancel_jobs 的可取消范围（安全边界） =====
+
     @Test
-    fun phaseLabelsAreStableForTheModel() {
-        // 模型读的是 label 字符串：queued/running/done/failed 不能随意改，
+    fun defaultScopeExcludesTasksNotSubmittedByThisApp() {
+        // 核心回归：队列里可能有用户自己在 App/网页端提交的图，AI 默认不该碰。
+        val queue = listOf(
+            JobSummary(id = "mine-app", state = JobState.PENDING, origin = "app"),
+            JobSummary(id = "mine-mcp", state = JobState.PENDING, origin = "mcp"),
+            JobSummary(id = "web", state = JobState.PENDING, origin = ""),
+        )
+        val selected = McpJobState.selectCancellable(queue, includeOthers = false).map { it.id }
+        assertEquals(listOf("mine-app", "mine-mcp"), selected)
+        assertTrue("网页端提交的不能被选中", "web" !in selected)
+    }
+
+    @Test
+    fun explicitAllIncludesOthers() {
+        val queue = listOf(
+            JobSummary(id = "a", state = JobState.PENDING, origin = "app"),
+            JobSummary(id = "web", state = JobState.PENDING),
+        )
+        assertEquals(2, McpJobState.selectCancellable(queue, includeOthers = true).size)
+    }
+
+    @Test
+    fun emptyOriginIsNotConsideredMine() {
+        // 老版本提交的任务没有 origin 字段——保守当成"不是我的"，宁可不删也不误删。
+        assertTrue(McpJobState.selectCancellable(listOf(JobSummary("old", JobState.PENDING)), false).isEmpty())
+    }
+
+    @Test
+    fun submittedByThisAppReflectsOrigin() {
+        assertTrue(JobSummary("x", JobState.RUNNING, origin = "mcp").submittedByThisApp())
+        assertTrue(JobSummary("x", JobState.RUNNING, origin = "app").submittedByThisApp())
+        assertTrue(!JobSummary("x", JobState.RUNNING).submittedByThisApp())
+    }
+
+    @Test
+    fun phaseLabelsAreStableForTheModel() {        // 模型读的是 label 字符串：queued/running/done/failed 不能随意改，
         // 否则 Skill 与模型侧的判断会一起失效。
         assertEquals("queued", McpJobState.Phase.QUEUED.label)
         assertEquals("running", McpJobState.Phase.RUNNING.label)
