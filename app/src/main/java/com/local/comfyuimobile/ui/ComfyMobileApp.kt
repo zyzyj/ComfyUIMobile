@@ -5396,6 +5396,19 @@ private fun ProjectCard(project: AiStudioProject, panel: AiStudioState, viewMode
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    // v0.2.92：把失败原因摆出来。之前的兜底只说了"没读到"，
+                    // 用户不知道是网络、登录过期还是被平台风控拦了——而不同原因
+                    // 要做的事完全不同（重试 / 重登 / 去浏览器过人机验证）。
+                    panel.error?.takeIf { it.isNotBlank() }?.let { reason ->
+                        Text(
+                            reason,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        TextButton(onClick = { viewModel.aiStudioLoadSchedules(project.projectId) }) {
+                            Text("重试读取档位", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
                 } else {
                     panel.schedules.forEach { schedule ->
                         OutlinedButton(

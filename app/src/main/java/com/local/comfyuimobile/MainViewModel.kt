@@ -55,6 +55,7 @@ import com.local.comfyuimobile.model.BatchPhase
 import com.local.comfyuimobile.model.BatchRun
 import com.local.comfyuimobile.model.CacheOutputRule
 import com.local.comfyuimobile.model.ConnectionStatus
+import com.local.comfyuimobile.model.DailyTaskGate
 import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.JobSummary
 import com.local.comfyuimobile.model.LoraMatrixTask
@@ -342,8 +343,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 // 每日自动任务：偏好恢复后同步内存开关，并在有账号时跑一次。
                 // 放在这里而不是 onCreate，是因为账号是从 DataStore 异步读出来的，
-                // onCreate 时它还不在。aiStudioAutoDailyTasks 自身幂等（平台会告诉
-                // 我们今天签过没），偏好每次推送都调也无害。
+                // onCreate 时它还不在。
+                // v0.2.92：必须用**当天已跑**门闩，不能只靠 aiStudioActionJob 判忙：
+                // runDailyTasksFor 末尾会调 aiStudioRefreshAccount（另一个 job），
+                // 它刷新令牌后会 persistAiStudio 写偏好 → 偏好又推一次 → 又跑每日任务
+                // → 循环。真机日志里一秒钟冒好几轮积分/算力请求，触发平台风控 8407。
                 autoDailyTasksEnabled = stored.autoDailyTasks
                 if (stored.autoDailyTasks) aiStudioAutoDailyTasks()
                 // v0.2.85：偏好恢复后按开关自动拉起 MCP 前台服务（用户开着开关重启 App 时
@@ -825,10 +829,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val accounts = _state.value.aiStudio.accounts.toList()
         if (accounts.isEmpty()) return
         if (aiStudioActionJob?.isActive == true) return
+        // v0.2.92：每账号每天只跑一次。
+        //
+        // 这里不能只靠 aiStudioActionJob 判忙——runDailyTasksFor 末尾会调
+        // aiStudioRefreshAccount（不同的 job），它成功刷新令牌后会 persistAiStudio
+        // 写偏好； DataStore 偏好一变就再推一次 collect，又调到这里，形成环。
+        // 真机日志里一秒内冒出好几轮积分/算力卡请求（间隔 ~100ms），
+        // 平台风控会回 8407「账号存在安全风险」——而档位列表与启动环境都走
+        // 同一风控，于是一起失败：**档位读不到，只能默认档位启动**。
+        val accountsToRun = DailyTaskGate.claim(
+            accounts.map { it.id },
+            dailyTaskGuard,
+            System.currentTimeMillis(),
+        ).toSet()
+        if (accountsToRun.isEmpty()) return
         aiStudioActionJob = viewModelScope.launch {
             val activeId = _state.value.aiStudio.activeAccountId
             // 先跑当前账号（它的积分要显示在面板上），再跑其余账号。
-            val ordered = AiStudioAccountOrder.activeFirst(accounts, activeId)
+            val ordered = AiStudioAccountOrder.activeFirst(accounts.filter { it.id in accountsToRun }, activeId)
             for (account in ordered) {
                 runDailyTasksFor(account, isActive = account.id == activeId)
             }
@@ -880,6 +898,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ===== v0.2.85 MCP server =====
+
+    /**
+     * 每日自动任务的「今天已跑」门闩（v0.2.92）：accountId → 日期串。
+     *
+     * 内存态即可：它的作用是在**一次进程生命周期内**阻止偏好推送引发的重复执行；
+     * 进程重启后本就会重新跑一轮（那正是想要的，且平台侧对已签到返回"已签过"）。
+     */
+    private val dailyTaskGuard = ConcurrentHashMap<String, String>()
 
     /**
      * 开关内嵌的 MCP server。
@@ -1973,7 +1999,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun aiStudioLoadSchedules(projectId: String) {
         val account = _state.value.aiStudio.activeAccount() ?: return
         // 重置为「未加载」，让界面显示读取中（旧数据不要留着假装是新项目的）。
-        _state.update { it.copy(aiStudio = it.aiStudio.copy(schedules = emptyList(), schedulesLoaded = false)) }
+        // 同时清掉上次的 error：否则重试期间界面还挂着上一次的失败原因，
+        // 用户无法判断这次到底成没成。
+        _state.update {
+            it.copy(
+                aiStudio = it.aiStudio.copy(
+                    schedules = emptyList(),
+                    schedulesLoaded = false,
+                    error = null,
+                ),
+            )
+        }
         aiStudioScheduleJob = viewModelScope.launch {
             runCatching { aiStudio.listSchedules(account, projectId) }
                 .onSuccess { schedules ->

@@ -76,7 +76,13 @@ object AppLogger {
         context = value.applicationContext
         enabled = isEnabled(value)
         installCrashHandler()
-        info("应用启动，日志记录=${if (enabled) "开启" else "关闭"}")
+        // 版本号写进第一行日志：以前排查用户反馈时无从知道对方装的是哪个版本，
+        // 只能靠猜（“你试试新版”这种对话就是它的代价）。
+        info("应用启动，版本=${
+            runCatching {
+                value.packageManager.getPackageInfo(value.packageName, 0).versionName
+            }.getOrNull() ?: "未知"
+        }，日志记录=${if (enabled) "开启" else "关闭"}")
         if (enabled) scheduleHistoricalExits(value)
     }
 
