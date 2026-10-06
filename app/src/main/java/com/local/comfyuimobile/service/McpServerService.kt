@@ -13,6 +13,7 @@ import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.data.AppPreferences
 import com.local.comfyuimobile.data.AuthCookieProvider
 import com.local.comfyuimobile.data.LocalResultCache
+import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.ResultSource
 import com.local.comfyuimobile.mcp.McpServerManager
 import com.local.comfyuimobile.network.ComfyClient
@@ -22,6 +23,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * MCP 服务的前台承载（v0.2.85）。
@@ -38,6 +40,19 @@ import kotlinx.coroutines.launch
 class McpServerService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * 清理用作用域（v0.2.95）：**故意不被 [onDestroy] 取消**。
+     *
+     * 以前紧急停止把清队列放在 [scope] 里，而 [panicStop] 紧接着调 [stopServer] →
+     * `stopSelf()` → [onDestroy] → `scope.cancel()`。清队列是网络请求（几十~几百 ms），
+     * 协程几乎总在刚发起时就被取消——**结果是只停了本地服务，远端队列根本没清**，
+     * 而这正是紧急停止存在的理由（关服务不等于停任务）。
+     *
+     * 需要"服务销毁后仍要跑完"的事都放这里：清队列、写偏好关标记。
+     */
+    private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private var manager: McpServerManager? = null
     private var client: ComfyClient? = null
     /** 服务当前生效的服务器地址与 Cookie；用于跳过偏好流里的重复推送。 */
@@ -211,8 +226,13 @@ class McpServerService : Service() {
         runCatching { manager?.stop() }
         manager = null
         markRunning(false)
-        scope.launch { runCatching { AppPreferences(this@McpServerService).setMcpServerEnabled(false) } }
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        // 关标记要真落盘，否则进程被杀后重开 App 会以为还开着、又拉起服务。
+        // 放 cleanupScope：onDestroy 会取消 scope，写盘可能被拦在半路。
+        cleanupScope.launch {
+            runCatching { AppPreferences(this@McpServerService).setMcpServerEnabled(false) }
+                .onFailure { AppLogger.warn("保存 MCP 开关失败", it) }
+        }
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         stopSelf()
     }
 
@@ -270,34 +290,53 @@ class McpServerService : Service() {
     }
 
     /**
-     * 紧急停止（v0.2.91）：清空远端队列 + 停掉本服务。
+     * 紧急停止（v0.2.91；v0.2.95 修竞态）：清空远端队列 + 停掉本服务。
      *
      * 关服务**不等于**停任务——任务在 ComfyUI 的队列里，所以两件事都要做。
-     * 队列操作失败也要继续停服务：至少本地不再接受新的出图请求。
+     *
+     * 顺序上必须**先清完队列再停服务**：反过来的话，stopSelf 会触发 onDestroy
+     * 把协程取消，清队列请求根本发不出去（或发到一半断掉）。清理放在
+     * [cleanupScope] 里，它不会被服务销毁取消。
+     *
+     * 清理有超时：网络卡住时不能让用户干等，超时后照旧停服务——至少本地
+     * 不再接受新的出图请求。
      */
     private fun panicStop() {
-        val client = this.client
-        if (client != null) {
-            runCatching {
-                scope.launch {
-                    // 这里是**用户主动点**的紧急停止，语义就是"全停"——
-                    // 与 MCP 的 cancel_jobs 默认只清本 App 任务**刻意不同**：
-                    // AI 不该决定别人的任务命运，而用户自己按下的按钮应当彻底。
-                    runCatching { client.clearPending() }
-                    runCatching {
-                        client.queue()
-                            .filter { it.state == com.local.comfyuimobile.model.JobState.RUNNING }
-                            .forEach { runCatching { client.cancel(it) } }
-                    }
-                }
-            }
-            AppLogger.warn("MCP 紧急停止：已请求清空队列并中断执行中的任务")
+        val target = client
+        if (target == null) {
+            stopServer()
+            return
         }
-        stopServer()
+        // 先把通知撤掉，用户立刻看到反馈；清队列在后台收尾。
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        cleanupScope.launch {
+            val cleaned = withTimeoutOrNull(PANIC_CLEANUP_TIMEOUT_MS) {
+                // 这里是**用户主动点**的紧急停止，语义就是"全停"——
+                // 与 MCP 的 cancel_jobs 默认只清本 App 任务**刻意不同**：
+                // AI 不该决定别人的任务命运，而用户自己按下的按钮应当彻底。
+                runCatching { target.clearPending() }
+                runCatching {
+                    target.queue()
+                        .filter { it.state == JobState.RUNNING }
+                        .forEach { runCatching { target.cancel(it) } }
+                }
+                true
+            }
+            AppLogger.warn(
+                if (cleaned == true) "MCP 紧急停止：远端队列已清理，现在停服务"
+                else "MCP 紧急停止：清理超时，仍停服务（远端队列可能仍有任务）",
+            )
+            stopServer()
+        }
     }
 
     companion object {
         const val CHANNEL_ID = "comfy_mcp"
+        /**
+         * 紧急停止时留给远端清理的时间（v0.2.95）。
+         * 网络卡住不能让用户干等；超时后照旧停服务。
+         */
+        const val PANIC_CLEANUP_TIMEOUT_MS = 5_000L
         private const val FOREGROUND_ID = 4201
         const val ACTION_STOP = "com.local.comfyuimobile.mcp.STOP"
         const val ACTION_PANIC = "com.local.comfyuimobile.mcp.PANIC"

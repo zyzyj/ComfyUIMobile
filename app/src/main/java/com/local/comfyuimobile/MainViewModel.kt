@@ -340,7 +340,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 if (submittedJobsChanged && _state.value.activeServer != null) {
-                    refreshTasksInternal()
+                    refreshTasksInternal(force = true)
                 }
                 // 每日自动任务：偏好恢复后同步内存开关，并在有账号时跑一次。
                 // 放在这里而不是 onCreate，是因为账号是从 DataStore 异步读出来的，
@@ -2574,7 +2574,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 listOf(
                     async { refreshStatsInternal() },
                     async { refreshWorkflowsInternal() },
-                    async { refreshTasksInternal() },
+                    async { refreshTasksInternal(force = true) },
                     async { refreshResultsInternal() },
                 ).awaitAll()
             }
@@ -3341,7 +3341,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 startMonitor(response.promptId, workflowName, workflowPath)
-                refreshTasksInternal()
+                refreshTasksInternal(force = true)
             }
         }.also { job ->
             job.invokeOnCompletion { if (generationJob === job) generationJob = null }
@@ -4006,7 +4006,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 AppLogger.info("生成任务已加入队列：${response.promptId}")
                 startMonitor(response.promptId, workflow.entry.name, workflow.entry.path)
-                refreshTasksInternal()
+                refreshTasksInternal(force = true)
             }
         }.also { job ->
             job.invokeOnCompletion {
@@ -4687,7 +4687,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun currentWorkflowExport(): Pair<String, String>? = _state.value.previewWorkflow?.let { it.entry.name to it.rawJson }
-    fun refreshTasks() = viewModelScope.launch { refreshTasksInternal() }
+    /** 用户主动刷新（v0.2.95）：强制拉历史——节流不能挡住明确的用户意图。 */
+    fun refreshTasks() = viewModelScope.launch { refreshTasksInternal(force = true) }
     fun refreshResults() = viewModelScope.launch { refreshResultsInternal() }
     fun refreshLocalResults() = viewModelScope.launch {
         val local = localResultCache.load()
@@ -4783,7 +4784,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 delay(250)
-                refreshTasksInternal()
+                refreshTasksInternal(force = true)
             }
         }
     }
@@ -4792,7 +4793,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runOperation("清空队列失败") {
                 client.clearPending()
-                refreshTasksInternal()
+                refreshTasksInternal(force = true)
             }
         }
     }
@@ -5383,8 +5384,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // v0.2.49：重连成功后立刻补一次任务状态。断开期间错过的 progress 事件服务器
         // 不会补发，若那时任务已经完成，顶栏会一直挂在旧百分比——直到下一次刷新才
         // 被纠正。这里主动对齐一次，把“重连后进度冻在旧值”的窗口压到最小。
+        // v0.2.95：重连只刷**轻量队列**——这里的目的只是"补回断开期间错过的进度"，
+        // queue 已够用；history(60 条) 交给节流（见 refreshTasksInternal 的注释）。
+        // 不加这个区分的话，200ms 的重连间隔会把几 MB 的历史每几秒拉一次。
         viewModelScope.launch {
-            runCatching { refreshTasksInternal() }
+            runCatching { refreshTasksInternal(includeHistory = false) }
                 .onFailure { if (it is CancellationException) throw it }
         }
     }
@@ -5407,9 +5411,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 反效果——退到 10 秒意味着 WebSocket 十之八九处于断开，采样 progress
                 // 大量丢失，用户看到的顶栏/通知进度就"不实时"（真机反馈）。有活跃任务
                 // 时固定用最小间隔快速重连；空闲时仍走指数退避省电。
-                val hasRunningJob = _state.value.jobs.any {
-                    it.id == _state.value.activeJobId && it.state == JobState.RUNNING
-                } || _state.value.generating
+                // v0.2.95：原来只认 `id == activeJobId`，于是 MCP / 网页端提交的
+                // 任务在跑时判定为 false → 退避一路涨到 10 秒 → 断开期间收不到任何
+                // progress，而 ComfyUI 重连**不补发百分比**，进度几乎全丢。
+                // 重连的目的是接住广播的 progress 事件，与"谁提交的"无关——
+                // 只要队列里有任务在跑，就该用最小间隔快速重连。
+                val hasRunningJob = _state.value.jobs.any { it.state == JobState.RUNNING } ||
+                    _state.value.generating
                 if (!hasRunningJob) {
                     wsReconnectBackoffMs = (wsReconnectBackoffMs * 2).coerceAtMost(WS_RECONNECT_MAX_MS)
                 }
@@ -5621,7 +5629,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         // ComfyUI 在最终 node=null 之前才把历史写入磁盘；稍后刷新才能取得完整输出。
                         viewModelScope.launch {
                             delay(250)
-                            refreshTasksInternal()
+                            refreshTasksInternal(force = true)
                             refreshResultsInternal()
                         }
                     }
@@ -5641,7 +5649,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 某些版本的 execution_success 早于历史落盘，保留延迟刷新作为兼容兜底。
                 viewModelScope.launch {
                     delay(250)
-                    refreshTasksInternal()
+                    refreshTasksInternal(force = true)
                     refreshResultsInternal()
                 }
             }
@@ -5666,7 +5674,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                 }
-                viewModelScope.launch { refreshTasksInternal(); refreshResultsInternal() }
+                viewModelScope.launch { refreshTasksInternal(force = true); refreshResultsInternal() }
             }
         }
     }
@@ -5794,11 +5802,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (wait > 0) delay(wait)
             tasksRefreshJob = null
             lastTasksRefreshAt = System.currentTimeMillis()
-            refreshTasksInternal()
+            refreshTasksInternal(force = true)
         }
     }
 
-    private suspend fun refreshTasksInternal() {
+    /**
+     * 上次真正拉过历史（`/history`）的时间（v0.2.95）。
+     *
+     * v0.2.90 把 WebSocket 重连间隔从 2s 缩到 200ms，重连频率显著上升；而每次重连
+     * 都会走到 [refreshTasksInternal]，里面带着 `historyJobs(60)`——60 条完整 prompt
+     * JSON 可能有几 MB。在反代下每 2.8 秒拉一次，是持续的流量与服务端压力，
+     * 甚至可能拖慢出图本身。
+     *
+     * 重连的目的是"补回断开期间错过的进度"，[queue] 已经足够轻量且够用；
+     * 历史只按最小间隔拉，避免把节流变成功能缺失。
+     */
+    @Volatile private var lastHistoryFetchAt = 0L
+
+    private suspend fun refreshTasksInternal(
+        /**
+         * 是否拉历史。重连路径传 false（只刷轻量队列）；用户主动刷新、出图后传 true。
+         * 传 true 也受 [HISTORY_FETCH_MIN_INTERVAL_MS] 节流——除非 [force]。
+         */
+        includeHistory: Boolean = true,
+        force: Boolean = false,
+    ) {
+        val now = System.currentTimeMillis()
+        val historyAllowed = includeHistory &&
+            (force || now - lastHistoryFetchAt >= HISTORY_FETCH_MIN_INTERVAL_MS)
+        if (historyAllowed) lastHistoryFetchAt = now
         // v0.1.87：断开后 client.baseUrl 还指向旧服务器，请求照样会成功。以前没有这道
         // 门槛，disconnect() 清空 jobs / activeServer 之后，在飞的那次刷新会把旧任务
         // 重新填回列表。
@@ -5808,7 +5840,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val existing = _state.value.jobs.associateBy { it.id }
             val live = client.queue()
             // 任务列表也只看最近一批，不拉全量历史（理由同 refreshResultsInternal）。
-            val history = client.historyJobs(maxItems = HISTORY_FOR_RESULTS)
+            // 被节流跳过时用空列表：队列已能反映"在跑/排队"，历史条目下次会补上。
+            val history = if (historyAllowed) client.historyJobs(maxItems = HISTORY_FOR_RESULTS) else emptyList()
             val submitted = _state.value.submittedJobIds
             (live + history).distinctBy { it.id }.map { fresh ->
                 val previous = existing[fresh.id]
@@ -6732,6 +6765,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
          * 避免云端几 MB 的历史把"出图后看到图"拖成几十秒。
          */
         const val HISTORY_FOR_RESULTS = 60
+
+        /**
+         * 拉 `/history` 的最小间隔（v0.2.95）：重连路径每几秒就会走到一次刷新，
+         * 这里给历史单独节流，避免高频拉 60 条（几 MB）。
+         */
+        const val HISTORY_FETCH_MIN_INTERVAL_MS = 5_000L
         /**
          * 连接终端后立即执行的 locale 修正。
          *
