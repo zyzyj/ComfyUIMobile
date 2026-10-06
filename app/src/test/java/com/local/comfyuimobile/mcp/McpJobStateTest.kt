@@ -4,6 +4,7 @@ import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.JobSummary
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
