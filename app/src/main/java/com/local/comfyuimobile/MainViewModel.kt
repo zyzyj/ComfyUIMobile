@@ -83,6 +83,7 @@ import com.local.comfyuimobile.network.AiStudioKernelClient
 import com.local.comfyuimobile.network.AiStudioTokenRefresher
 import com.local.comfyuimobile.network.AiStudioException
 import com.local.comfyuimobile.network.AiStudioProtocol
+import com.local.comfyuimobile.network.AiStudioRiskControl
 import com.local.comfyuimobile.network.ExecutionNodeResolver
 import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.network.LanScanner
@@ -899,6 +900,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ===== v0.2.85 MCP server =====
 
+    /** 最近一次领算力时间（v0.2.94）：用于连点保护，避免加刷风控。 */
+    @Volatile private var lastReceiveResourceAt = 0L
+
+    /**
+     * 最近一次启动项目时间（v0.2.94）。
+     *
+     * 启动比领算力更需要防连点：它**消耗算力卡**，且现在带了风控退避重试——
+     * 连点会并发起两个重试循环，把风控拖得更久。
+     */
+    @Volatile private var lastStartProjectAt = 0L
+
     /**
      * 每日自动任务的「今天已跑」门闩（v0.2.92）：accountId → 日期串。
      *
@@ -1126,6 +1138,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun aiStudioReceiveResource() {
         val account = _state.value.aiStudio.activeAccount() ?: return
         if (aiStudioActionJob?.isActive == true) return
+        // v0.2.94：连点保护。真机日志里三次“领取算力”间隔仅 265ms / 1076ms
+        // ——请求很快返回、`aiStudioActionJob` 已结束，按钮就又能点了。
+        // 而连点恰恰是平台风控（8407）的典型触发因素，且领算力本身是幂等的
+        //（已领过时平台会直接告知），重复请求没有任何好处。
+        val now = System.currentTimeMillis()
+        if (now - lastReceiveResourceAt < RECEIVE_RESOURCE_COOLDOWN_MS) return
+        lastReceiveResourceAt = now
         _state.update { it.copy(aiStudio = it.aiStudio.copy(error = null, message = null)) }
         aiStudioActionJob = viewModelScope.launch {
             runCatching { aiStudio.receiveResource(account) }
@@ -2011,7 +2030,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         aiStudioScheduleJob = viewModelScope.launch {
-            runCatching { aiStudio.listSchedules(account, projectId) }
+            // v0.2.94：读档位是最常被风控拦的一个（8407 时列表空 -> 只能默认档）。
+            // 退避重试期间保持"读取中"，并提示用户会自动重试。
+            runCatching {
+                withRiskRetry(
+                    action = "读取可用算力",
+                    onWaiting = { message ->
+                        _state.update { it.copy(aiStudio = it.aiStudio.copy(error = message)) }
+                    },
+                ) { aiStudio.listSchedules(account, projectId) }
+            }
                 .onSuccess { schedules ->
                     // v0.2.47：加载期间可能已切账号，别把旧账号的档位写进新面板。
                     if (!isActiveAiStudioAccount(account.id)) return@launch
@@ -2034,13 +2062,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 带风控退避的重试包装（v0.2.94）。
+     *
+     * 只对 8407/8307 这类**可恢复**错误退避重试（见 [AiStudioRiskControl]）；
+     * 参数错误、登录失效等立即抛出——重试它们没意义，只会加刷风控。
+     *
+     * @param onWaiting 每次退避前回调（用于把"N 秒后自动重试"写进界面）
+     */
+    private suspend fun <T> withRiskRetry(
+        action: String,
+        onWaiting: (String) -> Unit = {},
+        block: suspend () -> T,
+    ): T {
+        var attempt = 0
+        while (true) {
+            val outcome = runCatching { block() }
+            val error = outcome.exceptionOrNull()
+            if (error == null) return outcome.getOrThrow()
+            if (error is CancellationException) throw error
+            val code = (error as? AiStudioException)?.errorCode
+            val delayMs = AiStudioRiskControl.delayForAttempt(attempt)
+            if (!AiStudioRiskControl.isRetryable(code) || delayMs == null) throw error
+            val message = AiStudioRiskControl.messageFor(code, delayMs)
+            AppLogger.warn("$action 被平台风控拦下（码 $code），${delayMs / 1000} 秒后重试")
+            onWaiting(message)
+            kotlinx.coroutines.delay(delayMs)
+            attempt++
+        }
+    }
+
     /** 启动项目环境。scheduleName 为空时用平台默认调度。 */
     fun aiStudioStartProject(projectId: String, scheduleName: String) {
         val account = _state.value.aiStudio.activeAccount() ?: return
         if (aiStudioActionJob?.isActive == true) return
+        // v0.2.94：连点保护。启动消耗算力卡，且带风控退避重试——连点会起两个重试循环。
+        val now = System.currentTimeMillis()
+        if (now - lastStartProjectAt < START_PROJECT_COOLDOWN_MS) return
+        lastStartProjectAt = now
         _state.update { it.copy(aiStudio = it.aiStudio.copy(startingProjectId = projectId, error = null, message = null)) }
         aiStudioActionJob = viewModelScope.launch {
-            runCatching { aiStudio.startProject(account, projectId, scheduleName) }
+            runCatching {
+                // 把"N 秒后自动重试"写进界面：不显示的话用户看到"失败"会反复手点，
+                // 那只会把风控拖得更久。
+                withRiskRetry(
+                    action = "启动环境",
+                    onWaiting = { message ->
+                        _state.update { it.copy(aiStudio = it.aiStudio.copy(message = message, error = null)) }
+                    },
+                ) { aiStudio.startProject(account, projectId, scheduleName) }
+            }
                 .onSuccess {
                     AppLogger.info("AI Studio 启动请求已提交：项目=$projectId，算力=${scheduleName.ifBlank { "默认" }}")
                     _state.update {
@@ -6688,6 +6759,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
          * 空闲时仍走指数退避省电，别把省电逻辑一起改掉。
          */
         const val WS_RECONNECT_MIN_MS = 200L
+
+        /** 领算力的操作冷却（v0.2.94）：连点会加刷平台风控，而它是幂等操作。 */
+        const val RECEIVE_RESOURCE_COOLDOWN_MS = 3_000L
+
+        /** 启动项目的操作冷却（v0.2.94）：启动消耗算力卡，且连点会并发重试循环。 */
+        const val START_PROJECT_COOLDOWN_MS = 4_000L
         /** WebSocket 重连退避封顶。反代抬断频繁，等太久会让进度长时间不动。 */
         const val WS_RECONNECT_MAX_MS = 10_000L
         const val DRAFT_SAVE_DEBOUNCE_MILLIS = 250L
