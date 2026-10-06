@@ -36,14 +36,16 @@ internal interface McpToolHost {
     suspend fun describeWorkflow(workflow: String?): String
 
     /**
-     * 紧急刹车（v0.2.91）：中止 AI 已提交的任务。
+     * 紧急刹车（v0.2.91；v0.2.93 收窄范围）：中止任务。
      *
      * 关掉 MCP 服务**不会**停任务——它们已经在远端 ComfyUI 的队列里了。
-     * AI 一次批量提交 8 个任务时，没有这个能力就只能干等。
      *
-     * @param jobId 指定任务；为空则清空整个待执行队列并中断当前任务
+     * @param jobId 指定任务；为空则只清理**本 App 提交的**任务
+     * @param includeOthers 仅在不传 jobId 时生效：true 才连非本 App 的也清。
+     *        默认 false——队列里可能有用户自己在 App 或网页端提交的图，
+     *        AI 不该有能力一句“重新来”把它们全砍了
      */
-    suspend fun cancelJobs(jobId: String?): String
+    suspend fun cancelJobs(jobId: String?, includeOthers: Boolean = false): String
 }
 
 internal data class GenerateRequest(
@@ -162,7 +164,12 @@ internal class McpToolRegistry(
             if (ids.size > 1) ToolResult(host.jobStatusBatch(ids))
             else renderGenerate(host.jobStatus(ids.first()))
         }
-        TOOL_CANCEL -> ToolResult(host.cancelJobs(args.optString("job_id").trim().takeIf { it.isNotBlank() }))
+        TOOL_CANCEL -> ToolResult(
+            host.cancelJobs(
+                args.optString("job_id").trim().takeIf { it.isNotBlank() },
+                includeOthers = args.optBoolean("all", false),
+            ),
+        )
         else -> throw IllegalArgumentException("未知工具：$name")
     }
 
@@ -336,9 +343,14 @@ internal class McpToolRegistry(
         put(
             McpProtocol.toolDescriptor(
                 TOOL_CANCEL,
-                "紧急刹车：中止已提交的任务。不传 job_id 则清空整个待执行队列并中断当前任务。" +
+                "紧急刹车：中止已提交的任务。不传 job_id 则只会取消**本 App 提交的**任务" +
+                    "（默认不碰用户自己或网页端提交的）；确实要一起清才传 all=true。" +
                     "注意：关闭 MCP 服务不会停任务，它们已在远端 ComfyUI 队列里。",
-                schema(JSONObject().put("job_id", JSONObject().put("type", "string").put("description", "要中止的任务 id；省略则清空队列"))),
+                schema(
+                    JSONObject()
+                        .put("job_id", JSONObject().put("type", "string").put("description", "要中止的任务 id；省略则清理本 App 提交的任务"))
+                        .put("all", JSONObject().put("type", "boolean").put("description", "省略 job_id 时是否连非本 App 提交的任务一起清，默认 false")),
+                ),
             ),
         )
     }

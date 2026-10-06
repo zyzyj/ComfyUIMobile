@@ -73,8 +73,12 @@ class McpServerTest {
                 "可调字段 2 项，用 generate 的 params 传入 key 即可修改：\n" +
                 "  3::steps  [steps]  Steps  当前=20  范围：1.0 ~ 100.0"
 
-        override suspend fun cancelJobs(jobId: String?): String =
-            if (jobId == null) "已清空待执行队列" else "已请求中止 $jobId"
+        override suspend fun cancelJobs(jobId: String?, includeOthers: Boolean): String =
+            when {
+                jobId != null -> "已请求中止 $jobId"
+                includeOthers -> "已请求取消全部任务（含非本 App 提交的）"
+                else -> "已请求取消本 App 提交的任务；另有 2 个非本 App 提交的任务保留未动"
+            }
 
         override suspend fun jobStatus(jobId: String): GenerateOutcome = GenerateOutcome.Done(
             jobId,

@@ -161,6 +161,9 @@ internal class ComfyMcpHost(
                 clientId,
                 path,
                 name,
+                // 刻上来源：之后从 /queue 读回时能区分是不是 MCP 提交的，
+                // cancel_jobs 才敢只清自己那部分。
+                origin = ORIGIN_MCP,
                 refreshAuthCookie = refreshCookie,
             )
         } catch (error: Exception) {
@@ -234,37 +237,47 @@ internal class ComfyMcpHost(
     /** 读到的 API 格式工作流：路径、原始文本（提交时回填 extra_data）、解析后的对象。 */
     private data class WorkflowSource(val path: String, val raw: String, val json: JSONObject)
 
-    override suspend fun cancelJobs(jobId: String?): String {
+    override suspend fun cancelJobs(jobId: String?, includeOthers: Boolean): String {
         requireConnected()
-        if (jobId == null) {
-            // 不指定任务：清空待执行队列 + 中断正在执行的那个。AI 批量提交后最常用。
-            // 注意 /interrupt 是 cancel(job) 的内部动作、不是公开方法——所以正在跑的
-            // 那个要走 cancel，它会在确认仍在 queue_running 后才发中断（见 ComfyClient）。
-            runCatching { client.clearPending() }
-                .onFailure { return "清空队列失败：${it.message}" }
-            val running = runCatching { client.queue() }.getOrNull()
-                ?.filter { it.state == JobState.RUNNING }
-                .orEmpty()
-            var interrupted = 0
-            for (job in running) {
-                if (runCatching { client.cancel(job) }.isSuccess) interrupted++
-            }
+        if (jobId != null) {
+            val queue = runCatching { client.queue() }.getOrNull()
+                ?: return "读取队列失败，未能中止 $jobId"
+            val job = queue.firstOrNull { it.id == jobId }
+                ?: return "队列里没有 $jobId（可能已执行完或已被清理）；如要清空队列，请不传 job_id"
+            runCatching { client.cancel(job) }
+                .onFailure { return "中止 $jobId 失败：${it.message}" }
+            return "已请求中止 $jobId。"
+        }
+
+        // 不指定 jobId：默认**只动本 App 提交的**（App 界面 + MCP 两条路径）。
+        //
+        // 不直接调 clearPending()——那是清空**整个**队列，会连带砍掉用户自己在
+        // App 里提交的图、或网页端正在跑的任务。AI 一句”算了重新来“就把它们清掉，
+        // 正是”AI 不知道自己的任务边界“那一类问题；边界必须由App 侧划定。
+        val queue = runCatching { client.queue() }.getOrNull()
+            ?: return "读取队列失败，未执行任何清理"
+        val mine = McpJobState.selectCancellable(queue, includeOthers)
+        val others = queue.size - mine.size
+        if (mine.isEmpty()) {
             return buildString {
-                append("已清空待执行队列")
-                if (running.isNotEmpty()) {
-                    append("，并请求中断 ${interrupted}/${running.size} 个正在执行的任务")
-                }
-                append("。注意：正在执行的那一张可能仍会产出图片")
-                append("（ComfyUI 在当前步骤结束后才停）。")
+                append("队列里没有本 App 提交的任务")
+                if (others > 0) append("（另有 $others 个非本 App 提交的任务，未动它们）")
+                append("。")
             }
         }
-        val queue = runCatching { client.queue() }.getOrNull()
-            ?: return "读取队列失败，未能中止 $jobId"
-        val job = queue.firstOrNull { it.id == jobId }
-            ?: return "队列里没有 $jobId（可能已执行完或已被清理）；如要清空整个队列，请不传 job_id"
-        runCatching { client.cancel(job) }
-            .onFailure { return "中止 $jobId 失败：${it.message}" }
-        return "已请求中止 $jobId。"
+        var cancelled = 0
+        for (job in mine) {
+            if (runCatching { client.cancel(job) }.isSuccess) cancelled++
+        }
+        return buildString {
+            append("已请求取消 $cancelled/${mine.size} 个本 App 提交的任务")
+            if (others > 0) {
+                append("；另有 $others 个非本 App 提交的任务保留未动")
+                append("（确实要一起清，请传 all=true）")
+            }
+            append("。注意：正在执行的那一张可能仍会产出图片")
+            append("（ComfyUI 在当前步骤结束后才停）。")
+        }
     }
 
     override suspend fun jobStatus(jobId: String): GenerateOutcome {
@@ -419,5 +432,8 @@ internal class ComfyMcpHost(
 
         /** describe_workflow 一次最多列多少字段（太长会挤爆模型上下文）。 */
         const val MAX_DESCRIBE_FIELDS = 40
+
+        /** 本 App 的 MCP 通道提交任务时写到 extra_data 的来源标记。 */
+        const val ORIGIN_MCP = "mcp"
     }
 }
