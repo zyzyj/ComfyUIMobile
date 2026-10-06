@@ -342,7 +342,31 @@ class McpServerTest {
         assertEquals(200, code)
         val text = JSONObject(body).getJSONObject("result")
             .getJSONArray("content").getJSONObject(0).getString("text")
-        assertTrue(text.contains("清空"))
+        // 默认范围：只动本 App 提交的，并告知保留了多少非本 App 的。
+        assertTrue("应说明只取消本 App 提交的", text.contains("本 App"))
+        assertTrue("应提示保留了多少非本 App 的", text.contains("保留未动"))
+    }
+
+    @Test
+    fun cancelJobsWithAllClearsEverything() = withServer { port, _ ->
+        val (_, body) = postMcp(
+            port,
+            """{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"cancel_jobs","arguments":{"all":true}}}""",
+        )
+        val text = JSONObject(body).getJSONObject("result")
+            .getJSONArray("content").getJSONObject(0).getString("text")
+        assertTrue("all=true 时不应再说保留", !text.contains("保留未动"))
+    }
+
+    @Test
+    fun cancelSingleJobReportsItsId() = withServer { port, _ ->
+        val (_, body) = postMcp(
+            port,
+            """{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"cancel_jobs","arguments":{"job_id":"abc123"}}}""",
+        )
+        val text = JSONObject(body).getJSONObject("result")
+            .getJSONArray("content").getJSONObject(0).getString("text")
+        assertTrue(text.contains("abc123"))
     }
 
     @Test
