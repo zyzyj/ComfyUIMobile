@@ -3943,7 +3943,11 @@ private fun JobCard(
                 Text("耗时：${formatDuration(it)}", style = MaterialTheme.typography.labelSmall)
             }
             if (job.submittedByApp) Text("本 App 提交", style = MaterialTheme.typography.labelSmall)
-            job.currentNode?.let { Text("节点：$it", style = MaterialTheme.typography.bodySmall) }
+            // v0.2.95：跟踪中时节点名已在上面的 compact 文案里出现过，这里再显示一次
+            // 就是同一信息重复两行。只在未跟踪（接管前）时才单独给节点名。
+            if (!tracked) {
+                job.currentNode?.let { Text("节点：$it", style = MaterialTheme.typography.bodySmall) }
+            }
             // 失败时把真实原因显示出来（v0.2.43）。以前任务列表只说"失败"，
             // 用户看不出是显存不够、模型缺失还是参数错。
             job.message.takeIf { it.isNotBlank() && job.state != JobState.SUCCESS }?.let { detail ->
@@ -3954,7 +3958,18 @@ private fun JobCard(
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            job.progress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) }
+            // v0.2.95：只有"确实知道当前进度"才画确定进度条。反代下百分比可能已在
+            // 断线期间过期（ComfyUI 重连不补发），一个陈旧的数字比转圈更误导——
+            // 用户会以为卡在某个百分比上。PENDING 也用不确定：它还没开始跑。
+            val determinate = job.state == JobState.RUNNING && job.progress != null
+            if (determinate) {
+                LinearProgressIndicator(
+                    progress = { job.progress ?: 0f },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                )
+            } else if (job.state in setOf(JobState.RUNNING, JobState.PENDING)) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+            }
             if (trackable) {
                 TextButton(onClick = { viewModel.cancelJob(job) }, modifier = Modifier.align(Alignment.End)) { Text("取消任务") }
             }

@@ -1,3 +1,61 @@
+# v0.2.95 — 修 4 个复审 bug（含 1 个安全功能失效）
+
+按 v0.2.91 复审逐条核实，其中 1 条（cancel_jobs 收窄）已在 v0.2.93 修完，
+本次修剩下 4 条 + 1 条被抵消的进度修复。
+
+## P0 · 紧急停止大概率没清队列（安全功能失效）
+
+`panicStop()` 把清队列放进 `scope.launch`，紧接着 `stopServer()` → `stopSelf()`
+→ `onDestroy()` → **`scope.cancel()`**。清队列是网络请求，协程几乎总在刚发起时
+被取消——**实际只停了本地服务，远端队列没清**。而这正是它自己注释强调的部分
+（关服务不等于停任务）。
+
+修：新增 `cleanupScope`（**故意不被 onDestroy 取消**），清队列在它里面跑完再停
+服务；带 5 秒超时（网络卡住不让用户干等，超时后照旧停）。同一 scope 也承载
+"关闭标记要真落盘"（以前写在 scope 里，同样会被取消）。
+
+## P1 · 重连每次拉 60 条历史
+
+v0.2.90 把重连间隔缩到 200ms，而 `onComfySocketOpen` 每次重连都调
+`refreshTasksInternal()`，里面带 `historyJobs(60)`（60 条完整 prompt JSON 可能
+几 MB）。反代下每几秒一次，是持续的流量与服务端压力。
+
+修：重连只刷**轻量队列**（补回错过的进度，queue 足够）；history 走节流
+（`HISTORY_FETCH_MIN_INTERVAL_MS = 5s`）。用户主动刷新、任务完成/取消、启停项目
+这类低频调用标 `force=true`——**节流不能挡住明确的用户意图**。
+
+## P1 · `describe_workflow` 常用项排序完全倒序
+
+`compareByDescending + indexOfFirst`：未命中返回 -1，降序让 height(6) 排第一、
+最常用的 steps(0) 排到常用项最后。注释写"常用项排前面"，实际恰好相反。
+
+修：抽成 `McpPromptPlanner.orderForDisplay` 纯函数，未命中显式推到末尾；4 条单测
+锁住（steps 第一、非常用项末尾、字段名大小写不敏感、同优先级稳定）。
+
+## 抵消进度修复的那条 · `hasRunningJob` 只认 activeJobId
+
+```kotlin
+it.id == _state.value.activeJobId && it.state == JobState.RUNNING
+```
+
+MCP / 网页端提交的任务在跑时判定为 false → 退避涨到 10 秒 → 断开期间收不到任何
+progress，而 **ComfyUI 重连不补发百分比**，进度几乎全丢。这恰好抵消了 v0.2.90
+缩短重连间隔的效果。
+
+修（一行）：只要队列里有任一任务在 RUNNING 就快速重连——重连是为接住广播的
+progress 事件，与"谁提交的"无关。
+
+## P2 · 任务卡片节点名显示两次 + 进度条陈旧值
+
+tracked 时 `compact()` 已含节点名，下面又无条件显示一次「节点：xxx」→ 同一信息
+重复两行。修：未跟踪时才单独显示节点名。
+
+进度条改用"是否已知进度"区分：RUNNING 且有 progress → 确定；否则（含 PENDING）
+→ 不确定。反代下百分比可能在断线期间过期，**一个陈旧的数字比转圈更误导**。
+
+## 已确认无需再改
+
+- `cancel_jobs` 收窄：v0.2.93 已修（`McpJobState.selectCancellable`）
 # v0.2.94 — 8407 风控自动退避重试（不再「只能默认档」）
 
 用户又遇到一次「只能默认启动」，后来自行恢复。查了那份 v0.2.92 日志。

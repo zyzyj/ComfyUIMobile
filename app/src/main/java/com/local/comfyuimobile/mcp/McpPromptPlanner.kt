@@ -42,6 +42,26 @@ internal object McpPromptPlanner {
      * @param request 用户/模型给的参数
      */
     /**
+     * 展示顺序（v0.2.95）：常用项排前，其余按节点名、字段名排。
+     *
+     * 抽出来是因为这里栽过一次：`compareByDescending + indexOfFirst` 的顺序
+     * **恰好是反的**——未命中返回 -1，降序让 index 大的（height=6）排第一、
+     * 而最常用的 steps(0) 排到常用项最后。注释写"常用项排前面"，实际相反。
+     * 现在把"未命中推到末尾"写成显式规则并加单测。
+     */
+    fun orderForDisplay(fields: List<ParameterField>): List<ParameterField> {
+        val priority = listOf("steps", "cfg", "sampler_name", "scheduler", "seed", "width", "height")
+        return fields.sortedWith(
+            compareBy<ParameterField> { field ->
+                val index = priority.indexOfFirst { field.name.equals(it, ignoreCase = true) }
+                if (index < 0) Int.MAX_VALUE else index
+            }
+                .thenBy { it.nodeTitle }
+                .thenBy { it.name },
+        )
+    }
+
+    /**
      * 列出工作流里可调的字段（v0.2.91，`describe_workflow` 用）。
      *
      * 只返回**可注入**的字段：连线型（linked）改不动，交给模型只会让它白试。

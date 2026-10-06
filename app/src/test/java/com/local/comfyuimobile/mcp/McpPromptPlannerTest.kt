@@ -1,5 +1,7 @@
 package com.local.comfyuimobile.mcp
 
+import com.local.comfyuimobile.model.ParameterField
+import com.local.comfyuimobile.model.ParameterKind
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -90,6 +92,62 @@ class McpPromptPlannerTest {
         assertTrue("应能列出 steps", keys.any { it.endsWith("steps") })
         // 连线字段（如 KSampler 的 positive）改不动，不能出现在清单里。
         assertTrue("连线字段不该被列出", keys.none { it.endsWith("positive") })
+    }
+
+    // ===== v0.2.95：展示顺序 =====
+
+    private fun field(name: String, nodeId: String = "3", title: String = "KSampler"): ParameterField =
+        ParameterField(
+            key = "$nodeId::$name",
+            nodeId = nodeId,
+            nodeTitle = title,
+            nodeType = "KSampler",
+            name = name,
+            label = name,
+            widgetType = "",
+            kind = ParameterKind.INTEGER,
+            valueJson = "1",
+            displayValue = "1",
+        )
+
+    @Test
+    fun mostUsedFieldsComeFirst() {
+        // 核心回归：以前 compareByDescending 让 height(6) 排第一、steps(0) 排最后。
+        val ordered = McpPromptPlanner.orderForDisplay(
+            listOf(field("height"), field("width"), field("seed"), field("steps"), field("cfg")),
+        ).map { it.name }
+        assertEquals("steps 应排在最前", "steps", ordered.first())
+        assertEquals("cfg 应紧随其后", "cfg", ordered[1])
+        // 常用项整体必须排在非常用项之前。
+        val lastPriority = ordered.indexOf("height")
+        assertTrue(ordered.indexOf("steps") < lastPriority)
+    }
+
+    @Test
+    fun unknownFieldsGoToTheEnd() {
+        val ordered = McpPromptPlanner.orderForDisplay(
+            listOf(field("zzz_unknown"), field("steps"), field("foo")),
+        ).map { it.name }
+        assertEquals("steps", ordered.first())
+        assertTrue(ordered.indexOf("zzz_unknown") > ordered.indexOf("steps"))
+        assertTrue(ordered.indexOf("foo") > ordered.indexOf("steps"))
+    }
+
+    @Test
+    fun orderingIsCaseInsensitiveOnFieldName() {
+        // ComfyUI 里 sampler_name / Sampler_name 都可能出现。
+        val ordered = McpPromptPlanner.orderForDisplay(listOf(field("ZZZ"), field("STEPS")))
+            .map { it.name }
+        assertEquals("STEPS", ordered.first())
+    }
+
+    @Test
+    fun orderingIsStableForEqualPriority() {
+        val ordered = McpPromptPlanner.orderForDisplay(
+            listOf(field("b", nodeId = "9", title = "ZZZ"), field("a", nodeId = "3", title = "AAA")),
+        )
+        // 都是非常用项时按节点名、字段名排，结果应稳定可复现。
+        assertEquals(McpPromptPlanner.orderForDisplay(ordered.reversed()), ordered)
     }
 
     @Test

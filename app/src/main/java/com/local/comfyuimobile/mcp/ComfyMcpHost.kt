@@ -198,12 +198,9 @@ internal class ComfyMcpHost(
         lines += "工作流：${path.substringAfterLast('/')}（$path）"
         lines += "可调字段 ${fields.size} 项，用 generate 的 params 传入 key 即可修改："
         // 常用项排前面：模型最常改的就是这几类，让他第一屏就看到。
-        val priority = listOf("steps", "cfg", "sampler_name", "scheduler", "seed", "width", "height")
-        val ordered = fields.sortedWith(
-            compareByDescending<ParameterField> { field -> priority.indexOfFirst { field.name.equals(it, ignoreCase = true) } }
-                .thenBy { it.nodeTitle }
-                .thenBy { it.name },
-        )
+        // v0.2.95：排序规则抽到 McpPromptPlanner.orderForDisplay（以前内联实现
+        // 用 compareByDescending，顺序恰好是反的，已加单测锁住）。
+        val ordered = McpPromptPlanner.orderForDisplay(fields)
         for (field in ordered.take(MAX_DESCRIBE_FIELDS)) {
             val range = when {
                 field.options.isNotEmpty() -> "可选：${field.options.take(12).joinToString(" | ")}"
