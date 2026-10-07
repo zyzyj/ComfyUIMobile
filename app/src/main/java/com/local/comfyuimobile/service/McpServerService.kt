@@ -15,6 +15,7 @@ import com.local.comfyuimobile.data.AuthCookieProvider
 import com.local.comfyuimobile.data.LocalResultCache
 import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.ResultSource
+import com.local.comfyuimobile.mcp.AiStudioBridge
 import com.local.comfyuimobile.mcp.McpServerManager
 import com.local.comfyuimobile.network.ComfyClient
 import kotlinx.coroutines.CoroutineScope
@@ -108,6 +109,9 @@ class McpServerService : Service() {
                 }
             },
             clientId = "comfy-mobile-mcp",
+            // AI Studio 通道（v0.2.97）：服务没有 ViewModel 的内存态，所以桥接层
+            // 自己从 DataStore 读账号（每次调用重读，跟随 App 里登录/切账号）。
+            aiStudio = AiStudioBridge(AppPreferences(this)),
         )
         this.manager = manager
         val bound = manager.start(

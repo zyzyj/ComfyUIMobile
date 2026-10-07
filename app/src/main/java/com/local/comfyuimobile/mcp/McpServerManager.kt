@@ -17,8 +17,12 @@ import java.security.SecureRandom
  *  - **占用时不静默顺延**：直接抛错，由页面明确告知——顺延等于让 AiCode 那三行
  *    配置悄悄失效，比启动失败更难排查（NeoSQL/ToolHive 都吃过这个亏）；
  *  - 端口可配置后，文件 URL 与配置片段**一律用实际绑定端口**生成。
+ *
+ * v0.2.97：改为 `internal`。新增的 AI Studio 通道参数是 internal 类型
+ * （[AiStudioBridge]），而 Kotlin 不允许公开 API 暴露 internal 类型；本模块只有一个
+ * `:app`，没有外部调用方，收窄是零成本的。
  */
-class McpServerManager(
+internal class McpServerManager(
     private val client: ComfyClient,
     /** 出图落盘目录。必须由外部传入（服务侧拿到的是 Service 的 filesDir）。 */
     private val cacheDir: File,
@@ -49,6 +53,8 @@ class McpServerManager(
         requestedPort: Int = DEFAULT_PORT,
         /** 是否启用 Bearer 鉴权（F1：默认 false = 免鉴权）。 */
         requireAuth: Boolean = false,
+        /** AI Studio 通道（v0.2.97）。null = 不启用，相关工具会返回明确提示。 */
+        aiStudio: AiStudioBridge? = null,
         resultSink: (suspend (ResultMedia, File) -> Unit)? = null,
         onSubmitted: (suspend (promptId: String) -> Unit)? = null,
     ): Int {
@@ -66,6 +72,7 @@ class McpServerManager(
                 clientId = clientId,
                 resultSink = resultSink,
                 onSubmitted = onSubmitted,
+                aiStudio = aiStudio,
             ),
             files = store,
         ) { "http://127.0.0.1:$port/files/" }
@@ -93,7 +100,7 @@ class McpServerManager(
         files = null
     }
 
-    companion object {
+    internal companion object {
         /**
          * 默认端口。原 8765 是 Taskshell / MCPDroid 的默认端口，用户群里有人装了
          * 就直接撞——换成一个冷门段的（IANA 未注册动态端口范围中部）。

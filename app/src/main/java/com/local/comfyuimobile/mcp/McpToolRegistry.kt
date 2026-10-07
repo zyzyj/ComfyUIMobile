@@ -51,6 +51,26 @@ internal interface McpToolHost {
      */
     suspend fun validateWorkflow(workflow: String?): String
 
+    // ===== AI Studio 通道（v0.2.97）=====
+    // 让 AI 自己走完"启动 GPU → 等环境 → 跑启动脚本 → 连 ComfyUI → 出图"全程，
+    // 不需要用户先回 App 手动操作。凭据（Cookie / bdToken）只用于发请求，
+    // 这些方法返回的文本一律不含凭据。
+
+    /** 列出当前账号下的项目（AI 据此拿 projectId 再调其他 GPU 工具）。 */
+    suspend fun listAiStudioProjects(): String
+
+    /** 读某项目的 GPU 运行状态与可选档位。 */
+    suspend fun gpuStatus(projectId: String): String
+
+    /** 列出某项目可选的 GPU 档位。 */
+    suspend fun listGpuOptions(projectId: String): String
+
+    /** 启动项目环境（占 GPU）。schedule 必须是 listGpuOptions 给出的值。 */
+    suspend fun startGpu(projectId: String, schedule: String?): String
+
+    /** 停止项目环境（停止计费）。 */
+    suspend fun stopGpu(projectId: String): String
+
     /**
      * 紧急刹车（v0.2.91；v0.2.93 收窄范围）：中止任务。
      *
@@ -212,6 +232,16 @@ internal class McpToolRegistry(
                 includeOthers = args.optBoolean("all", false),
             ),
         )
+        TOOL_LIST_PROJECTS -> ToolResult(host.listAiStudioProjects())
+        TOOL_GPU_STATUS -> ToolResult(host.gpuStatus(args.optString("project_id")))
+        TOOL_LIST_GPU_OPTIONS -> ToolResult(host.listGpuOptions(args.optString("project_id")))
+        TOOL_START_GPU -> ToolResult(
+            host.startGpu(
+                args.optString("project_id"),
+                args.optString("schedule").trim().takeIf { it.isNotBlank() },
+            ),
+        )
+        TOOL_STOP_GPU -> ToolResult(host.stopGpu(args.optString("project_id")))
         else -> throw IllegalArgumentException("未知工具：$name")
     }
 
@@ -434,7 +464,58 @@ internal class McpToolRegistry(
                 ),
             ),
         )
+        // ===== AI Studio 通道（v0.2.97）=====
+        put(
+            McpProtocol.toolDescriptor(
+                TOOL_LIST_PROJECTS,
+                "列出当前 AI Studio 账号下的项目，带 projectId 与运行状态。" +
+                    "启动 GPU 前先用它拿到 projectId。",
+                schema(JSONObject()),
+            ),
+        )
+        put(
+            McpProtocol.toolDescriptor(
+                TOOL_GPU_STATUS,
+                "查某个项目的 GPU 状态：当前档位 + 可选的档位列表。",
+                schema(projectIdSchema(), required = JSONArray().put("project_id")),
+            ),
+        )
+        put(
+            McpProtocol.toolDescriptor(
+                TOOL_LIST_GPU_OPTIONS,
+                "列出某个项目可选的 GPU 档位（带每个档位的消耗与本周剩余）。" +
+                    "start_gpu 的 schedule 参数必须是这里给出的值。",
+                schema(projectIdSchema(), required = JSONArray().put("project_id")),
+            ),
+        )
+        put(
+            McpProtocol.toolDescriptor(
+                TOOL_START_GPU,
+                "启动项目环境（占一张 GPU，开始计费）。启动需 1-2 分钟。" +
+                    "schedule 必须是 list_gpu_options 给出的值；传错平台会静默按默认档启动，" +
+                    "所以 server 侧会先校验。不传 schedule 则用列表第一项。",
+                schema(
+                    projectIdSchema().put(
+                        "schedule",
+                        JSONObject().put("type", "string").put("description", "档位名，取自 list_gpu_options 的 schedule=值；省略用第一项"),
+                    ),
+                    required = JSONArray().put("project_id"),
+                ),
+            ),
+        )
+        put(
+            McpProtocol.toolDescriptor(
+                TOOL_STOP_GPU,
+                "停止项目环境（停止计费）。停完 ComfyUI 也跟着不可用。",
+                schema(projectIdSchema(), required = JSONArray().put("project_id")),
+            ),
+        )
     }
+
+    private fun projectIdSchema(): JSONObject = JSONObject().put(
+        "project_id",
+        JSONObject().put("type", "string").put("description", "项目 ID，取自 list_projects"),
+    )
 
     private fun schema(properties: JSONObject, required: JSONArray = JSONArray()): JSONObject =
         JSONObject()
@@ -451,6 +532,13 @@ internal class McpToolRegistry(
         const val TOOL_CANCEL = "cancel_jobs"
         const val TOOL_DESCRIBE_WORKFLOW = "describe_workflow"
         const val TOOL_VALIDATE_WORKFLOW = "validate_workflow"
+
+        // AI Studio 通道（v0.2.97）：让 AI 自己启动 GPU、查档位、停环境。
+        const val TOOL_LIST_PROJECTS = "list_projects"
+        const val TOOL_GPU_STATUS = "gpu_status"
+        const val TOOL_LIST_GPU_OPTIONS = "list_gpu_options"
+        const val TOOL_START_GPU = "start_gpu"
+        const val TOOL_STOP_GPU = "stop_gpu"
 
         /**
          * 120 秒。60 秒太短（SDXL 单图常见 20-60 秒，带高清修复就超），
@@ -471,6 +559,11 @@ internal class McpToolRegistry(
             TOOL_JOB_STATUS,
             TOOL_WAIT_FOR_COMFY,
             TOOL_CANCEL,
+            TOOL_LIST_PROJECTS,
+            TOOL_GPU_STATUS,
+            TOOL_LIST_GPU_OPTIONS,
+            TOOL_START_GPU,
+            TOOL_STOP_GPU,
         )
     }
 }

@@ -86,6 +86,14 @@ class McpServerTest {
         override suspend fun waitForComfy(timeoutSeconds: Int): String =
             "ComfyUI 已就绪（假实现）"
 
+        // AI Studio 通道（v0.2.97）：本套测试不验证这条通道，只满足接口。
+        override suspend fun listAiStudioProjects(): String = "- projectId=1  演示项目  [已停止]"
+        override suspend fun gpuStatus(projectId: String): String = "$projectId 的 GPU 状态（假实现）"
+        override suspend fun listGpuOptions(projectId: String): String = "$projectId 可选档位（假实现）"
+        override suspend fun startGpu(projectId: String, schedule: String?): String =
+            "已提交启动请求：$projectId / ${schedule ?: "默认"}"
+        override suspend fun stopGpu(projectId: String): String = "已提交停止请求：$projectId"
+
         override suspend fun jobStatus(jobId: String): GenerateOutcome = GenerateOutcome.Done(
             jobId,
             listOf(
