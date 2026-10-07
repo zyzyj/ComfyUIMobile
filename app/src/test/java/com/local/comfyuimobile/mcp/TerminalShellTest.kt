@@ -25,7 +25,8 @@ class TerminalShellTest {
         val wrapped = TerminalShell.wrap("ls ~/ComfyUI/models", token)
         assertTrue(wrapped, wrapped.startsWith("ls ~/ComfyUI/models; "))
         // $? 必须在双引号内（由 shell 展开），不能转义掉。
-        assertTrue(wrapped, wrapped.endsWith("""echo "$mark:${'$'}?"""))
+        // 注意用普通字符串：原始字符串（"""）不处理转义，\" 在那里是字面反斜杠。
+        assertTrue(wrapped, wrapped.endsWith("echo \"$mark:${'$'}?\""))
     }
 
     @Test
