@@ -117,8 +117,13 @@ internal class McpTerminalHost(
             while (true) {
                 val snapshot = synchronized(buffer) { buffer.substring(startOffset) }
                 val result = TerminalShell.extract(snapshot, token)
-                if (result.finished) break formatOutput(name, cmd, result)
-                if (System.currentTimeMillis() >= deadline) break formatTimeout(name, timeout, result)
+                // 用 if/else 表达式返回，而不是 `break <值>`——Kotlin 没有带值的 break。
+                if (result.finished) {
+                    return@withLock formatOutput(name, cmd, result)
+                }
+                if (System.currentTimeMillis() >= deadline) {
+                    return@withLock formatTimeout(name, timeout, result)
+                }
                 delay(POLL_MILLIS)
             }
             @Suppress("UNREACHABLE_CODE")
