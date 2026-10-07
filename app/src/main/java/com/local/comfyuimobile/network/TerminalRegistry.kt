@@ -1,5 +1,6 @@
 package com.local.comfyuimobile.network
 
+import com.local.comfyuimobile.network.AiStudioKernelClient.TerminalSession
 import java.util.concurrent.ConcurrentHashMap
 
 /**
