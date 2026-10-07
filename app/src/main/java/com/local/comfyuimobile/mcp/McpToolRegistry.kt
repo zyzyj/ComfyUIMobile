@@ -663,7 +663,14 @@ internal class McpToolRegistry(
          * GPU 就绪 ≠ ComfyUI 就绪）。具体场景的"下一步"由各工具的返回值给。
          */
         const val SERVER_INSTRUCTIONS =
-            "直接使用本服务的工具，不要自己写 bash/python/curl 脚本通过 HTTP 调它。\n" +
+            // §3.1：限定清楚——封装**你自己**的出图流程是合理的，只有"绕过本服务"才不该。
+            // 不限定的话 AI 会以为连自己的脚本也不能用了。
+            "直接使用本服务的工具，不要自己写 bash/python/curl 脚本绕过它们去 HTTP 调本服务" +
+                "（封装你自己的出图流程、写辅助脚本是合理的，不在此限）。\n" +
+                // v0.2.99：双终端约定。放在 instructions 而不是每个工具描述里——
+                // 它是"每个工具都适用"的通用约定，而工具描述每轮都付 token。
+                "长任务（下载/启动脚本/训练）与临时查询分开用不同终端，" +
+                "否则输出会混在一起、查询还会被阻塞。\n" +
                 "注意：GPU 就绪 ≠ ComfyUI 就绪——start_gpu 之后要先用 terminal_exec 跑启动脚本，" +
                 "再调 wait_for_comfy。启动脚本路径各人环境不同，用 ls / find 先找，不要假定。"
 
