@@ -87,6 +87,14 @@ data class StoredSettings(
      * 端口持久化是为了不让 AiCode 那三行配置悄悄失效——端口一变就要重新复制配置。
      */
     val mcpServerPort: Int = 0,
+    /**
+     * 上次启动 GPU 用的档位名（scheduleName）；空表示没记录过（v0.2.98）。
+     *
+     * 真机实测：AI 说"已记住默认档位"，但那只是**它的会话记忆**——App 侧没有任何
+     * 持久化，换个会话（或 AI 重启）就得重新问/重新猜。存下来后 start_gpu
+     * 不传 schedule 时直接用它。
+     */
+    val lastGpuSchedule: String = "",
     // v0.1.90：AI Studio 平台账号（Cookie 即凭证）。
     val aiStudioAccounts: List<AiStudioAccount> = emptyList(),
     val aiStudioActiveId: String = "",
@@ -118,6 +126,7 @@ class AppPreferences(private val context: Context) {
         val mcpServerToken = stringPreferencesKey("mcp_server_token")
         val mcpServerRequireAuth = booleanPreferencesKey("mcp_server_require_auth")
         val mcpServerPort = intPreferencesKey("mcp_server_port")
+        val lastGpuSchedule = stringPreferencesKey("last_gpu_schedule")
         val aiStudioAccounts = stringPreferencesKey("ai_studio_accounts")
         val aiStudioActiveId = stringPreferencesKey("ai_studio_active_id")
     }
@@ -152,6 +161,7 @@ class AppPreferences(private val context: Context) {
             mcpServerToken = preferences[Keys.mcpServerToken].orEmpty(),
             mcpServerRequireAuth = preferences[Keys.mcpServerRequireAuth] ?: false,
             mcpServerPort = preferences[Keys.mcpServerPort] ?: 0,
+            lastGpuSchedule = preferences[Keys.lastGpuSchedule].orEmpty(),
             aiStudioAccounts = decodeAiStudioAccounts(preferences[Keys.aiStudioAccounts].orEmpty()),
             aiStudioActiveId = preferences[Keys.aiStudioActiveId].orEmpty(),
         )
@@ -304,6 +314,11 @@ class AppPreferences(private val context: Context) {
     /** 持久化 MCP 端口（0 表示回到默认）。 */
     suspend fun setMcpServerPort(port: Int) {
         context.dataStore.edit { it[Keys.mcpServerPort] = port }
+    }
+
+    /** 记下上次启动 GPU 用的档位（v0.2.98）。 */
+    suspend fun setLastGpuSchedule(scheduleName: String) {
+        context.dataStore.edit { it[Keys.lastGpuSchedule] = scheduleName }
     }
 
     /** 持久化"是否启用 Bearer 鉴权"（v0.2.97，F1）。 */

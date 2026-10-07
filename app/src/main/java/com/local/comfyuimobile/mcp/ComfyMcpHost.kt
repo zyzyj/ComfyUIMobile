@@ -120,7 +120,21 @@ internal class ComfyMcpHost(
 
     override suspend fun listWorkflows(): String {
         requireConnected()
-        val entries = client.listWorkflows()
+        // P1-2：/v2/userdata 在 AI Studio 反代下未必可用。失败时给**明确引导**
+        // （选项 B），而不是把网络层异常丢给模型、或去猜容器里的目录路径
+        // （各项目布局不同，猜错反而误导——真机实测 AI 就是这样自己找路径并
+        //  转格式后用 workflow_json 内联提交的）。
+        val entries = runCatching { client.listWorkflows() }
+            .getOrElse { error ->
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                AppLogger.warn("list_workflows 失败（回退到引导语）", error)
+                return "无法从这里列出服务器工作流（该平台的反代可能不支持 /v2/userdata）：" +
+                    "${error.message ?: "未知错误"}\n" +
+                    "继续出图的两种做法：\n" +
+                    "  1. 直接传 workflow_json 内联（需 API 格式，推荐）——用 validate_workflow 预检后再 generate\n" +
+                    "  2. 传 workflow 路径（如果你知道服务器上确切的文件路径）\n" +
+                    "需要看服务器上有哪些工作流时，可用 terminal_exec 自己列目录。"
+            }
             .filter { !it.isDirectory && it.path.endsWith(".json", ignoreCase = true) }
         if (entries.isEmpty()) return "服务器上没有可用的工作流。"
         // 标出是否 API 格式：`generate` 只吃 API 格式，不标的话 AI 只能一个个试错
@@ -140,7 +154,8 @@ internal class ComfyMcpHost(
                 else -> "[格式未知]"
             }
             "${entry.name}  ${entry.path}  $tag"
-        }.joinToString("\n")
+        }.joinToString("\n") +
+            "\n提示：传 workflow 时用上面第二列的完整路径；也可直接把 API 格式 JSON 用 workflow_json 内联。"
     }
 
     override suspend fun generate(request: GenerateRequest, awaitMillis: Long): GenerateOutcome {

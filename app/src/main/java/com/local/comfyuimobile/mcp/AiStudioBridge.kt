@@ -208,17 +208,37 @@ internal class AiStudioBridge(
         val wanted = scheduleName?.trim().orEmpty()
         val schedules = runCatching { client.listSchedules(account, pid) }
             .getOrElse { error -> throw describe("读取算力档位", error) }
+        // §4.1：没传档位时用**上次用过的那个**（持久化在偏好里），
+        // 而不是直接拿列表第一项——AI 说的"已记住默认档位"只是它的会话记忆。
+        val remembered = wanted.takeIf { it.isNotEmpty() }
+            ?: runCatching { preferences.settings.first().lastGpuSchedule }.getOrNull()
+                ?.takeIf { it.isNotBlank() }
         // 精确匹配，因为 startProject 把档位名原样透传给平台：传错不报错，直接按
         // 默认档启动（用户以为选了 A100，账单却是 V100）。匹配失败要早报而不是猜。
-        val chosen = AiStudioSchedules.choose(schedules, wanted)
+        val chosen = runCatching { AiStudioSchedules.choose(schedules, remembered) }
+            .getOrElse { error ->
+                // 记住的档位可能已不可选（余额/下架）；用过的名字失效时回落列表首项，
+                // 但要在返回里说清，不能静默换档。
+                if (remembered == null) throw error
+                AiStudioSchedules.choose(schedules, null)
+            }
             ?: throw IllegalStateException(
                 "读不到项目 $pid 的可选档位，无法启动（可能是登录态失效或该项目当前不可选档）。" +
                     "请先用 list_gpu_options 确认。",
             )
         val result = runCatching { client.startProject(account, pid, chosen.scheduleName) }
             .getOrElse { error -> throw describe("启动项目", error) }
+        // 记下本次档位，供下次不传 schedule 时复用。失败不影响启动。
+        runCatching { preferences.setLastGpuSchedule(chosen.scheduleName) }
+            .onFailure { AppLogger.warn("记录上次档位失败", it) }
+        val note = when {
+            wanted.isNotEmpty() -> ""
+            remembered != null && remembered == chosen.scheduleName ->
+                "（沿用了上次的档位；可在 App 里更改）"
+            else -> ""
+        }
         return buildString {
-            appendLine("已提交启动请求：项目 $pid，档位 ${chosen.displayName()}（schedule=${chosen.scheduleName}）。")
+            appendLine("已提交启动请求：项目 $pid，档位 ${chosen.displayName()}（schedule=${chosen.scheduleName}）。$note")
             // P1-3：真机实测 AI 启动 GPU 后直接调 wait_for_comfy，等了 300 秒超时——
             // 因为**GPU 就绪 ≠ ComfyUI 起来了**。这里必须把下一步说透，
             // 否则 AI 只能靠超时才能学到这件事。
