@@ -35,6 +35,20 @@ internal class AiStudioBridge(
     /** 令牌刷新器：与界面用的是同一套（403 → 抓 `/overview` 抠新 bdToken）。 */
     private val refresher = AiStudioTokenRefresher()
 
+    /**
+     * 把刷新器与"刷新后回写偏好"接到终端那侧的 client 上。
+     *
+     * 两个 client（平台 HTTP 与 Jupyter 终端）共用同一个刷新器实例：底层是同一个 bdToken，
+     * 各建一份只会各自拿一份"更新后"的令牌，反而互相覆盖——与 ViewModel 里同一约定。
+     */
+    fun bindKernel(kernel: com.local.comfyuimobile.network.AiStudioKernelClient) {
+        kernel.tokenRefresher = refresher
+        kernel.onAccountRefreshed = { updated ->
+            persistRefreshed(updated)
+            updated
+        }
+    }
+
     init {
         client.tokenRefresher = refresher
         // 刷新成功后把新令牌写回偏好。这里没有 ViewModel 的内存态，只能直接落盘；
@@ -77,6 +91,20 @@ internal class AiStudioBridge(
     }
 
     // ===== 项目 =====
+
+    /**
+     * 取当前正在运行的项目（连同它的账号）。
+     *
+     * 终端与"等 ComfyUI 就绪"都要求项目**真的在跑**（否则没有 endpoint、也没有 8188）。
+     * 项目 ID 不在偏好里，所以这里从项目列表里取运行中的那个：与启动 GPU 一样，
+     * 用户不必先回 App 选项目。
+     */
+    suspend fun runningProject(): Pair<AiStudioAccount, com.local.comfyuimobile.model.AiStudioProject>? {
+        val account = activeAccount() ?: return null
+        val page = runCatching { client.listProjects(account, page = 1, pageSize = 30) }.getOrNull() ?: return null
+        val running = page.projects.firstOrNull { it.running } ?: return null
+        return account to running
+    }
 
     /** 列出项目，返回给模型的文本（**不含**任何凭据）。 */
     suspend fun listProjects(): String {

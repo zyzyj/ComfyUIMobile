@@ -94,6 +94,13 @@ class McpServerTest {
             "已提交启动请求：$projectId / ${schedule ?: "默认"}"
         override suspend fun stopGpu(projectId: String): String = "已提交停止请求：$projectId"
 
+        // 终端（v0.2.97）：同样只满足接口。
+        override suspend fun terminalList(): String = "- default（已连）"
+        override suspend fun terminalExec(command: String, terminal: String?, timeoutSeconds: Int?): String =
+            "终端 ${terminal ?: "default"} · 命令：$command\n退出码 0（成功）"
+        override suspend fun terminalRead(terminal: String?, maxLines: Int?): String = "暂无输出"
+        override suspend fun terminalInterrupt(terminal: String?): String = "已发送 Ctrl+C"
+
         override suspend fun jobStatus(jobId: String): GenerateOutcome = GenerateOutcome.Done(
             jobId,
             listOf(
