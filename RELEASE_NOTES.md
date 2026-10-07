@@ -1,3 +1,137 @@
+# v0.2.98 — 修终端两个必现 bug + 让 AI 用原生工具（真机实测后优化）
+
+> 依据：v0.2.97 **真机端到端实测**（首次真正跑通：`start_gpu` → 手动起 ComfyUI →
+> `wait_for_comfy` → `generate` → 出图 832×1216 / 35~40 秒）。
+> 本批修实测暴露的问题，不是推倒重来。
+
+## 实测确认正常的部分
+
+- 免鉴权生效（AI 能 curl 通，配置里已去掉 headers）
+- `start_gpu` 档位匹配正确（V100 16GB 选对）
+- `wait_for_comfy` 自动接入成功
+- 出画质正常
+
+---
+
+## 🔴 P0-1 · `terminal_exec` 传不存在的终端名 → 100% 卡到超时
+
+**现象**：AI 传 `terminal="probe"`，挂了 60 秒，以为是"没自动新建"。
+
+**根因**：`exec` 用**请求名**建缓冲区，而 `ensureSession` 在名字不存在时会去平台
+新建一个随机名（如 `1`），输出写进**实际名**的缓冲区。两个缓冲区不是一个 →
+结束标记永远不出现 → 只能等超时，`timeout` 设多少都一样。
+
+**修法**：`ensureSession` 返回**实际会话**，`exec` 用它取缓冲区；名字被改过时在
+返回里说明「终端 probe 不存在，已新建并改用 1」。
+
+**补修（被新增单测抓到的一种情况）**：第二次仍传 `probe` 时，因为会话名叫 `1`、
+`probe` 不在已连集合里，会**又新建一条**——PTY 泄漏，且每次都是空环境
+（前一条里 `cd` 过、`export` 过的全没了）。加 `aliases`（请求名 → 实际名）映射修掉。
+
+## 🔴 P0-2 · AI 用过终端后，控制台的命令发到 AI 的终端
+
+**现象（双向有害）**：
+- **用户**：控制台敲命令**没有任何输出**（发到别处了），以为终端卡了
+- **AI**：缓冲区混进用户的命令，`extract` 取"最后一个标记"可能解析出错结果
+- Ctrl+C 中断的是 AI 的进程；断开终端关掉的是 AI 那条
+
+**根因**：`openTerminal` 无条件 `currentTerminalName = name`，而 `sendInput` /
+`sendRawInput` / `resize` / `closeTerminal` 都走 `currentSession()`。
+
+**修法**：`openTerminal` 新增 `asUiCurrent` 参数（**界面传 true，MCP 传 false**），
+并抽出 `TerminalRegistry` 锁死不变式：**只有显式 `setUi` 才改"界面在用的那条"**。
+
+### 为可测所做的改造
+
+这两个 bug 溜过原有 65 个测试，是因为底层能力直接绑在 `AiStudioKernelClient` 上
+（要网络 + Android 环境），没有接缝。新增 `TerminalBackend` 接口
+（+ `KernelTerminalBackend` 适配器，因为 client 是 public、不能暴露 internal 超类型）
+与 `TerminalRegistry` 纯类，两个 P0 因此都能注入假后端做单测。
+
+---
+
+## 🟡 P1-1 · 内联工作流本来无法预检（设计意图落空）
+
+`validate_workflow` 存在的全部意义是"提交前预检、省算力卡"，但 `generate` 支持
+内联 `workflow_json` 而 `describe_workflow` / `validate_workflow` 只认路径 ——
+AI 用内联 JSON 时**没法预检**，只能直接提交（真机实测 AI 正是这么干的）。
+
+现在三个工具共用 `resolveWorkflowSource`（内联优先），不会再出现能力不一致。
+
+## 🟡 P1-3 · GPU 就绪 ≠ ComfyUI 就绪
+
+真机实测：AI 启动 GPU 后直接调 `wait_for_comfy`，**等了 300 秒超时**，
+之后才手动跑启动脚本。
+
+按既定原则**不做自动化、只做引导**（各人启动脚本路径不同，不能硬编码）：
+- `start_gpu` 返回里明确列出下一步（先 terminal_exec 找并跑启动脚本，再等就绪）
+- `wait_for_comfy` 超时文案把"ComfyUI 进程还没启动"放到**第一位**
+
+## 🟡 P1-2 · `list_workflows` 失败时给明确引导
+
+`/v2/userdata` 在反代下未必可用。原先失败把网络异常丢给模型，AI 就自己去容器里
+翻目录、转格式、内联提交——App 里看不到它用的工作流。
+
+现在失败时给两条可走的路：内联 `workflow_json`（推荐，可预检）、或传确切路径；
+要列目录就自己用 `terminal_exec`。
+**没做**降级到容器目录列举：各项目布局不同、路径得可配置，猜错反而误导。
+
+## 🟡 P1-4 · AI 自己写脚本绕过 MCP 工具
+
+AI 承认"大量用 python/curl 通过 HTTP 调 MCP"，而它手边就有 17 个原生工具。
+
+用 MCP 协议的 `instructions`（initialize 时发一次）放两条全局约定：不要自己写脚本
+调本服务、GPU 就绪 ≠ ComfyUI 就绪。**刻意不放每个工具的描述里**——工具描述每轮都要
+付 token，而 instructions 每次会话只发一次。
+
+## 安全补充（§4.6）
+
+`rm -rf ~/ComfyUI/models/` 原先**能执行**（`isCatastrophic` 挡的是"整个实例没了"，
+`rm -rf ~/models/loras` 有明确目标是**有意放行**的）。新增 `ValuableDataGuard`，
+**只在 MCP 侧**拦递归删高价值目录（models/loras/checkpoints/workflows/模型/工作流…），
+并给可逆做法（`mv` 到 `~/.trash`）。
+
+**不自动把 `rm` 改写成 `mv`**——那会让 AI 以为删了、实际只是移走，语义变了（第五类 bug）。
+判定用**路径段相等**而非 `contains`，`~/models_backup_old` 这类相似名不会被误拦。
+
+## 其他
+
+- §4.1：记住上次用的 GPU 档位（新增偏好 `lastGpuSchedule`）。真机实测 AI 说
+  "已记住默认档位"——那只是它的会话记忆，App 侧毫无持久化。
+- §4.2：`job_status` 在全部任务进入终态时附一句"可调 stop_gpu 停止计费"。
+- §4.5：服务启动也记一条调用日志，让"中途出现的 initialize"（疑似进程被杀重启）
+  在时间线上可见。
+
+---
+
+## 需要说清楚的两点
+
+1. **仍未在真机上验证本批改动**。P0-1/P0-2 有专门的单测（注入假后端 + 纯类注册表），
+   但真机链路要等下一次实测。AI Studio 的接口是网页前端内部接口。
+2. 本批 **3 次 CI 失败**，都是编译/单测错误，已逐个修好：
+   - `TerminalRegistry` 缺嵌套类 `TerminalSession` 的 import（连锁报错 12 处，
+     根因就这一条）
+   - `McpTerminalHostTest` 两处断言口径写错（把 `onOpen` 的 locale 修正也算成命令、
+     以及"每次用 probe 都新建"这个**真 bug**，已修）
+   - **接口改签名没同步测试实现（第三次犯）** → 已做成工具
+     `/tmp/check_iface_impl.py`，并用修前版本验证过能精确抓到
+
+## 方案的 §3.3（describe_workflow 排序倒序）
+
+**无需再做**：v0.2.95 已修（`orderForDisplay` 改成显式"未命中推末尾"，且有单测
+锁住 steps 排第一）。方案这一条是基于更早的源码写的。
+
+## 未做（如实列出）
+
+| 项 | 说明 |
+|---|---|
+| §五 本机 UI 全部（结果页/工作流页/设置页/更多页/账号页/快捷页/参数页） | 属独立批次，本次只做 MCP 相关的 §一~§四 |
+| §4.3 AI 封装脚本固化 | 方案建议"不阻止"，只保证原生工具路径始终可用——已由本批的引导覆盖 |
+| §4.4 容器文件 App 看不到 | 设计上的分裂点，属"AI 搭工作流"那一批 |
+| §4.5 的根因定位 | 只加了可观测性（启动记日志），**未定位**那一次 initialize 的原因 |
+
+---
+
 # v0.2.97 — MCP 打通 AI Studio：AI 能自己启动 GPU、开终端、跑出图
 
 > 本批按《MCP最终实施清单》推进。用户拍板的关键决策：
