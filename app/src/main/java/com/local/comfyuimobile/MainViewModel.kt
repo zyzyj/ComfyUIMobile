@@ -1065,6 +1065,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 旧请求的 accountId 又对上了，会把旧积分/算力卡盖回新面板。用 generation 作废。
         invalidateAiStudioRefresh()
         aiStudioDisconnectConsole()
+        // v0.2.97：除界面那条外，MCP 侧开的终端会话也在旧账号/旧项目上——
+        // 一并关掉，否则它们会带着已失效的身份继续吊着 socket。
+        kernelClient.closeAllTerminals()
         kernelClient.clearProjectCookies()
         // v0.2.69：档位列表也要清。它绑定在具体项目上，切账号后旧账号的档位会
         // 留在新面板里——要么显示成上一个账号的型号，要么因为加载失败一直停在
@@ -6765,7 +6768,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         client.closeWebSocket()
-        kernelClient.closeTerminal()
+        // v0.2.97：这里要用 closeAllTerminals——MCP 侧可能还开着自己的终端会话
+        // （如常驻 tail ComfyUI 日志的那个），只关界面那条会把它漏成孤儿 socket。
+        kernelClient.closeAllTerminals()
         // v0.2.85：MCP 监听跑在独立前台服务里，不由 ViewModel 收尾
         // （用户切到 AiCode 时本进程仍要在后台活着，这正是它存在的理由）。
         // v0.1.86：App 真正退出时把"已连接"常驻通知一起撤掉，别在通知栏留孤儿。

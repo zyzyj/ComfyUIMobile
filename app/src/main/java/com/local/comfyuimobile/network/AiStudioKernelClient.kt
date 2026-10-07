@@ -160,16 +160,6 @@ class AiStudioKernelClient {
         }
     }
 
-    private var terminalSocket: WebSocket? = null
-
-    /**
-     * 跨帧转义残留：上一帧结尾处未写完的转义序列，拼到下一帧前面再处理。
-     *
-     * WS 帧边界与转义序列边界无关（`ESC[01;34m` 可能被切两半）。不拼的话，
-     * 半截序列会被当普通文本留下，界面就会冒出 `[01;34m` 这种乱码。
-     */
-    private val terminalPendingEscape = StringBuilder()
-
     /** 平台返回的环境连接信息。 */
     data class KernelEndpoint(
         /** baseinfo 给的 baseUrl（用户路径，http）。 */
@@ -368,12 +358,69 @@ class AiStudioKernelClient {
     }
 
     /**
+     * 一个终端会话（v0.2.97）。
+     *
+     * 为什么要有这个东西：以前 `terminalSocket` / `terminalConnectionId` /
+     * `terminalPendingEscape` 都是单变量，只能容下一个终端。但 AI 与终端交互的前提
+     * 恰恰是**多个终端**：一个跑 ComfyUI（日志一直在刷），另一个跑临时命令要拿到
+     * 干净输出——共用一条的话，"输入一条命令拿对应输出"这个前提直接不成立。
+     *
+     * 每会话自带：自己那条 socket、自己的代次 id、自己的半截转义缓冲。
+     * 平台侧本来就支持多终端（`api/terminals` 可建多个，每个独立 name + 独立 WS）。
+     */
+    class TerminalSession internal constructor(
+        val name: String,
+        internal val connectionId: String,
+        socket: WebSocket?,
+    ) {
+        /**
+         * 底层 socket。
+         *
+         * 先建会话、后拿 socket（`newWebSocket` 是同步返回的，但回调里要引用会话），
+         * 所以用可写字段而不是构造参数——写成 `lateinit` 的局部变量再回填容易在
+         * 回调早于赋值时炸掉。
+         */
+        @Volatile internal var socket: WebSocket? = socket
+            private set
+
+        /** 上一帧结尾处未写完的转义序列，拼到下一帧前面再处理。**每会话一份**。 */
+        internal val pendingEscape = StringBuilder()
+
+        @Volatile internal var closed: Boolean = false
+
+        internal fun attach(webSocket: WebSocket) {
+            socket = webSocket
+        }
+
+        internal fun send(frame: String): Boolean {
+            val target = socket ?: return false
+            return !closed && target.send(frame)
+        }
+    }
+
+    private val sessions = java.util.concurrent.ConcurrentHashMap<String, TerminalSession>()
+
+    /** 界面控制台当前用的那个终端名；MCP 侧不用它。 */
+    @Volatile private var currentTerminalName: String? = null
+
+    /** 当前（界面）终端会话；没连时为 null。 */
+    fun currentSession(): TerminalSession? = currentTerminalName?.let { sessions[it] }
+
+    /** 按名取会话（MCP 侧用）。 */
+    fun session(name: String): TerminalSession? = sessions[name]
+
+    /** 当前所有已连会话的名字。 */
+    fun sessionNames(): List<String> = sessions.keys.toList()
+
+    /**
      * 打开终端的 WebSocket，开始收发命令。
      *
      * Jupyter 终端的 WebSocket 协议是 **JSON 数组**（terminado，不是内核那套 dict 消息）：
      * 发 `["stdin", "命令\r"]`，收 `["stdout", "输出"]`，改尺寸用 `["set_size", rows, cols]`。
      * 以前发的是 `{"type":"stdin",...}`，服务器当成畸形消息直接把连接掉了——
      * 现象就是“刚连上、一输命令就断开”。
+     *
+     * 同名终端会被替换（重连就是这条路）；**不同名的会话保留**。
      */
     fun openTerminal(
         account: AiStudioAccount,
@@ -383,29 +430,33 @@ class AiStudioKernelClient {
         onOpen: () -> Unit,
         onClosed: (String) -> Unit,
     ) {
-        closeTerminal()
-        terminalPendingEscape.setLength(0)
-        // v0.2.51：本次连接的代次 id。closeTerminal() 是异步的，换连接/切账号时旧 socket
-        // 的 onOpen / onMessage / onFailure / onClosed 都可能晚到。只看 `terminalSocket !== webSocket`
-        // 已经挡住大部分，但 onMessage 的输出、以及新连接建立后旧连接的输出，仍可能混进来。
-        // 统一用连接 id 做身份判定，四个回调一致处理。
+        // 同名会话先关：重连（或换账号重连）时旧 socket 不能留着跟新的抢输出。
+        closeSession(name)
+        currentTerminalName = name
+        // v0.2.51：本次连接的代次 id。close 是异步的，换连接/切账号时旧 socket
+        // 的 onOpen / onMessage / onFailure / onClosed 都可能晚到。只看
+        // `session.socket !== webSocket` 已经挡住大部分，但 onMessage 的输出、以及
+        // 新连接建立后旧连接的输出，仍可能混进来。统一用连接 id 做身份判定。
         val connectionId = UUID.randomUUID().toString()
-        terminalConnectionId = connectionId
         val url = withToken(endpoint, wsBase(endpoint) + "terminals/websocket/" + encode(name))
         val builder = Request.Builder().url(url)
         commonHeaders(account, endpoint).forEach { (k, v) -> builder.header(k, v) }
-        terminalSocket = client.newWebSocket(
+        val session = TerminalSession(name = name, connectionId = connectionId, socket = null)
+        val socket = client.newWebSocket(
             builder.build(),
             object : WebSocketListener() {
-                private fun stale(webSocket: WebSocket) =
-                    terminalSocket !== webSocket || terminalConnectionId != connectionId
+                /** 只有「当前仍是这个会话」的回调才算数（旧 socket 的迟到回调要丢弃）。 */
+                private fun stale(webSocket: WebSocket): Boolean {
+                    val registered = sessions[name]
+                    return registered !== session ||
+                        session.connectionId != connectionId ||
+                        session.socket !== webSocket
+                }
 
                 override fun onOpen(webSocket: WebSocket, response: Response) {
-                    // v0.2.49：与 onFailure / onClosed 一致的身份守卫。openTerminal 每次先
-                    // closeTerminal()（异步）再建新连接，旧连接的迟到 onOpen 若不拦，会把
-                    // terminalManualClose 改回 false（用户刚点断开却被自动重连）、并把
-                    // consoleConnected 置 true（顶栏报"已连接"实际没有 socket）——与 v0.2.46
-                    // 在 ComfyClient 修掉的问题同构。
+                    // v0.2.49：旧连接的迟到 onOpen 若不拦，会把 terminalManualClose 改回
+                    // false（用户刚点断开却被自动重连）、并把 consoleConnected 置 true
+                    // （顶栏报"已连接"实际没有 socket）。
                     if (stale(webSocket)) return
                     onOpen()
                 }
@@ -418,41 +469,54 @@ class AiStudioKernelClient {
                     // 只剔 OSC/CSI 等控制序列，**保留** ANSI 颜色码——由界面渲染成颜色，
                     // 不然 ls 的着色、彩色提示符全没了，一屏白字看起来又乱又平。
                     // 先把上一帧残留的半截转义拼上，避免序列被帧边界切开后残留乱码。
-                    val combined = terminalPendingEscape.toString() + raw
-                    terminalPendingEscape.setLength(0)
+                    val combined = session.pendingEscape.toString() + raw
+                    session.pendingEscape.setLength(0)
                     val (complete, pending) = AiStudioProtocol.splitTrailingIncompleteEscape(combined)
-                    if (pending.isNotEmpty()) terminalPendingEscape.append(pending)
+                    if (pending.isNotEmpty()) session.pendingEscape.append(pending)
                     val clean = AiStudioProtocol.sanitizeTerminalOutput(complete)
                     if (clean.isNotEmpty()) onOutput(clean)
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    // 只有「当前 socket」的回调才算数。换连接时 closeTerminal() 会先关掉旧
-                    // socket，它的 onFailure/onClosed 是异步后到的——不判断身份的话，旧连接
-                    // 的回调会把刚建立的新连接报成"断开"，于是界面一直"重连中"。
                     if (stale(webSocket)) return
-                    terminalSocket = null
-                    terminalConnectionId = null
+                    detach(session)
                     onClosed(t.message ?: "连接中断")
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                     if (stale(webSocket)) return
-                    terminalSocket = null
-                    terminalConnectionId = null
+                    detach(session)
                     onClosed("终端已关闭（$code）")
                 }
             },
         )
+        session.attach(socket)
+        sessions[name] = session
     }
 
-    /** 当前终端连接的代次 id；closeTerminal() 会置空，旧回调用它判定自己已过期（v0.2.51）。 */
-    @Volatile private var terminalConnectionId: String? = null
+    /** 从表里摘掉某个会话（仅当表里装的还是它）。 */
+    private fun detach(session: TerminalSession) {
+        session.closed = true
+        if (sessions[session.name] === session) sessions.remove(session.name)
+        if (currentTerminalName == session.name) currentTerminalName = null
+    }
+
+    /**
+     * 关掉某个终端的 socket（不删服务端 PTY）。
+     *
+     * 先作废会话再关 socket：否则旧 socket 的迟到回调仍可能被当成当前连接。
+     */
+    fun closeSession(name: String) {
+        val existing = sessions.remove(name) ?: return
+        existing.closed = true
+        if (currentTerminalName == name) currentTerminalName = null
+        existing.socket.close(1000, "client close")
+    }
 
     /** 向终端发一条命令（自动补回车）。协议帧：`["stdin", "...\r"]`。 */
-    fun sendInput(command: String): Boolean {
-        val socket = terminalSocket ?: return false
-        return socket.send(AiStudioProtocol.terminalStdinFrame(command))
+    fun sendInput(command: String, session: TerminalSession? = null): Boolean {
+        val target = session ?: currentSession() ?: return false
+        return target.send(AiStudioProtocol.terminalStdinFrame(command))
     }
 
     /**
@@ -461,22 +525,26 @@ class AiStudioKernelClient {
      * 用于 Ctrl+C（`\u0003`）这类控制字符——它们是裸字节，补上 `\r` 反而会被当成
      * 回车提交。协议帧同样是 `["stdin", "..."]`，只是内容不带 `\r`。
      */
-    fun sendRawInput(raw: String): Boolean {
-        val socket = terminalSocket ?: return false
-        return socket.send(AiStudioProtocol.terminalRawStdinFrame(raw))
+    fun sendRawInput(raw: String, session: TerminalSession? = null): Boolean {
+        val target = session ?: currentSession() ?: return false
+        return target.send(AiStudioProtocol.terminalRawStdinFrame(raw))
     }
 
     /** 告知终端窗口尺寸，避免输出错行。协议帧：`["set_size", rows, cols]`（注意顺序）。 */
-    fun resize(cols: Int, rows: Int) {
-        val socket = terminalSocket ?: return
-        socket.send(AiStudioProtocol.terminalResizeFrame(rows, cols))
+    fun resize(cols: Int, rows: Int, session: TerminalSession? = null) {
+        val target = session ?: currentSession() ?: return
+        target.send(AiStudioProtocol.terminalResizeFrame(rows, cols))
     }
 
+    /** 关掉界面那个终端（保留其它 MCP 会话）。 */
     fun closeTerminal() {
-        // 先作废连接 id，再关 socket：否则旧 socket 的迟到回调仍可能被当成当前连接。
-        terminalConnectionId = null
-        terminalSocket?.close(1000, "client close")
-        terminalSocket = null
+        currentTerminalName?.let { closeSession(it) }
+    }
+
+    /** 关掉全部终端会话（切账号 / 断开项目时用）。 */
+    fun closeAllTerminals() {
+        sessions.keys.toList().forEach { closeSession(it) }
+        currentTerminalName = null
     }
 
     /**
