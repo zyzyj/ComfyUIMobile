@@ -510,7 +510,7 @@ class AiStudioKernelClient {
         val existing = sessions.remove(name) ?: return
         existing.closed = true
         if (currentTerminalName == name) currentTerminalName = null
-        existing.socket.close(1000, "client close")
+        existing.socket?.close(1000, "client close")
     }
 
     /** 向终端发一条命令（自动补回车）。协议帧：`["stdin", "...\r"]`。 */
