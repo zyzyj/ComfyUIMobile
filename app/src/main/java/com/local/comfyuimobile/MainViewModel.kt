@@ -1318,6 +1318,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             account = account,
             endpoint = endpoint,
             name = name,
+            // v0.2.98 修 P0-2：界面开的终端**必须**声明为"界面在用"，
+            // 否则 openTerminal 不会设置它，控制台发送会落到别处。
+            asUiCurrent = true,
             onOutput = { chunk -> if (!stale()) appendTerminal(chunk) },
             onOpen = {
                 if (stale()) return@openTerminal

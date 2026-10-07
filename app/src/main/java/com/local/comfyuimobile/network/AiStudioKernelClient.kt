@@ -398,19 +398,16 @@ class AiStudioKernelClient {
         }
     }
 
-    private val sessions = java.util.concurrent.ConcurrentHashMap<String, TerminalSession>()
-
-    /** 界面控制台当前用的那个终端名；MCP 侧不用它。 */
-    @Volatile private var currentTerminalName: String? = null
+    private val registry = TerminalRegistry()
 
     /** 当前（界面）终端会话；没连时为 null。 */
-    fun currentSession(): TerminalSession? = currentTerminalName?.let { sessions[it] }
+    fun currentSession(): TerminalSession? = registry.uiSession()
 
     /** 按名取会话（MCP 侧用）。 */
-    fun session(name: String): TerminalSession? = sessions[name]
+    fun session(name: String): TerminalSession? = registry.get(name)
 
     /** 当前所有已连会话的名字。 */
-    fun sessionNames(): List<String> = sessions.keys.toList()
+    fun sessionNames(): List<String> = registry.names()
 
     /**
      * 打开终端的 WebSocket，开始收发命令。
@@ -421,18 +418,22 @@ class AiStudioKernelClient {
      * 现象就是“刚连上、一输命令就断开”。
      *
      * 同名终端会被替换（重连就是这条路）；**不同名的会话保留**。
+     *
+     * @param asUiCurrent 是否把它设为"界面正在用的终端"。**界面传 true，MCP 传 false**——
+     *   v0.2.98 修 P0-2：以前无条件抢占，于是 AI 一开终端就把界面那条顶掉，
+     *   用户在控制台敲的命令全发到 AI 的终端去了。
      */
     fun openTerminal(
         account: AiStudioAccount,
         endpoint: KernelEndpoint,
         name: String,
+        asUiCurrent: Boolean = false,
         onOutput: (String) -> Unit,
         onOpen: () -> Unit,
         onClosed: (String) -> Unit,
     ) {
         // 同名会话先关：重连（或换账号重连）时旧 socket 不能留着跟新的抢输出。
         closeSession(name)
-        currentTerminalName = name
         // v0.2.51：本次连接的代次 id。close 是异步的，换连接/切账号时旧 socket
         // 的 onOpen / onMessage / onFailure / onClosed 都可能晚到。只看
         // `session.socket !== webSocket` 已经挡住大部分，但 onMessage 的输出、以及
@@ -447,7 +448,7 @@ class AiStudioKernelClient {
             object : WebSocketListener() {
                 /** 只有「当前仍是这个会话」的回调才算数（旧 socket 的迟到回调要丢弃）。 */
                 private fun stale(webSocket: WebSocket): Boolean {
-                    val registered = sessions[name]
+                    val registered = registry.get(name)
                     return registered !== session ||
                         session.connectionId != connectionId ||
                         session.socket !== webSocket
@@ -491,14 +492,14 @@ class AiStudioKernelClient {
             },
         )
         session.attach(socket)
-        sessions[name] = session
+        registry.put(session)
+        // 只有显式要求时才抢"界面当前终端"。MCP 传 false，不会顶掉用户那条。
+        if (asUiCurrent) registry.setUi(session)
     }
 
     /** 从表里摘掉某个会话（仅当表里装的还是它）。 */
     private fun detach(session: TerminalSession) {
-        session.closed = true
-        if (sessions[session.name] === session) sessions.remove(session.name)
-        if (currentTerminalName == session.name) currentTerminalName = null
+        registry.removeIfSame(session)
     }
 
     /**
@@ -507,9 +508,7 @@ class AiStudioKernelClient {
      * 先作废会话再关 socket：否则旧 socket 的迟到回调仍可能被当成当前连接。
      */
     fun closeSession(name: String) {
-        val existing = sessions.remove(name) ?: return
-        existing.closed = true
-        if (currentTerminalName == name) currentTerminalName = null
+        val existing = registry.remove(name) ?: return
         existing.socket?.close(1000, "client close")
     }
 
@@ -538,13 +537,12 @@ class AiStudioKernelClient {
 
     /** 关掉界面那个终端（保留其它 MCP 会话）。 */
     fun closeTerminal() {
-        currentTerminalName?.let { closeSession(it) }
+        registry.uiSession()?.let { closeSession(it.name) }
     }
 
     /** 关掉全部终端会话（切账号 / 断开项目时用）。 */
     fun closeAllTerminals() {
-        sessions.keys.toList().forEach { closeSession(it) }
-        currentTerminalName = null
+        registry.names().forEach { closeSession(it) }
     }
 
     /**

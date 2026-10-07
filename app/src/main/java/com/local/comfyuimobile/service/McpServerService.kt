@@ -16,6 +16,7 @@ import com.local.comfyuimobile.data.LocalResultCache
 import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.ResultSource
 import com.local.comfyuimobile.mcp.AiStudioBridge
+import com.local.comfyuimobile.mcp.KernelTerminalBackend
 import com.local.comfyuimobile.mcp.McpServerManager
 import com.local.comfyuimobile.mcp.McpTerminalHost
 import com.local.comfyuimobile.network.AiStudioKernelClient
@@ -121,7 +122,7 @@ class McpServerService : Service() {
             // 终端与 AI Studio 通道共用同一个 kernel client 与令牌刷新器：
             // 两套刷新器会各自拿到"更新后"的令牌、互相覆盖（与 ViewModel 同一约定）。
             terminal = McpTerminalHost(
-                kernel = kernel,
+                kernel = KernelTerminalBackend(kernel),
                 activeProject = { aiStudioBridge.runningProject() },
             ),
         )
