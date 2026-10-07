@@ -324,6 +324,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         serverInput = resolvedServerInput,
                         mcpServerEnabled = stored.mcpServerEnabled,
                         mcpServerToken = stored.mcpServerToken,
+                        mcpServerRequireAuth = stored.mcpServerRequireAuth,
                         mcpServerConfiguredPort = stored.mcpServerPort,
                         mcpServerPort = if (McpServerService.isRunning()) effectiveMcpPort() else 0,
                         aiStudio = _state.value.aiStudio.copy(
@@ -982,6 +983,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     notice = "端口已改为 $port；AiCode 配置里的 URL 需同步更新并新开会话",
                 )
             }
+        }
+    }
+
+    /**
+     * 开关 Bearer 鉴权（v0.2.97，F1）。
+     *
+     * 服务在跑就重启——鉴权是启动参数，不重启不生效。
+     */
+    fun setMcpServerRequireAuth(enabled: Boolean) {
+        _state.update { it.copy(mcpServerRequireAuth = enabled) }
+        viewModelScope.launch {
+            runCatching { preferences.setMcpServerRequireAuth(enabled) }
+                .onFailure { AppLogger.error("保存 MCP 鉴权开关失败", it) }
+        }
+        if (_state.value.mcpServerEnabled) {
+            val token = _state.value.mcpServerToken
+            if (enabled && token.isBlank()) {
+                // 开鉴权却没 token：先生成一个，否则重启后服务会拒绝启动。
+                regenerateMcpToken()
+                return
+            }
+            McpServerService.stop(app)
+            McpServerService.start(app, token)
         }
     }
 

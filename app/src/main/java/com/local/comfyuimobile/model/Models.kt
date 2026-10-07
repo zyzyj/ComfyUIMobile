@@ -294,6 +294,8 @@ data class AppUiState(
     val mcpServerConfiguredPort: Int = 0,
     /** MCP 的 Bearer token，供用户复制到 AiCode 配置里。 */
     val mcpServerToken: String = "",
+    /** 是否启用 Bearer 鉴权（v0.2.97，F1：默认免鉴权）。 */
+    val mcpServerRequireAuth: Boolean = false,
     val quickWorkflowName: String? = null,
     val quickFields: List<ParameterField> = emptyList(),
     val quickEnabledParams: List<String> = emptyList(),

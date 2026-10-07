@@ -77,8 +77,10 @@ class McpServerService : Service() {
     private suspend fun startServer(token: String) {
         val stored = runCatching { AppPreferences(this).settings.first() }.getOrNull()
         val resolvedToken = token.ifBlank { stored?.mcpServerToken.orEmpty() }
-        if (resolvedToken.isBlank()) {
-            AppLogger.warn("MCP 前台服务启动被拒：没有访问令牌")
+        // 免鉴权模式下不需要 token（F1）；只有开启鉴权时才要求必须有。
+        val requireAuth = stored?.mcpServerRequireAuth == true
+        if (requireAuth && resolvedToken.isBlank()) {
+            AppLogger.warn("MCP 前台服务启动被拒：已开启鉴权但没有令牌")
             stopServer()
             return
         }
@@ -110,6 +112,8 @@ class McpServerService : Service() {
         this.manager = manager
         val bound = manager.start(
             resolvedToken,
+            // 鉴权开关从偏好读（F1：默认免鉴权）。服务可能比界面先起，所以不能靠 Intent 传。
+            requireAuth = stored?.mcpServerRequireAuth == true,
             // 端口解析必须与 UI 同一条路（resolvePort）：直接传偏好原值的话，
             // 0 会被 ServerSocket 理解成"系统随机分配"——UI 显示 23456、
             // 配置片段也生成 23456，服务却绑在随机端口上，AiCode 必然连不上。
