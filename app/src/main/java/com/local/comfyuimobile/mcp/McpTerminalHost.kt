@@ -93,10 +93,15 @@ internal class McpTerminalHost(
         if (TerminalCommandSafety.isCatastrophic(cmd)) {
             AppLogger.warn("MCP 终端拒绝灾难性命令：${cmd.take(200)}")
             throw IllegalStateException(
-                "已拒绝这条命令：被判定为灾难性、不可逆操作（如删除关键路径 / 格式化 / 关机）。" +
-                    "如需清理，请改用把目标移到回收目录之类的可逆做法。",
+                "已拒绝这条命令：被判定为灾难性、不可逆操作（如删除关键路径 / 格式化 / 关机）。\n" +
+                    "如需清理，请改用**可逆的隔离删除**：把目标移到回收目录而不是直接删，例如\n" +
+                    "  mkdir -p ~/.trash && mv <目标> ~/.trash/\n" +
+                    "（mv 不在灾难判定里，因为它是可逆的；确认无误后再自己手动清空 ~/.trash。）",
             )
         }
+        // 命令留痕（清单 §八）：AI 完全控制终端后，必须能事后追溯"跑过什么"。
+        // 只记命令与终端名，不记输出（输出可能很长，且已在缓冲区里）。
+        AppLogger.info("MCP 终端执行[${terminal?.trim().orEmpty().ifBlank { DEFAULT_TERMINAL }}]：${cmd.take(500)}")
 
         val name = terminal?.trim()?.takeIf { it.isNotBlank() } ?: DEFAULT_TERMINAL
         val timeout = (timeoutSeconds ?: TerminalShell.DEFAULT_TIMEOUT_SECONDS).coerceIn(1, 600)

@@ -1431,6 +1431,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         if (command.isBlank()) return
+        // 命令留痕（清单 §八）：终端完全控制后必须能事后追溯。
+        AppLogger.info("控制台终端执行：${command.take(500)}")
         appendTerminal("$ $command\n")
         if (!kernelClient.sendInput(command)) {
             _state.update { it.copy(aiStudio = it.aiStudio.copy(error = "命令发送失败：终端未就绪")) }
