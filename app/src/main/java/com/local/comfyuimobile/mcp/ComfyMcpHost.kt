@@ -127,10 +127,24 @@ internal class ComfyMcpHost(
 
     override suspend fun generate(request: GenerateRequest, awaitMillis: Long): GenerateOutcome {
         requireConnected()
-        val source = readApiWorkflow(request.workflow)
+        // v0.2.97：优先用内联 JSON（A1.1）——AI 自己搭/改的工作流不必先存盘，
+        // 也绕开了"`/v2/userdata` 在反代下未必可用"这个不确定性。
+        val inline = request.workflowJson?.let { raw ->
+            runCatching { JSONObject(raw) }.getOrNull()
+                ?.takeIf { WorkflowFormat.isApiPrompt(it) }
+                ?.let { WorkflowSource(INLINE_WORKFLOW_PATH, raw, it) }
+        }
+        if (request.workflowJson != null && inline == null) {
+            return GenerateOutcome.Failed(
+                "传入的 workflow_json 不是合法的 API 格式工作流。" +
+                    "请确认它是 {{节点id: {{class_type, inputs}}}} 结构（ComfyUI 的 Export (API)），" +
+                    "或先用 validate_workflow 预检",
+            )
+        }
+        val source = inline ?: readApiWorkflow(request.workflow)
             ?: return GenerateOutcome.Failed(
-                "没有可用的 API 格式工作流：请传 workflow 参数（见 list_workflows / describe_workflow），" +
-                    "或先在 App 里打开一个 API 格式工作流",
+                "没有可用的 API 格式工作流：可传 workflow_json 内联，或传 workflow 路径" +
+                    "（见 list_workflows / describe_workflow）",
             )
         val path = source.path
         val workflowJson = source.json
@@ -300,6 +314,38 @@ internal class ComfyMcpHost(
         }
     }
 
+    /**
+     * 等待 ComfyUI 就绪（v0.2.97）。
+     *
+     * 探测方式用 `/system_stats`：它最轻，且是 ComfyUI 自己实现的接口——
+     * 比拿 `list_models` 试探准（后者要拉几 MB 的 object_info）。
+     */
+    override suspend fun waitForComfy(timeoutSeconds: Int): String {
+        if (client.serverUrl().isBlank()) {
+            return "App 尚未连接 ComfyUI 地址。请先在 App 里连接（或启动云端环境后回到 App 连接），" +
+                "然后再调用本工具。"
+        }
+        val deadline = System.currentTimeMillis() + timeoutSeconds * 1000L
+        var attempts = 0
+        val startedAt = System.currentTimeMillis()
+        while (true) {
+            attempts++
+            val ok = runCatching { client.systemStats() }.isSuccess
+            if (ok) {
+                val waited = (System.currentTimeMillis() - startedAt) / 1000
+                AppLogger.info("MCP 等待 ComfyUI：第 $attempts 次探测成功，等了 ${waited}s")
+                return "ComfyUI 已就绪（等了 ${waited} 秒，探测 $attempts 次）。可以提交出图了。"
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                // 超时不自作主张：说清"没等到"，并给出下一步该做什么。
+                return "等待 ${timeoutSeconds} 秒后 ComfyUI 仍不可达（探测 $attempts 次）。" +
+                    "可能原因：① 云端项目未启动 ② 启动脚本还没跑完 ③ 地址/登录态不对。" +
+                    "建议：确认项目已启动后重试，或先检查启动脚本的日志。"
+            }
+            delay(WAIT_FOR_COMFY_POLL_MILLIS)
+        }
+    }
+
     override suspend fun jobStatus(jobId: String): GenerateOutcome {
         requireConnected()
         // 查询时不再长等：已经知道任务在跑了，给一次短窗口即可，避免把 job_status 变成
@@ -437,7 +483,10 @@ internal class ComfyMcpHost(
                 }
             }
         }
-        return text.ifBlank { status.optString("status_str", "无输出") }
+        // v0.2.97：这里是 Python 完整 traceback（几千字符），原样返回既费 token、
+        // 又把真正有用的异常行淹没。摘要化到末尾几行（见 McpErrorSummary）。
+        val summarized = McpErrorSummary.summarize(text)
+        return summarized.ifBlank { status.optString("status_str", "无输出") }
     }
 
     private companion object {
@@ -455,5 +504,11 @@ internal class ComfyMcpHost(
 
         /** 本 App 的 MCP 通道提交任务时写到 extra_data 的来源标记。 */
         const val ORIGIN_MCP = "mcp"
+
+        /** 内联工作流在 extra_data 里记的路径标识（没有真实文件路径）。 */
+        const val INLINE_WORKFLOW_PATH = "(inline)"
+
+        /** wait_for_comfy 的探测间隔：2 秒足够密，又不会把服务器问烦。 */
+        const val WAIT_FOR_COMFY_POLL_MILLIS = 2_000L
     }
 }

@@ -26,6 +26,14 @@ internal interface McpToolHost {
     /** 提交一次生成；最多同步等 [awaitMillis]，超时返回运行中。 */
     suspend fun generate(request: GenerateRequest, awaitMillis: Long): GenerateOutcome
 
+    /**
+     * 等待 ComfyUI 就绪（v0.2.97）：轮询探测，返回给模型的文本。
+     *
+     * AI 启动云端环境与 ComfyUI 后需要知道"什么时候能提交"——盲目重试既费
+     * 上下文又可能撞上未就绪的服务器。
+     */
+    suspend fun waitForComfy(timeoutSeconds: Int): String
+
     /** 查一次已有任务的状态。 */
     suspend fun jobStatus(jobId: String): GenerateOutcome
 
@@ -60,6 +68,13 @@ internal data class GenerateRequest(
     val prompt: String,
     val negative: String,
     val workflow: String?,
+    /**
+     * 内联工作流 JSON（v0.2.97，用户决策 A1.1）。
+     *
+     * 给它是为了绕开两个问题：① `/v2/userdata` 在反代下未必可用；
+     * ② AI 自己搭/改的工作流不必先存盘。传了它就不读 [workflow] 文件。
+     */
+    val workflowJson: String?,
     val checkpoint: String?,
     val lora: String?,
     val count: Int,
@@ -70,6 +85,14 @@ internal data class GenerateRequest(
      * 这些原先动不了的字段——否则 AI 只能改提示词和模型。
      */
     val params: Map<String, String> = emptyMap(),
+    /**
+     * 是否同步等待完成（v0.2.97，默认 **false**）。
+     *
+     * 反代下同步等会干等到超时（而 ComfyUI 重连不补发进度）；且每次等待都在烧
+     * 模型的上下文与时间。默认异步：提交完拿 job_id 就走，验收交给 `job_status`
+     * （即"提交/验收分离"，实测省 82% token）。
+     */
+    val wait: Boolean = false,
 )
 
 internal sealed interface GenerateOutcome {
@@ -166,13 +189,23 @@ internal class McpToolRegistry(
         TOOL_LIST_WORKFLOWS -> ToolResult(host.listWorkflows())
         TOOL_DESCRIBE_WORKFLOW -> ToolResult(host.describeWorkflow(args.optString("workflow").trim().takeIf { it.isNotBlank() }))
         TOOL_VALIDATE_WORKFLOW -> ToolResult(host.validateWorkflow(args.optString("workflow").trim().takeIf { it.isNotBlank() }))
-        TOOL_GENERATE -> renderGenerate(host.generate(parseGenerate(args), generateAwaitMillis))
+        TOOL_GENERATE -> renderGenerate(
+            host.generate(
+                parseGenerate(args),
+                // wait=false（默认）时不给等待窗口：提交完立即返回 job_id，
+                // 验收交给 job_status（提交/验收分离）。
+                awaitMillis = if (parseWait(args)) generateAwaitMillis else 0L,
+            ),
+        )
         TOOL_JOB_STATUS -> {
             val ids = parseJobIds(args)
             // 提交多个任务后逐个查要好多轮往返——支持一次传多个 id。
             if (ids.size > 1) ToolResult(host.jobStatusBatch(ids))
             else renderGenerate(host.jobStatus(ids.first()))
         }
+        TOOL_WAIT_FOR_COMFY -> ToolResult(
+            host.waitForComfy(args.optInt("timeout_seconds", 120).coerceIn(5, 900)),
+        )
         TOOL_CANCEL -> ToolResult(
             host.cancelJobs(
                 args.optString("job_id").trim().takeIf { it.isNotBlank() },
@@ -207,11 +240,19 @@ internal class McpToolRegistry(
             prompt = prompt,
             negative = args.optString("negative").trim(),
             workflow = args.optString("workflow").trim().takeIf { it.isNotBlank() },
+            workflowJson = args.optString("workflow_json").trim().takeIf { it.isNotBlank() },
             checkpoint = args.optString("checkpoint").trim().takeIf { it.isNotBlank() },
             lora = args.optString("lora").trim().takeIf { it.isNotBlank() },
             count = count,
             params = parseParams(args),
         )
+    }
+
+    /** `wait` 参数（默认 false）。字符串 "true" 也算真——模型常常把布尔写成字符串。 */
+    private fun parseWait(args: JSONObject): Boolean = when (val raw = args.opt("wait")) {
+        null -> false
+        is Boolean -> raw
+        else -> raw.toString().equals("true", ignoreCase = true)
     }
 
     /** `params` 是自由对象：值可能是字符串也可能是数字，统一转成字符串交给注入层解析。 */
@@ -298,22 +339,30 @@ internal class McpToolRegistry(
         put(
             McpProtocol.toolDescriptor(
                 TOOL_GENERATE,
-                "用指定工作流出图。会同步等待直到完成或超时；超时返回 running 与 job_id，" +
-                    "此时改用 job_status 查询。返回的图片以 URL 给出，需自行下载后查看。" +
-                    "仅支持 API 格式工作流（ComfyUI 的 Export (API) 导出）。",
+                "用指定工作流出图。默认**异步**（wait=false）：提交完立即返回 job_id，" +
+                    "验收用 job_status（省 token）。传 wait=true 才同步等（反代下可能等超时）。" +
+                    "工作流可传 workflow 路径，或直接传 workflow_json 内联（需 API 格式）。" +
+                    "返回的图片以 URL 给出，需自行下载后查看。",
                 schema(
                     JSONObject()
                         .put("prompt", JSONObject().put("type", "string").put("description", "正向提示词"))
                         .put("negative", JSONObject().put("type", "string").put("description", "负向提示词（可选）"))
-                        .put("workflow", JSONObject().put("type", "string").put("description", "工作流路径（可选，见 list_workflows；缺省用 App 当前打开的工作流，且必须是 API 格式）"))
+                        .put("workflow", JSONObject().put("type", "string").put("description", "工作流路径（可选，见 list_workflows）"))
+                        .put(
+                            "workflow_json",
+                            JSONObject()
+                                .put("type", "string")
+                                .put("description", "内联的 API 格式工作流 JSON（可选）；给了它就忽略 workflow 路径"),
+                        )
                         .put("checkpoint", JSONObject().put("type", "string").put("description", "模型文件名（可选）"))
                         .put("lora", JSONObject().put("type", "string").put("description", "LoRA 文件名（可选）"))
                         .put("count", JSONObject().put("type", "integer").put("description", "出图张数，1-8，默认 1"))
+                        .put("wait", JSONObject().put("type", "boolean").put("description", "是否同步等待完成，默认 false"))
                         .put(
                             "params",
                             JSONObject()
                                 .put("type", "object")
-                                .put("description", "按 field key 注入任意参数（steps/cfg/sampler/seed/尺寸等）。先用 describe_workflow 拿到 key 与原值"),
+                                .put("description", "按 field key 注入任意参数（steps/cfg/sampler/seed/尺寸等）。先用 describe_workflow 拿到 key"),
                         ),
                     required = JSONArray().put("prompt"),
                 ),
@@ -361,6 +410,19 @@ internal class McpToolRegistry(
         )
         put(
             McpProtocol.toolDescriptor(
+                TOOL_WAIT_FOR_COMFY,
+                "等待 ComfyUI 就绪（轮询探测 8188）。启动云端环境/跑完启动脚本后调用，" +
+                    "别用重复调 list_models 来试探。超时会返回明确的结论。",
+                schema(
+                    JSONObject().put(
+                        "timeout_seconds",
+                        JSONObject().put("type", "integer").put("description", "最多等多少秒，默认 120（5-900）"),
+                    ),
+                ),
+            ),
+        )
+        put(
+            McpProtocol.toolDescriptor(
                 TOOL_CANCEL,
                 "紧急刹车：中止已提交的任务。不传 job_id 则只会取消**本 App 提交的**任务" +
                     "（默认不碰用户自己或网页端提交的）；确实要一起清才传 all=true。" +
@@ -385,6 +447,7 @@ internal class McpToolRegistry(
         const val TOOL_LIST_WORKFLOWS = "list_workflows"
         const val TOOL_GENERATE = "generate"
         const val TOOL_JOB_STATUS = "job_status"
+        const val TOOL_WAIT_FOR_COMFY = "wait_for_comfy"
         const val TOOL_CANCEL = "cancel_jobs"
         const val TOOL_DESCRIBE_WORKFLOW = "describe_workflow"
         const val TOOL_VALIDATE_WORKFLOW = "validate_workflow"
@@ -406,6 +469,7 @@ internal class McpToolRegistry(
             TOOL_VALIDATE_WORKFLOW,
             TOOL_GENERATE,
             TOOL_JOB_STATUS,
+            TOOL_WAIT_FOR_COMFY,
             TOOL_CANCEL,
         )
     }

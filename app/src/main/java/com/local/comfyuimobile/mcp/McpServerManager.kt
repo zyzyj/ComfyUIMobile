@@ -47,11 +47,14 @@ class McpServerManager(
     fun start(
         token: String,
         requestedPort: Int = DEFAULT_PORT,
+        /** 是否启用 Bearer 鉴权（F1：默认 false = 免鉴权）。 */
+        requireAuth: Boolean = false,
         resultSink: (suspend (ResultMedia, File) -> Unit)? = null,
         onSubmitted: (suspend (promptId: String) -> Unit)? = null,
     ): Int {
         if (isRunning) return port
-        require(token.isNotBlank()) { "缺少访问令牌，请先生成" }
+        // 启用鉴权时才必须有 token；免鉴权模式不需要（也就不该因缺 token 而拒绝启动）。
+        require(!requireAuth || token.isNotBlank()) { "已开启鉴权，请先生成访问令牌" }
         // 每次启动都重建（连同文件登记）：stop 会清掉临时文件，重启后不该还指着它们。
         val store = McpFileStore(cacheDir = File(cacheDir, "mcp_files"))
         val registry = McpToolRegistry(
@@ -66,7 +69,13 @@ class McpServerManager(
             ),
             files = store,
         ) { "http://127.0.0.1:$port/files/" }
-        val created = McpServer(port = requestedPort, token = token, tools = registry, files = store)
+        val created = McpServer(
+            port = requestedPort,
+            token = token,
+            requireAuth = requireAuth,
+            tools = registry,
+            files = store,
+        )
         created.start()
         server = created
         files = store
@@ -117,15 +126,21 @@ class McpServerManager(
         /**
          * 生成 AiCode 侧的配置片段，供页面直接复制。
          *
+         * v0.2.97：默认**免鉴权**（用户决策 F1），因此默认不带 `headers`——
+         * 这也回避了一个实际问题：AiCode 的图形配置界面只能填 URL，
+         * token 没地方填。仅当用户主动开启鉴权时才给出 headers。
+         *
          * 工具名由 AiCode 拼成 `mcp__comfy__{tool}`；服务器名必须只用
-         * `[a-zA-Z0-9_-]`（源码级确证）。端口用**实际值**——端口可配置后常量不再可靠。
+         * `[a-zA-Z0-9_-]`（源码级确证）。端口用**实际值**。
          */
-        fun configSnippet(token: String, port: Int): String = buildString {
+        fun configSnippet(token: String, port: Int, requireAuth: Boolean = false): String = buildString {
             appendLine("{")
             appendLine("  \"mcpServers\": {")
             appendLine("    \"comfy\": {")
             appendLine("      \"url\": \"http://127.0.0.1:$port/mcp\",")
-            appendLine("      \"headers\": { \"Authorization\": \"Bearer $token\" },")
+            if (requireAuth && token.isNotBlank()) {
+                appendLine("      \"headers\": { \"Authorization\": \"Bearer $token\" },")
+            }
             appendLine("      \"enabled\": true")
             appendLine("    }")
             appendLine("  }")

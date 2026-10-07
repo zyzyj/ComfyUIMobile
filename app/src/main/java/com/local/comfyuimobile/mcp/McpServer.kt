@@ -35,6 +35,15 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class McpServer(
     private val port: Int,
     private val token: String,
+    /**
+     * 是否启用 Bearer 鉴权（v0.2.97，用户决策 F1：默认免鉴权）。
+     *
+     * 刻意用**显式参数**而不是"token 为空即免鉴权"：后者会在"忘了生成 token"
+     * 时意外开一个无凭证入口，而错误与正常两种意图无法区分。
+     *
+     * 免鉴权的前提是**只绑 127.0.0.1**（本机其他 App 可访问，局域网不可）。
+     */
+    private val requireAuth: Boolean,
     private val tools: McpToolRegistry,
     private val files: McpFileStore,
 ) {
@@ -165,6 +174,8 @@ internal class McpServer(
      * 宁可服务起不来，也不给一个无凭证入口。
      */
     private fun authorized(request: HttpRequest): Boolean {
+        // 免鉴权模式（F1）：只绑 loopback，本机其他 App 可访问、局域网不可。
+        if (!requireAuth) return true
         if (token.isBlank()) return false
         val header = request.headers["authorization"].orEmpty()
         return header == "Bearer $token"

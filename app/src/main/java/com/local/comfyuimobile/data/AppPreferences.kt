@@ -76,6 +76,13 @@ data class StoredSettings(
     val mcpServerEnabled: Boolean = false,
     val mcpServerToken: String = "",
     /**
+     * 是否启用 Bearer 鉴权（v0.2.97，F1）。
+     *
+     * 默认 **false = 免鉴权**（用户拍板）：本地服务绑 127.0.0.1，且 AiCode 的图形
+     * 配置界面只能填 URL、没地方填 token。想开的用户可以打开。
+     */
+    val mcpServerRequireAuth: Boolean = false,
+    /**
      * MCP 端口（v0.2.88）：用户改过一次就一直用。0 表示从未设置，用 [com.local.comfyuimobile.mcp.McpServerManager.DEFAULT_PORT]。
      * 端口持久化是为了不让 AiCode 那三行配置悄悄失效——端口一变就要重新复制配置。
      */
@@ -109,6 +116,7 @@ class AppPreferences(private val context: Context) {
         val quickWorkflowPath = stringPreferencesKey("quick_workflow_path")
         val mcpServerEnabled = booleanPreferencesKey("mcp_server_enabled")
         val mcpServerToken = stringPreferencesKey("mcp_server_token")
+        val mcpServerRequireAuth = booleanPreferencesKey("mcp_server_require_auth")
         val mcpServerPort = intPreferencesKey("mcp_server_port")
         val aiStudioAccounts = stringPreferencesKey("ai_studio_accounts")
         val aiStudioActiveId = stringPreferencesKey("ai_studio_active_id")
@@ -142,6 +150,7 @@ class AppPreferences(private val context: Context) {
             quickWorkflowPath = preferences[Keys.quickWorkflowPath].orEmpty(),
             mcpServerEnabled = preferences[Keys.mcpServerEnabled] ?: false,
             mcpServerToken = preferences[Keys.mcpServerToken].orEmpty(),
+            mcpServerRequireAuth = preferences[Keys.mcpServerRequireAuth] ?: false,
             mcpServerPort = preferences[Keys.mcpServerPort] ?: 0,
             aiStudioAccounts = decodeAiStudioAccounts(preferences[Keys.aiStudioAccounts].orEmpty()),
             aiStudioActiveId = preferences[Keys.aiStudioActiveId].orEmpty(),
@@ -295,6 +304,11 @@ class AppPreferences(private val context: Context) {
     /** 持久化 MCP 端口（0 表示回到默认）。 */
     suspend fun setMcpServerPort(port: Int) {
         context.dataStore.edit { it[Keys.mcpServerPort] = port }
+    }
+
+    /** 持久化"是否启用 Bearer 鉴权"（v0.2.97，F1）。 */
+    suspend fun setMcpServerRequireAuth(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.mcpServerRequireAuth] = enabled }
     }
 
     /**

@@ -4027,7 +4027,9 @@ private fun McpScreen(
             // ===== 状态区 =====
             SettingsSection("状态", icon = Icons.Outlined.Extension) {
                 SettingsToggleRow(
-                    title = "MCP 服务",
+                    // v0.2.97：标题叫"服务开关"——页面顶栏已经是"MCP 服务"，
+                    // 这里再写一次会出现两个同名标题（用户截图确认过）。
+                    title = "服务开关",
                     subtitle = when {
                         state.mcpServerEnabled && state.mcpServerPort > 0 ->
                             "监听中：127.0.0.1:${state.mcpServerPort}"
@@ -4070,26 +4072,81 @@ private fun McpScreen(
             val token = state.mcpServerToken
             if (token.isNotBlank()) {
                 SettingsSection("AiCode 配置", icon = Icons.Outlined.ContentCopy) {
-                    val snippet = McpServerManager.configSnippet(token, state.mcpServerPort.takeIf { it > 0 } ?: effectivePort(state))
-                    SelectionContainer {
+                    val actualPort = state.mcpServerPort.takeIf { it > 0 } ?: effectivePort(state)
+                    val snippet = McpServerManager.configSnippet(token, actualPort, state.mcpServerRequireAuth)
+                    // v0.2.97（F2）：默认收拢。设置页已经很长，配置块不常改。
+                    var configExpanded by rememberSaveable { mutableStateOf(false) }
+                    Row(
+                        Modifier.fillMaxWidth().clickable { configExpanded = !configExpanded },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         Text(
-                            snippet,
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                                .padding(10.dp),
+                            if (state.mcpServerRequireAuth) "已开启鉴权（需 token）" else "免鉴权（本地服务）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
                         )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextButton(onClick = {
                             clipboard.setPrimaryClip(ClipData.newPlainText("AiCode MCP 配置", snippet))
-                            android.widget.Toast.makeText(context, "已复制；粘贴到 AiCode 的 .aicode/mcp.json", Toast.LENGTH_SHORT).show()
-                        }) { Text("复制配置") }
-                        TextButton(onClick = viewModel::regenerateMcpToken) { Text("重新生成令牌") }
+                            android.widget.Toast.makeText(context, "已复制配置", Toast.LENGTH_SHORT).show()
+                        }) { Text("复制全部") }
+                        Icon(
+                            if (configExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                            null,
+                        )
                     }
+                    if (configExpanded) {
+                        // 分步展示：用户知道自己在配什么、哪一步出错了。
+                        Text(
+                            "第 1 步 · URL：\nhttp://127.0.0.1:$actualPort/mcp",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        )
+                        if (state.mcpServerRequireAuth) {
+                            Text(
+                                "第 2 步 · Token（已打码，点「显示」查看）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            var tokenVisible by rememberSaveable { mutableStateOf(false) }
+                            Text(
+                                if (tokenVisible) token else "•".repeat(token.length.coerceAtMost(32)),
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = { tokenVisible = !tokenVisible }) {
+                                    Text(if (tokenVisible) "隐藏" else "显示")
+                                }
+                                TextButton(onClick = {
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("MCP token", token))
+                                    android.widget.Toast.makeText(context, "已复制 token", Toast.LENGTH_SHORT).show()
+                                }) { Text("复制 token") }
+                                TextButton(onClick = viewModel::regenerateMcpToken) { Text("重新生成") }
+                            }
+                        }
+                        SelectionContainer {
+                            Text(
+                                snippet,
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                    .padding(10.dp),
+                            )
+                        }
+                    }
+                    // 开启鉴权（F1 默认关）。
+                    SettingsToggleRow(
+                        title = "要求鉴权（Bearer token）",
+                        subtitle = if (state.mcpServerRequireAuth) {
+                            "已开启：AiCode 必须带 token 才能调用"
+                        } else {
+                            "默认关闭。仅绑 127.0.0.1，本机其他 App 可访问；想更严可以打开"
+                        },
+                        checked = state.mcpServerRequireAuth,
+                        onCheckedChange = viewModel::setMcpServerRequireAuth,
+                    )
                     Text(
-                        "⚠ 换端口或重新生成令牌后，AiCode 里的配置要同步更新，并新开一次会话才生效",
+                        "⚠ 改完配置需在 AiCode 里新开一次会话才生效",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )
