@@ -71,6 +71,22 @@ internal interface McpToolHost {
     /** 停止项目环境（停止计费）。 */
     suspend fun stopGpu(projectId: String): String
 
+    // ===== 终端（v0.2.97）=====
+    // AI 要能自己找启动脚本（不靠硬编码路径）、启动 ComfyUI、看日志、探端口，
+    // 就必须能「输入一条命令、拿到对应输出」。安全模型见 [McpTerminalHost]。
+
+    /** 列出现有终端。 */
+    suspend fun terminalList(): String
+
+    /** 执行一条命令并等它结束（超时返回已有输出 + 提示，不永久挂）。 */
+    suspend fun terminalExec(command: String, terminal: String?, timeoutSeconds: Int?): String
+
+    /** 读某终端当前累积的输出（不清空，用于 tail 日志）。 */
+    suspend fun terminalRead(terminal: String?, maxLines: Int?): String
+
+    /** 向终端发 Ctrl+C（中断交互式命令）。 */
+    suspend fun terminalInterrupt(terminal: String?): String
+
     /**
      * 紧急刹车（v0.2.91；v0.2.93 收窄范围）：中止任务。
      *
@@ -242,6 +258,23 @@ internal class McpToolRegistry(
             ),
         )
         TOOL_STOP_GPU -> ToolResult(host.stopGpu(args.optString("project_id")))
+        TOOL_TERMINAL_LIST -> ToolResult(host.terminalList())
+        TOOL_TERMINAL_EXEC -> ToolResult(
+            host.terminalExec(
+                command = args.optString("command"),
+                terminal = args.optString("terminal").trim().takeIf { it.isNotBlank() },
+                timeoutSeconds = args.opt("timeout")?.let { args.optInt("timeout") },
+            ),
+        )
+        TOOL_TERMINAL_READ -> ToolResult(
+            host.terminalRead(
+                terminal = args.optString("terminal").trim().takeIf { it.isNotBlank() },
+                maxLines = args.opt("max_lines")?.let { args.optInt("max_lines") },
+            ),
+        )
+        TOOL_TERMINAL_INTERRUPT -> ToolResult(
+            host.terminalInterrupt(args.optString("terminal").trim().takeIf { it.isNotBlank() }),
+        )
         else -> throw IllegalArgumentException("未知工具：$name")
     }
 
@@ -510,6 +543,53 @@ internal class McpToolRegistry(
                 schema(projectIdSchema(), required = JSONArray().put("project_id")),
             ),
         )
+        // ===== 终端（v0.2.97）=====
+        put(
+            McpProtocol.toolDescriptor(
+                TOOL_TERMINAL_LIST,
+                "列出现有终端（名称 + 是否已连）。terminal_exec 的 terminal 参数传这些名字。",
+                schema(JSONObject()),
+            ),
+        )
+        put(
+            McpProtocol.toolDescriptor(
+                TOOL_TERMINAL_EXEC,
+                "在云端终端执行一条命令，等它跑完并返回输出 + 退出码（服务端用唯一标记判定“跑完”）。" +
+                    "超时不会永久挂：会返回已有输出并提示可能是交互式命令。" +
+                    "找启动脚本不要硬编码路径，先自己探查（如 ls / find）。" +
+                    "安全：只有灾难性、不可逆操作会被拒绝（删关键路径 / 格式化 / 关机）。",
+                schema(
+                    JSONObject()
+                        .put("command", JSONObject().put("type", "string").put("description", "要执行的命令"))
+                        .put("terminal", JSONObject().put("type", "string").put("description", "终端名，默认 default。长时间跑的服务（如 ComfyUI）建议单独用一个终端"))
+                        .put("timeout", JSONObject().put("type", "integer").put("description", "等待上限秒数，默认 30（1-600）")),
+                    required = JSONArray().put("command"),
+                ),
+            ),
+        )
+        put(
+            McpProtocol.toolDescriptor(
+                TOOL_TERMINAL_READ,
+                "读某终端当前累积的输出，不清空。用于持续看日志（tail）。",
+                schema(
+                    JSONObject()
+                        .put("terminal", JSONObject().put("type", "string").put("description", "终端名，默认 default"))
+                        .put("max_lines", JSONObject().put("type", "integer").put("description", "最多显示多少行（默认 200）；超出只显示末尾")),
+                ),
+            ),
+        )
+        put(
+            McpProtocol.toolDescriptor(
+                TOOL_TERMINAL_INTERRUPT,
+                "向终端发 Ctrl+C，中断正在跑的命令（如不小心进入了交互式界面）。",
+                schema(
+                    JSONObject().put(
+                        "terminal",
+                        JSONObject().put("type", "string").put("description", "终端名，默认 default"),
+                    ),
+                ),
+            ),
+        )
     }
 
     private fun projectIdSchema(): JSONObject = JSONObject().put(
@@ -540,6 +620,12 @@ internal class McpToolRegistry(
         const val TOOL_START_GPU = "start_gpu"
         const val TOOL_STOP_GPU = "stop_gpu"
 
+        // 终端（v0.2.97）。
+        const val TOOL_TERMINAL_LIST = "terminal_list"
+        const val TOOL_TERMINAL_EXEC = "terminal_exec"
+        const val TOOL_TERMINAL_READ = "terminal_read"
+        const val TOOL_TERMINAL_INTERRUPT = "terminal_interrupt"
+
         /**
          * 120 秒。60 秒太短（SDXL 单图常见 20-60 秒，带高清修复就超），
          * 600 秒太长（无进度通知，界面会静默干等）——见规划书 §5.2。
@@ -564,6 +650,10 @@ internal class McpToolRegistry(
             TOOL_LIST_GPU_OPTIONS,
             TOOL_START_GPU,
             TOOL_STOP_GPU,
+            TOOL_TERMINAL_LIST,
+            TOOL_TERMINAL_EXEC,
+            TOOL_TERMINAL_READ,
+            TOOL_TERMINAL_INTERRUPT,
         )
     }
 }

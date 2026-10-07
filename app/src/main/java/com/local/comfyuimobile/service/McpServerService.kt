@@ -17,6 +17,8 @@ import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.ResultSource
 import com.local.comfyuimobile.mcp.AiStudioBridge
 import com.local.comfyuimobile.mcp.McpServerManager
+import com.local.comfyuimobile.mcp.McpTerminalHost
+import com.local.comfyuimobile.network.AiStudioKernelClient
 import com.local.comfyuimobile.network.ComfyClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -95,6 +97,10 @@ class McpServerService : Service() {
         // "结果"页里要能翻到——不然 App 本来用来看图的地方反而少了 AI 那部分。
         val resultCache = LocalResultCache(this)
 
+        // AI Studio 通道与终端共用一套实例：账号从偏好读，令牌刷新后回写偏好。
+        val aiStudioBridge = AiStudioBridge(AppPreferences(this))
+        val kernel = AiStudioKernelClient().also { aiStudioBridge.bindKernel(it) }
+
         val manager = McpServerManager(
             client = created,
             cacheDir = filesDir,
@@ -111,7 +117,13 @@ class McpServerService : Service() {
             clientId = "comfy-mobile-mcp",
             // AI Studio 通道（v0.2.97）：服务没有 ViewModel 的内存态，所以桥接层
             // 自己从 DataStore 读账号（每次调用重读，跟随 App 里登录/切账号）。
-            aiStudio = AiStudioBridge(AppPreferences(this)),
+            aiStudio = aiStudioBridge,
+            // 终端与 AI Studio 通道共用同一个 kernel client 与令牌刷新器：
+            // 两套刷新器会各自拿到"更新后"的令牌、互相覆盖（与 ViewModel 同一约定）。
+            terminal = McpTerminalHost(
+                kernel = kernel,
+                activeProject = { aiStudioBridge.runningProject() },
+            ),
         )
         this.manager = manager
         val bound = manager.start(

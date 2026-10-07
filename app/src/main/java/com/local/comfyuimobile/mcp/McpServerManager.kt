@@ -31,6 +31,8 @@ internal class McpServerManager(
     private val clientId: String,
     /** AI Studio 通道（v0.2.97）。null = 不启用，相关工具会返回明确提示。 */
     private val aiStudio: AiStudioBridge? = null,
+    /** 终端能力（v0.2.97）。null = 不启用。 */
+    private val terminal: McpTerminalHost? = null,
 ) {
 
     private var server: McpServer? = null
@@ -73,6 +75,7 @@ internal class McpServerManager(
                 resultSink = resultSink,
                 onSubmitted = onSubmitted,
                 aiStudio = aiStudio,
+                terminal = terminal,
             ),
             files = store,
         ) { "http://127.0.0.1:$port/files/" }

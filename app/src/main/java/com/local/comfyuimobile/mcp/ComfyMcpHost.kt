@@ -55,6 +55,13 @@ internal class ComfyMcpHost(
      * 混在一个 client 里很容易把一边的凭据带到另一边去。
      */
     private val aiStudio: AiStudioBridge? = null,
+    /**
+     * 终端能力（v0.2.97）。null = 不可用（单测）。
+     *
+     * 它需要“当前账号 + 项目”，与 [aiStudio] 同源；分开注入是因为它的安全模型
+     * 与依赖（WebSocket 长连、每终端一把锁）自成一块，混在一起更难测。
+     */
+    private val terminal: McpTerminalHost? = null,
 ) : McpToolHost {
 
     override suspend fun listModels(type: String?): String {
@@ -369,6 +376,20 @@ internal class ComfyMcpHost(
         requireAiStudio().startGpu(projectId, schedule)
 
     override suspend fun stopGpu(projectId: String): String = requireAiStudio().stopGpu(projectId)
+
+    private fun requireTerminal(): McpTerminalHost = terminal
+        ?: throw IllegalStateException("终端能力未启用（当前运行环境不支持）。")
+
+    override suspend fun terminalList(): String = requireTerminal().list()
+
+    override suspend fun terminalExec(command: String, terminal: String?, timeoutSeconds: Int?): String =
+        requireTerminal().exec(command, terminal, timeoutSeconds)
+
+    override suspend fun terminalRead(terminal: String?, maxLines: Int?): String =
+        requireTerminal().read(terminal, maxLines)
+
+    override suspend fun terminalInterrupt(terminal: String?): String =
+        requireTerminal().interrupt(terminal)
 
     override suspend fun jobStatus(jobId: String): GenerateOutcome {
         requireConnected()
