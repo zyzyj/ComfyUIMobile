@@ -197,7 +197,7 @@ internal class AiStudioBridge(
         val code = (error as? AiStudioException)?.errorCode
         val hint = when {
             AiStudioRiskControl.isRetryable(code) -> AiStudioRiskControl.messageFor(code, null)
-            403 -> "登录态或令牌已失效——请在 App 的「账号」页重新登录后重试。"
+            code == 403 -> "登录态或令牌已失效——请在 App 的「账号」页重新登录后重试。"
             else -> null
         }
         val base = "$action 失败：" + (error.message ?: "未知错误")
