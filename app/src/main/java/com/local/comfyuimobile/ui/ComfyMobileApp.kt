@@ -4848,6 +4848,12 @@ private fun SettingsContent(
                 onClick = onRequestDeleteLocal,
                 enabled = state.localResults.isNotEmpty(),
                 modifier = Modifier.fillMaxWidth(),
+                // v0.2.99：危险操作要有危险的颜色。以前它用的是普通按钮默认色，
+                // 与上方"查看占用明细"这类无害按钮长得一模一样——用户扫一眼分不出
+                // 哪个点了会删东西。
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
             ) {
                 Icon(Icons.Outlined.Delete, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
@@ -4873,6 +4879,10 @@ private fun SettingsContent(
                     onClick = onRequestClearDrafts,
                     enabled = state.localDraftCount > 0,
                     modifier = Modifier.fillMaxWidth(),
+                    // 同上：清除草稿也是不可逆的，用错误色区别于普通按钮。
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
                 ) {
                     Icon(Icons.Outlined.Delete, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
