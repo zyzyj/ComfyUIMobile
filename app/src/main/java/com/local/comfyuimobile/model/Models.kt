@@ -187,6 +187,29 @@ data class ResultMedia(
 
     /** 复制种子时的展示文本。 */
     fun seedCopyValue(): String? = seed?.takeIf { it.isNotBlank() }
+
+    /**
+     * 结果页搜索匹配（v0.2.99）。
+     *
+     * 搜哪些字段：文件名、工作流名、提示词、种子——都是用户真会拿来定位一条结果的。
+     * 大小写不敏感（文件名多为小写英文，用户手敲大小写不定）。
+     *
+     * 多关键词用**空格分隔、全部命中**（AND）：比单个子串更容易缩到目标
+     * （如 `anima 512` 同时给出工作流与尺寸线索）。
+     */
+    fun matchesQuery(query: String): Boolean {
+        val terms = query.trim().lowercase().split(' ', '\t').filter { it.isNotBlank() }
+        if (terms.isEmpty()) return true
+        val haystack = buildString {
+            append(filename.lowercase()).append('\n')
+            append(workflowName.lowercase()).append('\n')
+            append(workflowPath.lowercase()).append('\n')
+            append(nodeTitle.lowercase()).append('\n')
+            append((positivePrompt ?: "").lowercase()).append('\n')
+            append((seed ?: "").lowercase())
+        }
+        return terms.all { haystack.contains(it) }
+    }
 }
 
 data class CacheOutputRule(

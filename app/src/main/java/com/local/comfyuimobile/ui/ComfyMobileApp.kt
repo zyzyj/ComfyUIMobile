@@ -2045,8 +2045,13 @@ private fun ResultScreen(
     var confirmDeleteSelection by remember { mutableStateOf(false) }
     /** v0.2.91：只看 AI（MCP）生成的图。MCP 出图也存进本地缓存，不筛就混在一起。 */
     var onlyMcp by rememberSaveable { mutableStateOf(false) }
+    // v0.2.99（计划书 §5.2 结果页列表）：结果多时（一次批量几十张）翻着找很费事。
+    // 搜索文件名 / 工作流名 / 提示词——这几个是用户真会拿来定位的字段。
+    var query by rememberSaveable { mutableStateOf("") }
+    var searchOpen by rememberSaveable { mutableStateOf(false) }
     val media = (if (source == ResultSource.LOCAL) state.localResults else state.results)
         .let { list -> if (onlyMcp) list.filter { it.source == ResultSource.MCP } else list }
+        .let { list -> if (query.isBlank()) list else list.filter { it.matchesQuery(query) } }
         .sortedWith(compareByDescending<ResultMedia> { it.createdAt }.thenByDescending { it.taskNumber })
     // v0.2.53：相册分组 + 排序加 remember。结果多时（一次批量几十张）每次重组都重算
     // groupBy + 两次 sortedWith，在结果页滚动/多选时很卡。
@@ -2073,6 +2078,9 @@ private fun ResultScreen(
         }
     }
     LaunchedEffect(source) { selectedKeys = emptySet() }
+    // 切数据源时清空搜索：否则从本地切到云端会看到"搜不到"的空列表，
+    // 而原因只是上一个源的搜索词还留着（界面又看不出来）。
+    LaunchedEffect(source) { query = ""; searchOpen = false }
     LaunchedEffect(media.map(ResultMedia::stableKey)) {
         selectedKeys = selectedKeys.intersect(media.map(ResultMedia::stableKey).toSet())
     }
@@ -2104,33 +2112,72 @@ private fun ResultScreen(
                 }
             }
         } else {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            // v0.2.99：这行原先有**两个真 bug**：
+            //  ① 内层 Row 用了 fillMaxWidth() 却没给 weight，它会把右侧的刷新按钮
+            //     挤到宽度 0（同层兄弟分不到空间）——刷新按钮实际上是点不到的；
+            //  ② 两层各加 12dp 水平内边距（共 24dp），文字比下方列表缩进更多。
+            // 现在改成单层 Row + 文本拿 weight，按钮不再被挤。
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 if (selectedAlbum != null) {
                     TextButton(onClick = { onSelectedAlbumChange(null) }) { Text("‹ 返回相册") }
+                    Spacer(Modifier.weight(1f))
                 } else {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            if (source == ResultSource.LOCAL) "手机独立保存的白名单作品" else "ComfyUI 服务器媒体资产",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f),
-                        )
-                        if (source == ResultSource.LOCAL) {
-                            // AI 出的图也在这个列表里，给个开关分开看（默认不筛，避免改变既有习惯）。
-                            TextButton(onClick = { onlyMcp = !onlyMcp }) {
-                                Text(if (onlyMcp) "仅 AI 生成 ✓" else "仅 AI 生成", style = MaterialTheme.typography.labelSmall)
-                            }
-                        }
-                        TextButton(onClick = { onLayoutChange(if (layout == ResultLayout.ALL) ResultLayout.ALBUMS else ResultLayout.ALL) }) {
-                            Text(if (layout == ResultLayout.ALL) "任务相册" else "全部平铺", style = MaterialTheme.typography.labelSmall)
+                    Text(
+                        if (source == ResultSource.LOCAL) "手机独立保存的白名单作品" else "ComfyUI 服务器媒体资产",
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (source == ResultSource.LOCAL) {
+                        // AI 出的图也在这个列表里，给个开关分开看（默认不筛，避免改变既有习惯）。
+                        TextButton(onClick = { onlyMcp = !onlyMcp }) {
+                            Text(if (onlyMcp) "仅 AI 生成 ✓" else "仅 AI 生成", style = MaterialTheme.typography.labelSmall)
                         }
                     }
+                    TextButton(onClick = { onLayoutChange(if (layout == ResultLayout.ALL) ResultLayout.ALBUMS else ResultLayout.ALL) }) {
+                        Text(if (layout == ResultLayout.ALL) "任务相册" else "全部平铺", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                // v0.2.99：搜索结果多时定位一条很费事（一次批量几十张）。
+                IconButton(onClick = {
+                    searchOpen = !searchOpen
+                    // 关搜索时一并清掉关键词，否则列表还处于"被筛过"的状态，
+                    // 而输入框已经收起来——看起来就像图片凭空少了。
+                    if (!searchOpen) query = ""
+                }) {
+                    Icon(Icons.Outlined.Search, if (searchOpen) "关闭搜索" else "搜索", tint = if (searchOpen) MaterialTheme.colorScheme.primary else LocalContentColor.current)
                 }
                 IconButton(onClick = { if (source == ResultSource.LOCAL) viewModel.refreshLocalResults() else viewModel.refreshResults() }) {
                     Icon(Icons.Outlined.Refresh, "刷新")
                 }
+            }
+        }
+        if (searchOpen && !selectionMode) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                placeholder = { Text("搜文件名 / 工作流 / 提示词 / 种子", style = MaterialTheme.typography.bodySmall) },
+                leadingIcon = { Icon(Icons.Outlined.Search, null, Modifier.size(18.dp)) },
+                trailingIcon = {
+                    if (query.isNotBlank()) {
+                        IconButton(onClick = { query = "" }) { Icon(Icons.Outlined.Close, "清空", Modifier.size(18.dp)) }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                textStyle = MaterialTheme.typography.bodySmall,
+            )
+            if (query.isNotBlank()) {
+                Text(
+                    "找到 ${media.size} 项",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 16.dp, bottom = 4.dp),
+                )
             }
         }
         when {
@@ -2146,7 +2193,13 @@ private fun ResultScreen(
             }
             media.isEmpty() -> EmptyState(
                 Icons.Outlined.Image,
-                if (source == ResultSource.LOCAL) "暂无本地作品\n请在参数页长按输出部件加入全工作流保存白名单" else "云端暂无图片或视频",
+                when {
+                    // 搜过了却没结果：直接说"没有匹配"，否则会显示"暂无作品"
+                    // ——用户看着库里明明有图，会以为数据丢了。
+                    query.isNotBlank() -> "没有匹配「$query」的结果\n换个关键词，或点搜索图标旁的 × 清空"
+                    source == ResultSource.LOCAL -> "暂无本地作品\n请在参数页长按输出部件加入全工作流保存白名单"
+                    else -> "云端暂无图片或视频"
+                },
             )
             layout == ResultLayout.ALL -> ResultMediaGrid(
                 media = media,
