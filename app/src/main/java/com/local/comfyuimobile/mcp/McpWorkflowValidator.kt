@@ -20,6 +20,36 @@ import org.json.JSONObject
  */
 internal object McpWorkflowValidator {
 
+    /**
+     * 找出指向不存在节点的连线。
+     *
+     * 判定：输入值是长度为 2 的数组，**首元素是字符串**（数字数组如
+     * `resolution:[1024,1024]` 不是连线），且该字符串不在节点表里。
+     *
+     * 之所以自己扫而不是用解析器结果：解析器会把悬空引用当普通 widget 值，
+     * 在这里就看不到它了（见 [validate] 的注释）。
+     */
+    private fun findDanglingLinks(prompt: JSONObject, knownIds: Set<String>): List<String> {
+        val result = mutableListOf<String>()
+        val nodeKeys = prompt.keys()
+        while (nodeKeys.hasNext()) {
+            val nodeId = nodeKeys.next()
+            val node = prompt.optJSONObject(nodeId) ?: continue
+            val inputs = node.optJSONObject("inputs") ?: continue
+            val inputKeys = inputs.keys()
+            while (inputKeys.hasNext()) {
+                val inputName = inputKeys.next()
+                val value = inputs.optJSONArray(inputName) ?: continue
+                if (value.length() != 2) continue
+                // 首元素必须是字符串：数字数组是普通参数（如分辨率）。
+                val first = value.opt(0) as? String ?: continue
+                if (first.isBlank() || first in knownIds) continue
+                result += "$nodeId.${inputName} → 节点 $first（不存在）"
+            }
+        }
+        return result
+    }
+
     data class Report(
         val ok: Boolean,
         val errors: List<String>,
@@ -67,13 +97,14 @@ internal object McpWorkflowValidator {
                 "请改用已安装的节点，或先在服务器上安装对应插件"
         }
 
-        // 2. 连线引用了不存在的上游节点（手改 JSON 的头号错误）
+        // 2. 连线引用了不存在的上游节点（手改 JSON 的头号错误）。
+        //
+        // 这里**不能**用 parsed.links——[ApiPromptParser.asLink] 会把"首元素不在
+        // 节点表里"的数组直接判为非连线（返回 null），于是它落入 widgetValues，
+        // 悬空引用在校验器里永远不可见。必须直接扫原始 JSON。
+        //（这个风险很实在：悬空引用会被当成字面量发给 ComfyUI，服务器侧才报错。）
         val knownIds = parsed.nodes.map { it.id }.toSet()
-        val dangling = parsed.nodes.flatMap { node ->
-            node.links
-                .filter { (_, ref) -> ref.nodeId !in knownIds }
-                .map { (input, ref) -> "${node.id}(${node.classType}).$input → 节点 ${ref.nodeId}（不存在）" }
-        }
+        val dangling = findDanglingLinks(prompt, knownIds)
         if (dangling.isNotEmpty()) {
             errors += "有 ${dangling.size} 处连线指向不存在的节点：${dangling.take(5).joinToString("；")}" +
                 if (dangling.size > 5) " 等" else ""
