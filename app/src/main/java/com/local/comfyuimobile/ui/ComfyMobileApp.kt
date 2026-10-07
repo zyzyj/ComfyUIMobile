@@ -4123,6 +4123,11 @@ private fun McpScreen(
                             "第 1 步 · URL：\nhttp://127.0.0.1:$actualPort/mcp",
                             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                         )
+                        TextButton(onClick = {
+                            val url = "http://127.0.0.1:$actualPort/mcp"
+                            clipboard.setPrimaryClip(ClipData.newPlainText("MCP URL", url))
+                            android.widget.Toast.makeText(context, "已复制 URL", Toast.LENGTH_SHORT).show()
+                        }) { Text("复制 URL") }
                         if (state.mcpServerRequireAuth) {
                             Text(
                                 "第 2 步 · Token（已打码，点「显示」查看）",
