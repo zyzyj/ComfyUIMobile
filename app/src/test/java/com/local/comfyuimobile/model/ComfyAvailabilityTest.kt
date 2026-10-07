@@ -88,12 +88,21 @@ class ComfyAvailabilityTest {
 
     @Test
     fun everyBlockingReasonHasActionableText() {
-        // 所有"不可用"的文案都不该只是"不可用"三个字——必须带一句该做什么。
-        val blocking = ComfyAvailability.Reason.entries.filter { ComfyAvailability.isBlocking(it) }
-        assertTrue("应至少覆盖四种原因", blocking.size >= 4)
-        blocking.forEach { reason ->
+        // 需要用户动手的那几种，文案不能只说"不可用"——必须带一句该做什么。
+        // CONNECTING 例外：它本就是瞬时态，那时只需告诉用户"在连，等一下"。
+        val actionable = listOf(
+            ComfyAvailability.Reason.NO_SERVER,
+            ComfyAvailability.Reason.PROJECT_NOT_RUNNING,
+            ComfyAvailability.Reason.PROJECT_STARTING,
+            ComfyAvailability.Reason.ENVIRONMENT_NOT_READY,
+            ComfyAvailability.Reason.LOGIN_EXPIRED,
+            ComfyAvailability.Reason.UNKNOWN,
+        )
+        assertTrue("应至少覆盖四种原因", actionable.size >= 4)
+        actionable.forEach { reason ->
             val text = ComfyAvailability.describe(reason)
             assertTrue("$reason 的文案太短：$text", text.length > 20)
         }
+        assertTrue(ComfyAvailability.describe(ComfyAvailability.Reason.CONNECTING).contains("连接中"))
     }
 }
