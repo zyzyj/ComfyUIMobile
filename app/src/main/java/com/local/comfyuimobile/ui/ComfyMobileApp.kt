@@ -4079,6 +4079,15 @@ private fun McpScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // 第四层：保活引导（清单 §5.5）。这条决定方案成立与否——
+                // 用户切到 AiCode 后本 App 进后台，系统内存紧张时可能被杀，
+                // MCP 就断了。不写明的话，用户会以为 MCP 本身是坏的。
+                Text(
+                    "用法：开启后切到 AiCode 调用。本 App 靠前台服务在后台保活；" +
+                        "不要手动划掉它（划掉后系统不会再拉起服务）。若连接失败，先回到本页确认服务还在监听。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             // ===== AiCode 配置 =====
@@ -4173,9 +4182,20 @@ private fun McpScreen(
                         "list_models" -> "列出服务器上的模型与 LoRA"
                         "list_workflows" -> "列出工作流（标注是否 API 格式）"
                         "describe_workflow" -> "查看工作流里可调的参数（steps/cfg/尺寸/种子…）"
+                        "validate_workflow" -> "提交前预检工作流，错误在本地拦下（省算力卡）"
                         "generate" -> "用工作流出图（结果同时存入结果页，标为 AI 生成）"
                         "job_status" -> "查询任务进度（queued/running/done/failed，可一次查多个）"
+                        "wait_for_comfy" -> "等 ComfyUI 就绪，并自动接上它的地址与登录态"
                         "cancel_jobs" -> "紧急刹车：中止任务或清空队列"
+                        "list_projects" -> "列出 AI Studio 项目（拿到 projectId）"
+                        "gpu_status" -> "查项目状态与 GPU 档位（区分未运行/分配中/运行中/登录失效）"
+                        "list_gpu_options" -> "列出可选 GPU 档位（含消耗与本周剩余）"
+                        "start_gpu" -> "启动云端项目（占一张 GPU，开始计费）"
+                        "stop_gpu" -> "停止云端项目（停止计费）"
+                        "terminal_exec" -> "在云端终端执行命令，返回输出与退出码"
+                        "terminal_read" -> "读终端累积输出（用于看日志）"
+                        "terminal_interrupt" -> "向终端发 Ctrl+C"
+                        "terminal_list" -> "列出现有终端"
                         else -> ""
                     }
                     Text(tool, style = MaterialTheme.typography.bodyMedium)
@@ -4187,9 +4207,11 @@ private fun McpScreen(
                         )
                     }
                 }
+                // 把安全边界写在用户看得到的地方：AI 能执行命令，但灾难性操作仍被拒绝。
                 Text(
-                    "未来的 terminal 工具（让 AI 执行命令）会在这里出现，默认关闭。" +
-                        "紧急停止也在常驻通知里 —— AI 批量出图时可一键清队列并停服务。",
+                    "terminal_exec 让 AI 在云端执行命令，只拒绝灾难性/不可逆操作（删关键路径、格式化、关机）；" +
+                        "其余命令不逐条确认——因为它们由 AiCode 自主发起，App 界面无法逐条拦截。" +
+                        "紧急停止在常驻通知里：AI 批量出图时可一键清队列并停服务。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
