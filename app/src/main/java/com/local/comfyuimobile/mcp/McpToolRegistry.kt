@@ -36,6 +36,14 @@ internal interface McpToolHost {
     suspend fun describeWorkflow(workflow: String?): String
 
     /**
+     * 提交前预检工作流（v0.2.96）：返回给模型的文本报告。
+     *
+     * 存在的理由：一次错误提交要等几十秒才在服务器侧暴露，而在 AI Studio 上
+     * 那段等待是**真金白银的算力卡**。把错误挪到提交前，零成本换掉它。
+     */
+    suspend fun validateWorkflow(workflow: String?): String
+
+    /**
      * 紧急刹车（v0.2.91；v0.2.93 收窄范围）：中止任务。
      *
      * 关掉 MCP 服务**不会**停任务——它们已经在远端 ComfyUI 的队列里了。
@@ -157,6 +165,7 @@ internal class McpToolRegistry(
         TOOL_LIST_MODELS -> ToolResult(host.listModels(args.optString("type").takeIf { it.isNotBlank() }))
         TOOL_LIST_WORKFLOWS -> ToolResult(host.listWorkflows())
         TOOL_DESCRIBE_WORKFLOW -> ToolResult(host.describeWorkflow(args.optString("workflow").trim().takeIf { it.isNotBlank() }))
+        TOOL_VALIDATE_WORKFLOW -> ToolResult(host.validateWorkflow(args.optString("workflow").trim().takeIf { it.isNotBlank() }))
         TOOL_GENERATE -> renderGenerate(host.generate(parseGenerate(args), generateAwaitMillis))
         TOOL_JOB_STATUS -> {
             val ids = parseJobIds(args)
@@ -324,6 +333,16 @@ internal class McpToolRegistry(
         )
         put(
             McpProtocol.toolDescriptor(
+                TOOL_VALIDATE_WORKFLOW,
+                "提交前预检工作流：检查格式、节点是否已安装、连线引用是否有效、是否有输出节点。" +
+                    "**建议在 generate 前先调它**——错误提交要等在服务器侧报错，那段时间在 AI Studio 上是在烧算力卡。",
+                schema(
+                    JSONObject().put("workflow", JSONObject().put("type", "string").put("description", "工作流路径；缺省用 App 当前打开的工作流")),
+                ),
+            ),
+        )
+        put(
+            McpProtocol.toolDescriptor(
                 TOOL_JOB_STATUS,
                 "查询一次生成任务的状态，返回 queued / running / done / failed。" +
                     "可传 job_id（单个）或 job_ids（数组，最多 16 个）一次查多个；完成时给图片 URL。",
@@ -368,6 +387,7 @@ internal class McpToolRegistry(
         const val TOOL_JOB_STATUS = "job_status"
         const val TOOL_CANCEL = "cancel_jobs"
         const val TOOL_DESCRIBE_WORKFLOW = "describe_workflow"
+        const val TOOL_VALIDATE_WORKFLOW = "validate_workflow"
 
         /**
          * 120 秒。60 秒太短（SDXL 单图常见 20-60 秒，带高清修复就超），
@@ -383,6 +403,7 @@ internal class McpToolRegistry(
             TOOL_LIST_MODELS,
             TOOL_LIST_WORKFLOWS,
             TOOL_DESCRIBE_WORKFLOW,
+            TOOL_VALIDATE_WORKFLOW,
             TOOL_GENERATE,
             TOOL_JOB_STATUS,
             TOOL_CANCEL,

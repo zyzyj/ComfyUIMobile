@@ -6,6 +6,7 @@ import com.local.comfyuimobile.model.ResultMedia
 import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.ParameterField
 import com.local.comfyuimobile.network.ComfyClient
+import com.local.comfyuimobile.network.NodeAvailability
 import com.local.comfyuimobile.network.ResultParser
 import kotlinx.coroutines.delay
 import org.json.JSONObject
@@ -176,6 +177,26 @@ internal class ComfyMcpHost(
                 .onFailure { AppLogger.warn("MCP 提交回调失败：${response.promptId}", it) }
         }
         return finishOrRunning(response.promptId, awaitMillis, startedAt = System.currentTimeMillis())
+    }
+
+    override suspend fun validateWorkflow(workflow: String?): String {
+        requireConnected()
+        val source = readApiWorkflow(workflow)
+        if (source == null) {
+            // 画布格式也是"不能提交"的一种，直接说清而不是笼统报错。
+            val path = workflow?.takeIf { it.isNotBlank() } ?: currentWorkflowPath().orEmpty()
+            return "预检未通过：工作流${if (path.isBlank()) "" else "「${path.substringAfterLast('/')}」"}" +
+                "不是 API 格式（或无法读取）。请用 ComfyUI 的 Workflow → Export (API) 导出后再试。"
+        }
+        // 节点清单拿不到时不报错（catalog = null → 跳过节点存在性校验），
+        // 否则网络抖动会被误报成"工作流有问题"。
+        val catalog = runCatching { client.objectInfo() }
+            .onFailure { AppLogger.warn("预检时读 /object_info 失败，跳过节点存在性校验", it) }
+            .getOrNull()
+            ?.let { NodeAvailability.parseCatalog(it.toString()) }
+        val report = McpWorkflowValidator.validate(source.json, catalog)
+        AppLogger.info("MCP 工作流预检：$pathLabel=${source.path}，结果=${if (report.ok) "通过" else "${report.errors.size} 项错误"}")
+        return report.render()
     }
 
     /**
