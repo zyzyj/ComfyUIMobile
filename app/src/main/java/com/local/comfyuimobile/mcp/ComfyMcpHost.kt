@@ -195,7 +195,9 @@ internal class ComfyMcpHost(
             .getOrNull()
             ?.let { NodeAvailability.parseCatalog(it.toString()) }
         val report = McpWorkflowValidator.validate(source.json, catalog)
-        AppLogger.info("MCP 工作流预检：$pathLabel=${source.path}，结果=${if (report.ok) "通过" else "${report.errors.size} 项错误"}")
+        AppLogger.info(
+            "MCP 工作流预检：${source.path}，结果=${if (report.ok) "通过" else "${report.errors.size} 项错误"}",
+        )
         return report.render()
     }
 
