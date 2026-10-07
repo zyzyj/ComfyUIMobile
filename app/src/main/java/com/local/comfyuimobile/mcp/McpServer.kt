@@ -191,7 +191,15 @@ internal class McpServer(
         val entry = files.get(id)
         if (entry == null) {
             McpCallLog.log("GET /files/${id.take(8)}…", ok = false, detail = "不存在或已过期")
-            output.write(McpHttp.jsonResponse("""{"error":"not found or expired"}""", status = 404))
+            // 清单 §九 N1：过期要说明白，不能只给一个 404 让人以为是路径写错了。
+            // 图片有 1 小时 TTL（进程重启也会清空），AI 该做的是重新提交出图，
+            // 而不是反复重试同一个 URL。
+            output.write(
+                McpHttp.jsonResponse(
+                    """{"error":"not found or expired","hint":"文件不存在或已超过 1 小时有效期。请用 generate 重新生成，不要重复请求同一 URL。"}""",
+                    status = 404,
+                ),
+            )
             return
         }
         McpCallLog.log(
