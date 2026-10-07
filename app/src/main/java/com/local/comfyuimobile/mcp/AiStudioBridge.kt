@@ -136,12 +136,41 @@ internal class AiStudioBridge(
     suspend fun gpuStatus(projectId: String): String {
         val account = requireAccount()
         val pid = requireProjectId(projectId)
-        val running = runCatching { client.fetchRunningGpuLabel(account, pid) }.getOrDefault("")
+        // 先单独查项目本身：区分 stopped / submitting / running / cookie_expired
+        // （清单 §3.1 要求）。取项目列表可能因登录失效而失败，那种情况要说清楚是登录问题，
+        // 不能笼统报成"查不到状态"。
+        var loginExpired = false
+        val project = runCatching { client.listProjects(account, page = 1, pageSize = 30) }
+            .onFailure { error ->
+                if (error is CancellationException) throw error
+                loginExpired = (error as? AiStudioException)?.errorCode == 403
+            }
+            .getOrNull()
+            ?.projects?.firstOrNull { it.projectId == pid }
+        if (loginExpired) {
+            return "项目 $pid 状态：${AiStudioSchedules.describeState(AiStudioSchedules.ProjectState.COOKIE_EXPIRED)}"
+        }
+        if (project == null) {
+            return "找不到项目 $pid。请先用 list_projects 确认项目 ID" +
+                "（ID 不存在时平台不报错、只返回空列表，所以必须显式挡一下）。"
+        }
+
+        val running = project.running
+        val environmentReady = runCatching { client.fetchRunningGpuLabel(account, pid) }
+            .getOrNull()?.isNotBlank() == true
+        val state = AiStudioSchedules.projectState(
+            loginExpired = false,
+            running = running,
+            environmentReady = environmentReady,
+            starting = false,
+        )
+
         val schedules = runCatching { client.listSchedules(account, pid) }
             .getOrElse { error -> throw describe("读取算力档位", error) }
         return buildString {
-            appendLine("项目 $pid 的 GPU 状态：")
-            appendLine("- 当前档位：${running.ifBlank { "未运行或读不到" }}")
+            appendLine("项目 $pid（${project.displayName()}）：")
+            appendLine("- 状态：${AiStudioSchedules.describeState(state)}")
+            appendLine("- 当前档位：${project.runningGpuLabel.ifBlank { "未运行或读不到" }}")
             appendLine("- 可选档位（共 ${schedules.size} 个）：")
             if (schedules.isEmpty()) {
                 appendLine("  （读不到档位——可能是登录态失效，或该项目当前不可选档）")

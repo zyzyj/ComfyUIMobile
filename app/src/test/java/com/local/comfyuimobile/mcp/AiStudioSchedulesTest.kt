@@ -82,4 +82,67 @@ class AiStudioSchedulesTest {
         val text = AiStudioSchedules.describe(schedule("V100", "V100 16GB", available = false))
         assertTrue(text, text.contains("当前不可用"))
     }
+
+    @Test
+    fun acceptsDisplayLabelAsInput() {
+        // AI 很容易把界面上看到的名字（"V100 16GB"）传进来，直接报错会让它多绕一圈。
+        // 能唯一对上就接受。
+        val chosen = AiStudioSchedules.choose(options, "V100 16GB")
+        assertEquals("V100", chosen?.scheduleName)
+    }
+
+    @Test
+    fun ambiguousLabelAsksForClarification() {
+        // 同一个显示名对应多档时**绝不自己挑**：16GB 与 32GB 价格不同，
+        // 猜错等于替用户花钱。要报错让 AI 用 scheduleName 澄清。
+        val ambiguous = listOf(
+            schedule("V100_16", "V100"),
+            schedule("V100_32", "V100"),
+        )
+        val error = runCatching { AiStudioSchedules.choose(ambiguous, "V100") }.exceptionOrNull()
+        assertTrue("应报错而不是猜", error is IllegalArgumentException)
+        assertTrue(error!!.message!!.contains("多个候选"))
+        // 报错里要列出候选的 scheduleName，它才能重试。
+        assertTrue(error.message!!.contains("V100_16"))
+        assertTrue(error.message!!.contains("V100_32"))
+    }
+
+    @Test
+    fun unknownNameErrorListsBothKeysAndLabels() {
+        val error = runCatching { AiStudioSchedules.choose(options, "H100") }.exceptionOrNull()
+        // 列 scheduleName 的同时也要带 label，否则 AI 无法把"界面上看到的"对上。
+        assertTrue(error!!.message!!.contains("V100"))
+        assertTrue(error.message!!.contains("V100 16GB"))
+    }
+
+    @Test
+    fun projectStateDistinguishesFourStates() {
+        // 清单 §3.1 要求 gpu_status 能区分这四种——因为下一步完全不同。
+        assertEquals(
+            AiStudioSchedules.ProjectState.COOKIE_EXPIRED,
+            AiStudioSchedules.projectState(loginExpired = true, running = true, environmentReady = true, starting = false),
+        )
+        assertEquals(
+            AiStudioSchedules.ProjectState.RUNNING,
+            AiStudioSchedules.projectState(loginExpired = false, running = true, environmentReady = true, starting = false),
+        )
+        // running=true 但环境没就绪：那只是**受理回执**，实际还在分配。
+        assertEquals(
+            AiStudioSchedules.ProjectState.SUBMITTING,
+            AiStudioSchedules.projectState(loginExpired = false, running = true, environmentReady = false, starting = false),
+        )
+        assertEquals(
+            AiStudioSchedules.ProjectState.STOPPED,
+            AiStudioSchedules.projectState(loginExpired = false, running = false, environmentReady = false, starting = false),
+        )
+    }
+
+    @Test
+    fun everyProjectStateHasActionableText() {
+        // 只说"查不到"，AI 只能瞎试；每种状态都要带下一步。
+        AiStudioSchedules.ProjectState.entries.forEach { state ->
+            val text = AiStudioSchedules.describeState(state)
+            assertTrue("$state 的文案太短：$text", text.length > 10)
+        }
+    }
 }
