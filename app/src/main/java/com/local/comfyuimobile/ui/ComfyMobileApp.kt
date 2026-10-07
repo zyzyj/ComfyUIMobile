@@ -2056,8 +2056,12 @@ private fun ResultScreen(
     // 搜索文件名 / 工作流名 / 提示词——这几个是用户真会拿来定位的字段。
     var query by rememberSaveable { mutableStateOf("") }
     var searchOpen by rememberSaveable { mutableStateOf(false) }
+    // v0.2.99（计划书 §5.2 结果页列表）：收藏目前只能在图查看器里逐张点，
+    // 列表页反而没法"只看收藏的"——收藏完就找不到在哪。
+    var onlyFavorite by rememberSaveable { mutableStateOf(false) }
     val media = (if (source == ResultSource.LOCAL) state.localResults else state.results)
         .let { list -> if (onlyMcp) list.filter { it.source == ResultSource.MCP } else list }
+        .let { list -> if (onlyFavorite) list.filter { it.stableKey() in state.favoriteResultKeys } else list }
         .let { list -> if (query.isBlank()) list else list.filter { it.matchesQuery(query) } }
         .sortedWith(compareByDescending<ResultMedia> { it.createdAt }.thenByDescending { it.taskNumber })
     // v0.2.53：相册分组 + 排序加 remember。结果多时（一次批量几十张）每次重组都重算
@@ -2144,6 +2148,14 @@ private fun ResultScreen(
                             Text(if (onlyMcp) "仅 AI 生成 ✓" else "仅 AI 生成", style = MaterialTheme.typography.labelSmall)
                         }
                     }
+                    // 收藏筛选：与"仅 AI 生成"同理，默认不筛。
+                    TextButton(onClick = { onlyFavorite = !onlyFavorite }) {
+                        Text(
+                            if (onlyFavorite) "仅收藏 ✓" else "仅收藏",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (onlyFavorite) MaterialTheme.colorScheme.primary else LocalContentColor.current,
+                        )
+                    }
                     TextButton(onClick = { onLayoutChange(if (layout == ResultLayout.ALL) ResultLayout.ALBUMS else ResultLayout.ALL) }) {
                         Text(if (layout == ResultLayout.ALL) "任务相册" else "全部平铺", style = MaterialTheme.typography.labelSmall)
                     }
@@ -2204,6 +2216,8 @@ private fun ResultScreen(
                     // 搜过了却没结果：直接说"没有匹配"，否则会显示"暂无作品"
                     // ——用户看着库里明明有图，会以为数据丢了。
                     query.isNotBlank() -> "没有匹配「$query」的结果\n换个关键词，或点搜索图标旁的 × 清空"
+                    // 同理：开着收藏筛选但一条都没收藏时，要说清是"筛"出来的空。
+                    onlyFavorite -> "还没有收藏的作品\n在图查看器里点「收藏」，之后就能在这里筛出来"
                     source == ResultSource.LOCAL -> "暂无本地作品\n请在参数页长按输出部件加入全工作流保存白名单"
                     else -> "云端暂无图片或视频"
                 },
