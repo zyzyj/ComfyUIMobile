@@ -73,6 +73,9 @@ class McpServerTest {
                 "可调字段 2 项，用 generate 的 params 传入 key 即可修改：\n" +
                 "  3::steps  [steps]  Steps  当前=20  范围：1.0 ~ 100.0"
 
+        override suspend fun validateWorkflow(workflow: String?): String =
+            "预检通过（有 1 条提醒）。可以提交。\n⚠ 工作流里没有采样器节点，确认这是你要跑的图？"
+
         override suspend fun cancelJobs(jobId: String?, includeOthers: Boolean): String =
             when {
                 jobId != null -> "已请求中止 $jobId"
@@ -312,12 +315,25 @@ class McpServerTest {
     }
 
     @Test
+    fun validateWorkflowIsCallable() = withServer { port, _ ->
+        val (code, body) = postMcp(
+            port,
+            """{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"validate_workflow","arguments":{}}}""",
+        )
+        assertEquals(200, code)
+        val text = JSONObject(body).getJSONObject("result")
+            .getJSONArray("content").getJSONObject(0).getString("text")
+        assertTrue(text.contains("预检"))
+    }
+
+    @Test
     fun toolsListIncludesNewTools() = withServer { port, _ ->
         val (_, body) = postMcp(port, """{"jsonrpc":"2.0","id":11,"method":"tools/list"}""")
         val tools = JSONObject(body).getJSONObject("result").getJSONArray("tools")
         val names = (0 until tools.length()).map { tools.getJSONObject(it).getString("name") }
         assertTrue("应含 describe_workflow", "describe_workflow" in names)
         assertTrue("应含 cancel_jobs", "cancel_jobs" in names)
+        assertTrue("应含 validate_workflow", "validate_workflow" in names)
         assertTrue("工具名仍需满足 64 字符上限", names.all { it.length <= McpProtocol.MAX_TOOL_NAME_LENGTH })
     }
 

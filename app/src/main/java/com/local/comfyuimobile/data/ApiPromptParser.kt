@@ -23,6 +23,14 @@ import org.json.JSONObject
 object ApiPromptParser {
 
     /** 视为"输出节点"的类型——执行链的终点。 */
+    /**
+     * 输出节点类型（SaveImage / PreviewImage 等）。
+     *
+     * v0.2.96：保持 private——外部（如 MCP 的工作流预检）用 [parse] 返回的
+     * [ParseResult.outputNodeIds]，而不是自己再维护一份类型表。重复一份的话，
+     * 将来加新输出节点类型只会改一处、另一处静默失效
+     *（本项目因这类"平行路径"栽过 5 次）。
+     */
     private val OUTPUT_TYPES = setOf(
         "SaveImage", "PreviewImage", "SaveAnimatedWEBP", "SaveAnimatedPNG",
         "SaveVideo", "VHS_VideoCombine", "SaveImageWithMetadata", "SaveAudio",
