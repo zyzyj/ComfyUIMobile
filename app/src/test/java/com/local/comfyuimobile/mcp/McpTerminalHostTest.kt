@@ -40,7 +40,7 @@ class McpTerminalHostTest {
         private val outputs = LinkedHashMap<String, (String) -> Unit>()
         private var nameIndex = 0
 
-        /** 记录每条命令发到了哪个终端名。 */
+        /** 记录每条**用户命令**发到了哪个终端名（不含 onOpen 的 locale 修正）。 */
         val sentTo = mutableListOf<String>()
 
         /** 记录 openTerminal 是否要求成为"界面当前终端"。 */
@@ -94,7 +94,8 @@ class McpTerminalHostTest {
 
         override fun sendInput(command: String, session: AiStudioKernelClient.TerminalSession?): Boolean {
             val target = session ?: return false
-            sentTo += target.name
+            // onOpen 会先发一条 locale 修正（不是用户命令），不计入 sentTo。
+            if (!command.contains("LANG=C.UTF-8")) sentTo += target.name
             val emit = outputs[target.name] ?: return true
             // 真实 PTY 会先回显整行命令，然后才是命令输出。
             emit(command + "\r\n")
@@ -173,10 +174,24 @@ class McpTerminalHostTest {
     @Test
     fun secondCallOnSameNameReusesSession() = runBlocking {
         // 第一次会新建，第二次应复用，不再新建。
+        // 若不复用：每次都会新建一条 PTY（泄漏），而且每次都是空环境。
         val backend = FakeBackend()
         val h = host(backend)
         withTimeout(10_000) { h.exec("echo one", terminal = "probe", timeoutSeconds = 5) }
         withTimeout(10_000) { h.exec("echo two", terminal = "probe", timeoutSeconds = 5) }
         assertEquals("第二次不该再新建", 1, backend.createdCount)
+    }
+
+    @Test
+    fun renamedTerminalStillDeliversSecondCommand() = runBlocking {
+        // 别名（probe → 1）建立后，第二次命令必须进**实际那条**的缓冲区。
+        // 这是 P0-1 的完整回归：不只别名对了，标记也要能取到。
+        val backend = FakeBackend()
+        val h = host(backend)
+        withTimeout(10_000) { h.exec("echo one", terminal = "probe", timeoutSeconds = 5) }
+        val second = withTimeout(10_000) { h.exec("echo two", terminal = "probe", timeoutSeconds = 5) }
+        assertFalse("第二次不该超时：$second", second.contains("没有结束"))
+        assertTrue("第二次应拿到输出：$second", second.contains("hello"))
+        assertTrue("两条命令都发到了实际终端 1：${backend.sentTo}", backend.sentTo.all { it == "1" })
     }
 }

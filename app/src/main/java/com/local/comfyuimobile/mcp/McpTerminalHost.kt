@@ -49,6 +49,15 @@ internal class McpTerminalHost(
     /** 本次进程内创建的会话名（项目重启后要重新连）。 */
     private val opened = java.util.Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 
+    /**
+     * 请求名 → 实际终端名（v0.2.98）。
+     *
+     * 平台在名字不存在时会分配新名（如 `1`）。若不记住这个映射，AI 下次仍传
+     * `probe` 就会**每次都新建一条终端**——PTY 泄漏，而且每次都是空环境。
+     * 映射指向的会话关掉后自动失效（取不到会话就回落正常流程）。
+     */
+    private val aliases = ConcurrentHashMap<String, String>()
+
     private val tokenCounter = AtomicInteger(0)
 
     /**
@@ -222,12 +231,20 @@ internal class McpTerminalHost(
         // 已连且是本项目期间连的：直接用。
         if (existing != null && name in opened) return existing
 
+        // 名字曾被平台换过（如 probe → 1）：优先复用实际那条，避免每次都新建。
+        aliases[name]?.let { actual ->
+            val aliased = kernel.session(actual)
+            if (aliased != null && actual in opened) return aliased
+            aliases.remove(name, actual) // 实际会话已不在，清掉陈旧的映射
+        }
+
         val endpoint = kernel.fetchEndpoint(account, project.projectId, "")
         val remoteNames = runCatching { kernel.listTerminals(account, endpoint) }
             .getOrElse { error -> throw describe("读取终端列表", error) }
         val finalName = if (name in remoteNames) name else kernel.createTerminal(account, endpoint)
         connect(account, endpoint, finalName)
         opened.add(finalName)
+        if (finalName != name) aliases[name] = finalName
         return kernel.session(finalName)
             ?: throw IllegalStateException("终端 $finalName 连接失败（会话未建立）。")
     }
@@ -256,8 +273,7 @@ internal class McpTerminalHost(
             onClosed = { reason ->
                 AppLogger.info("MCP 终端 $name 已断开：$reason")
                 opened.remove(name)
-            },
-        )
+            },        )
     }
 
     private fun formatOutput(
