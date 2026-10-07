@@ -4083,6 +4083,26 @@ private fun McpScreen(
     var diagnoseResult by remember { mutableStateOf<List<Pair<String, Boolean>>>(emptyList()) }
     var logTick by remember { mutableStateOf(0) } // 日志是内存态，用 tick 驱动重组
 
+    // v0.2.99：ComfyUI 连接状态**不再单独占一行红字**（用户反馈"这行没用"，
+    // 且截图里那条折成了两行）。理由：
+    //  ① 用户来 MCP 页是配 AiCode 的，却叫他去"工作流页连服务器"，答非所问；
+    //  ② 顶栏的 ComfyUI 状态芯片在任何页面都已显示连接状态，这里是重复；
+    //  ③ 它是页上最长的一行，把真正相关的"服务开关/最近调用/用法"挤下去。
+    // 现在把结论缩进开关副标题（不占额外行）；要排查断在哪，用下面的"诊断"区。
+    //
+    // 注意：这个值在函数顶层算，因为**两个** section 都要用它——
+    // 放在某个 section 的 lambda 里，另一个 section 引用不到（已踩过）。
+    val availability = ComfyAvailability.resolve(
+        connected = state.status == ConnectionStatus.CONNECTED,
+        hasServer = !state.activeServer?.baseUrl.isNullOrBlank(),
+        connecting = state.status == ConnectionStatus.CONNECTING ||
+            state.status == ConnectionStatus.RECONNECTING,
+        loginExpired = state.cookieExpired,
+        runningProjects = state.aiStudio.projects.count { it.running },
+        startingProjects = state.aiStudio.projects.count { it.running } +
+            listOfNotNull(state.aiStudio.startingProjectId).size,
+        environmentReady = state.aiStudio.environmentReadyProjectId != null,
+    )
     // v0.2.99：**不再自带 Scaffold/TopAppBar**。
     // 本页是从「更多」进入的子页，外层 ConnectedApp 已经渲染了子页顶栏（页名 + 返回）。
     // 以前本页又包了一层 Scaffold + TopAppBar，于是屏幕上出现**两个「MCP 服务」标题**
@@ -4097,23 +4117,6 @@ private fun McpScreen(
     ) {
         // ===== 状态区 =====
         SettingsSection("状态", icon = Icons.Outlined.Extension) {
-            // v0.2.99：ComfyUI 连接状态**不再单独占一行红字**（用户反馈"这行没用"，
-            // 且截图里那条折成了两行）。理由：
-            //  ① 用户来 MCP 页是配 AiCode 的，却叫他去"工作流页连服务器"，答非所问；
-            //  ② 顶栏的 ComfyUI 状态芯片在任何页面都已显示连接状态，这里是重复；
-            //  ③ 它是页上最长的一行，把真正相关的"服务开关/最近调用/用法"挤下去。
-            // 现在把结论缩进开关副标题（不占额外行）；要排查断在哪，用下面的"诊断"区。
-            val availability = ComfyAvailability.resolve(
-                connected = state.status == ConnectionStatus.CONNECTED,
-                hasServer = !state.activeServer?.baseUrl.isNullOrBlank(),
-                connecting = state.status == ConnectionStatus.CONNECTING ||
-                    state.status == ConnectionStatus.RECONNECTING,
-                loginExpired = state.cookieExpired,
-                runningProjects = state.aiStudio.projects.count { it.running },
-                startingProjects = state.aiStudio.projects.count { it.running } +
-                    listOfNotNull(state.aiStudio.startingProjectId).size,
-                environmentReady = state.aiStudio.environmentReadyProjectId != null,
-            )
             SettingsToggleRow(
                 // v0.2.97：标题叫"服务开关"——页面顶栏已经是"MCP 服务"，
                 // 这里再写一次会出现两个同名标题（用户截图确认过）。
