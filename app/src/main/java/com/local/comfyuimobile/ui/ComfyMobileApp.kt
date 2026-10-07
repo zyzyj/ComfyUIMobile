@@ -4385,6 +4385,23 @@ private fun MissingNodesCard(missing: List<String>) {
  * v0.2.59：竖条改为图标徽标（圆角方块底 + 图标），比纯色竖条更能区分分组；
  * 标题字号提到 bodyLarge 并加粗，扫读时更容易定位。
  */
+/**
+ * 分组标题（v0.2.98，优化方案 §5.2）。
+ *
+ * 与 [SettingsSection] 的区别：那个是**卡片**（标题在卡内）；这个是卡片之外的
+ * 段落标题，用来把几十个卡片归成四类（连接 / 生成与保存 / 数据与存储 / 关于）。
+ * 刻意比 [SettingsSection] 标题小一号且不用卡片——它只是路标，不该自己变成一块内容。
+ */
+@Composable
+private fun SettingsGroupHeader(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+    )
+}
+
 @Composable
 private fun SettingsSection(
     title: String,
@@ -4617,6 +4634,10 @@ private fun SettingsContent(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        // v0.2.98（优化方案 §5.2）：设置页原本把状态 / 配置 / 危险操作混在一起。
+        // 顺序本来就大致分好了类，但**看不出来**——加四个可见分组标题即可，
+        // 不动现有 section 的排列（改顺序风险大、收益小）。
+        SettingsGroupHeader("连接")
         // —— 服务器 ——
         SettingsSection("服务器", icon = Icons.Outlined.Computer) {
             Text(
@@ -4683,6 +4704,7 @@ private fun SettingsContent(
         }
 
         // —— 图片保存 ——
+        SettingsGroupHeader("生成与保存")
         SettingsSection("图片保存", icon = Icons.Outlined.Download) {
             Text(
                 if (state.saveFolderUri != null) {
@@ -4800,6 +4822,7 @@ private fun SettingsContent(
         }
 
         // —— 空间管理 ——
+        SettingsGroupHeader("数据与存储")
         SettingsSection("空间管理", icon = Icons.Outlined.Memory) {
             Text(
                 "查看 App 的内存与磁盘占用明细，并逐项清理本地作品、缓存、日志",
@@ -4832,6 +4855,7 @@ private fun SettingsContent(
         }
 
         // —— 软件更新 ——
+        SettingsGroupHeader("关于")
         SettingsSection("软件更新", icon = Icons.Outlined.Refresh) {
             OutlinedButton(onClick = { viewModel.checkUpdate() }, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Outlined.Refresh, null, Modifier.size(18.dp))
