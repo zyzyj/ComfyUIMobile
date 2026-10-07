@@ -211,14 +211,16 @@ internal class ComfyMcpHost(
         return finishOrRunning(response.promptId, awaitMillis, startedAt = System.currentTimeMillis())
     }
 
-    override suspend fun validateWorkflow(workflow: String?): String {
+    override suspend fun validateWorkflow(workflow: String?, workflowJson: String?): String {
         requireConnected()
-        val source = readApiWorkflow(workflow)
+        val source = resolveWorkflowSource(workflow, workflowJson)
         if (source == null) {
             // 画布格式也是"不能提交"的一种，直接说清而不是笼统报错。
             val path = workflow?.takeIf { it.isNotBlank() } ?: currentWorkflowPath().orEmpty()
-            return "预检未通过：工作流${if (path.isBlank()) "" else "「${path.substringAfterLast('/')}」"}" +
-                "不是 API 格式（或无法读取）。请用 ComfyUI 的 Workflow → Export (API) 导出后再试。"
+            val what = if (workflowJson != null) "传入的 workflow_json" else
+                "工作流${if (path.isBlank()) "" else "「${path.substringAfterLast('/')}」"}"
+            return "预检未通过：$what 不是 API 格式（或无法读取）。" +
+                "请用 ComfyUI 的 Workflow → Export (API) 导出后再试。"
         }
         // 节点清单拿不到时不报错（catalog = null → 跳过节点存在性校验），
         // 否则网络抖动会被误报成"工作流有问题"。
@@ -240,10 +242,11 @@ internal class ComfyMcpHost(
      * 采样器、seed 全动不了**，AI 说"帮我调一下"无从下手。这个工具让它第一次能
      * "看见"工作流里有什么可调。
      */
-    override suspend fun describeWorkflow(workflow: String?): String {
+    override suspend fun describeWorkflow(workflow: String?, workflowJson: String?): String {
         requireConnected()
-        val source = readApiWorkflow(workflow)
-            ?: return "当前没有可用的 API 格式工作流（请传 workflow 参数，或先在 App 里打开一个）"
+        val source = resolveWorkflowSource(workflow, workflowJson)
+            ?: return "当前没有可用的 API 格式工作流（可传 workflow_json 内联，或传 workflow 路径，" +
+                "或先在 App 里打开一个）"
         val path = source.path
         val fields = McpPromptPlanner.fields(source.json)
         if (fields.isEmpty()) {
@@ -284,6 +287,23 @@ internal class ComfyMcpHost(
         val raw = runCatching { client.readWorkflow(path) }.getOrNull() ?: return null
         val json = runCatching { JSONObject(raw) }.getOrNull() ?: return null
         return if (WorkflowFormat.isApiPrompt(json)) WorkflowSource(path, raw, json) else null
+    }
+
+    /**
+     * 解析工作流来源：内联 JSON 优先，否则读文件（v0.2.98）。
+     *
+     * P1-1：`describe_workflow` / `validate_workflow` 原先只认 `workflow`（路径），
+     * 而 `generate` 支持 `workflow_json`。于是 AI 用内联 JSON 时**无法预检**——
+     * 只能直接 generate，而 `validate_workflow` 存在的全部意义就是"提交前预检、
+     * 省算力卡"，设计意图直接落空（真机实测 AI 正是这么干的）。
+     * 三个工具现在共用这一份判定，不会再出现能力不一致。
+     */
+    private suspend fun resolveWorkflowSource(workflow: String?, workflowJson: String?): WorkflowSource? {
+        val inline = workflowJson?.takeIf { it.isNotBlank() }?.let { raw ->
+            val json = runCatching { JSONObject(raw) }.getOrNull() ?: return@let null
+            if (WorkflowFormat.isApiPrompt(json)) WorkflowSource(INLINE_WORKFLOW_PATH, raw, json) else null
+        }
+        return inline ?: readApiWorkflow(workflow)
     }
 
     /** 读到的 API 格式工作流：路径、原始文本（提交时回填 extra_data）、解析后的对象。 */
@@ -362,9 +382,13 @@ internal class ComfyMcpHost(
             }
             if (System.currentTimeMillis() >= deadline) {
                 // 超时不自作主张：说清"没等到"，并给出下一步该做什么。
-                return "等待 ${timeoutSeconds} 秒后 ComfyUI 仍不可达（探测 $attempts 次，地址 ${client.serverUrl()}）。" +
-                    "可能原因：① 项目刚启动、环境还没拉起 ② 启动脚本还没跑完 ③ 登录态失效。" +
-                    "建议：用 terminal_read 看启动脚本日志，或项目启动后稍等再试。"
+                // P1-3：真机实测最常见的真实原因是**启动脚本还没跑**（GPU 就绪 ≠ ComfyUI 就绪），
+                // 所以把它放在第一位，而不是笼统地列几个"可能原因"。
+                return "等待 ${timeoutSeconds} 秒后 ComfyUI 仍不可达（探测 $attempts 次，地址 ${client.serverUrl()}）。\n" +
+                    "最可能原因：**ComfyUI 进程还没启动**——GPU 就绪不等于 ComfyUI 就绪。\n" +
+                    "请先用 terminal_exec 运行 ComfyUI 启动脚本（路径各人不同，用 ls / find 先找），" +
+                    "再调本工具；命令还在跑就用 terminal_read 看日志。\n" +
+                    "其他可能：登录态失效（回 App 重新登录）。"
             }
             delay(WAIT_FOR_COMFY_POLL_MILLIS)
         }
@@ -458,6 +482,8 @@ internal class ComfyMcpHost(
         requireConnected()
         val queue = runCatching { client.queue() }.getOrNull()
         val lines = mutableListOf<String>()
+        var anySettled = false
+        var anyUnsettled = false
         for (id in ids.take(MAX_BATCH_IDS)) {
             val trimmed = id.trim()
             if (trimmed.isBlank()) continue
@@ -465,6 +491,12 @@ internal class ComfyMcpHost(
             val hasOutputs = history?.optJSONObject(trimmed)
                 ?.optJSONObject("outputs")?.keys()?.hasNext() == true
             val verdict = McpJobState.resolve(trimmed, queue, history, hasOutputs)
+            // 终态：done / failed。用来决定"整批都结束了"——凭 phase 判断，
+            // 不去匹配展示文案（那种写法一改文案就静默失效）。
+            when (verdict.phase) {
+                McpJobState.Phase.DONE, McpJobState.Phase.FAILED -> anySettled = true
+                else -> anyUnsettled = true
+            }
             val detail = StringBuilder()
                 .append(trimmed.take(8))
                 .append("  ")
@@ -474,7 +506,14 @@ internal class ComfyMcpHost(
             lines += detail.toString()
         }
         if (lines.isEmpty()) return "没有可查询的 job_id。"
-        return lines.joinToString("\n")
+        // §4.2：真机实测 AI 会说"要停 GPU 跟我说一声"——**用户不问它就不停**，
+        // 而 GPU 是按小时计费的。任务全部结束时主动提一句，比做看门狗便宜得多。
+        val tail = if (anySettled && !anyUnsettled) {
+            "\n全部任务已结束。如不再需要，可调 stop_gpu 停止计费（云端项目会一直按小时扣算力卡）。"
+        } else {
+            ""
+        }
+        return lines.joinToString("\n") + tail
     }
 
     /**
