@@ -260,6 +260,7 @@ import com.local.comfyuimobile.model.StorageBucket
 import com.local.comfyuimobile.model.StorageCleanTarget
 import com.local.comfyuimobile.model.StorageStats
 import com.local.comfyuimobile.model.AiStudioProject
+import com.local.comfyuimobile.model.ComfyAvailability
 import com.local.comfyuimobile.model.AiStudioState
 import com.local.comfyuimobile.model.BatchCompareLogic
 import com.local.comfyuimobile.model.BatchPhase
@@ -4041,15 +4042,27 @@ private fun McpScreen(
                 )
                 // 第二层：ComfyUI 连接状态。服务活着但 ComfyUI 断着，是"AI 报错"
                 // 的最常见原因，两层并排才能一眼看出断在哪。
-                val comfyStatus = when (state.status) {
-                    ConnectionStatus.CONNECTED -> "已连接 · ${state.activeServer?.name.orEmpty()}"
-                    ConnectionStatus.CONNECTING, ConnectionStatus.RECONNECTING -> "连接中…"
-                    else -> "未连接 —— 工具不可用，请先回工作流页连接服务器"
-                }
+                //
+                // v0.2.97：不再把一切非 CONNECTED 都归成"请回工作流页连接服务器"。
+                // 不可用至少有四种原因，**照那句话做往往完全没用**（项目根本没启动时，
+                // 让用户去刷新 Cookie 全是白费）。按原因给不同的行动指引。
+                val studio = state.aiStudio
+                val availability = ComfyAvailability.resolve(
+                    connected = state.status == ConnectionStatus.CONNECTED,
+                    hasServer = !state.activeServer?.baseUrl.isNullOrBlank(),
+                    connecting = state.status == ConnectionStatus.CONNECTING ||
+                        state.status == ConnectionStatus.RECONNECTING,
+                    loginExpired = state.cookieExpired,
+                    runningProjects = studio.projects.count { it.running },
+                    startingProjects = studio.projects.count { it.running } +
+                        listOfNotNull(studio.startingProjectId).size,
+                    environmentReady = studio.environmentReadyProjectId != null,
+                )
+                val comfyStatus = ComfyAvailability.describe(availability, state.activeServer?.name.orEmpty())
                 Text(
                     "ComfyUI：$comfyStatus",
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (state.status == ConnectionStatus.CONNECTED) {
+                    color = if (availability == ComfyAvailability.Reason.READY) {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     } else {
                         MaterialTheme.colorScheme.error
