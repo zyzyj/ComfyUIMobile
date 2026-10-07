@@ -108,6 +108,18 @@ internal class McpTerminalHost(
                     "（mv 不在灾难判定里，因为它是可逆的；确认无误后再自己手动清空 ~/.trash。）",
             )
         }
+        // §4.6：递归删模型/工作流目录也拦（那要重下几十 GB，比"某次操作失败"疼得多）。
+        // 单独一层而不是加进 isCatastrophic：那个熔断器挡的是"整个实例没了"，
+        // 而 `rm -rf ~/models/loras` 有明确目标是**有意放行**的（用户自己清理）。
+        if (ValuableDataGuard.isValuableDeletion(cmd)) {
+            AppLogger.warn("MCP 终端拒绝删除高价值目录：${cmd.take(200)}")
+            throw IllegalStateException(
+                "已拒绝：这条命令会递归删除模型 / 工作流等高价值目录，那些文件重新获取代价很大。\n" +
+                    "如需清理，请改用**可逆的隔离删除**：\n" +
+                    "  mkdir -p ~/.trash && mv <目标> ~/.trash/\n" +
+                    "确认真的不需要了再自己清空 ~/.trash。（只删无关紧要的临时目录不受此限。）",
+            )
+        }
         // 命令留痕（清单 §八）：AI 完全控制终端后，必须能事后追溯"跑过什么"。
         // 只记命令与终端名，不记输出（输出可能很长，且已在缓冲区里）。
         AppLogger.info("MCP 终端执行[${terminal?.trim().orEmpty().ifBlank { DEFAULT_TERMINAL }}]：${cmd.take(500)}")

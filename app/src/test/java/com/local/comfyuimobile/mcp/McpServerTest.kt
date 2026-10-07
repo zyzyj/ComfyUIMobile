@@ -68,12 +68,12 @@ class McpServerTest {
             }
         }
 
-        override suspend fun describeWorkflow(workflow: String?): String =
+        override suspend fun describeWorkflow(workflow: String?, workflowJson: String?): String =
             "工作流：demo.json（workflows/demo.json）\n" +
                 "可调字段 2 项，用 generate 的 params 传入 key 即可修改：\n" +
                 "  3::steps  [steps]  Steps  当前=20  范围：1.0 ~ 100.0"
 
-        override suspend fun validateWorkflow(workflow: String?): String =
+        override suspend fun validateWorkflow(workflow: String?, workflowJson: String?): String =
             "预检通过（有 1 条提醒）。可以提交。\n⚠ 工作流里没有采样器节点，确认这是你要跑的图？"
 
         override suspend fun cancelJobs(jobId: String?, includeOthers: Boolean): String =

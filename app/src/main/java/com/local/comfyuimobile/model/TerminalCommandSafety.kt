@@ -132,6 +132,18 @@ object TerminalCommandSafety {
     private val SHELL_SEPARATORS = arrayOf("&&", "||", ";", "|", "&", "<(", ">(", "\$(", "`")
 
     /**
+     * 把复合命令拆成各段（v0.2.98 起对外可见）。
+     *
+     * 只为让同项目的其它判定（如 MCP 侧的高价值目录拦截）复用同一份分隔符表——
+     * 自己再写一份的话，将来分隔符表改进（已改过几轮）就会两处漂移，
+     * 又变成"平行路径只改一条"。
+     */
+    fun segmentsOf(command: String): List<String> = splitBySeparators(command)
+
+    /** 命令归一化（去首尾空白 + 转小写），同样供同模块复用。 */
+    fun normalizeForMatch(command: String): String = normalize(command)
+
+    /**
      * 是否存在“写到真实文件”的重定向（`> f` / `>> f`）。
      *
      * 排除 `/dev/null` 这类空设备：`2>/dev/null` 是极常见的无害写法，
