@@ -305,7 +305,15 @@ internal class McpTerminalHost(
         val code = result.exitCode
         val status = if (code == 0) "成功" else "失败"
         appendLine("终端 $name · 命令：$command")
-        appendLine("退出码 $code（$status）")
+        // v0.2.99（复审 §2.6）：后台命令的 `$?` **只表示"已放入后台"**
+        // （实测 `cmd &` 的退出码恒为 0），不代表它真的跑起来了。
+        // 不说清的话，AI 会以为 ComfyUI 启动成功——而它可能立刻就崩了。
+        if (TerminalShell.isBackground(command)) {
+            appendLine("退出码 $code（仅表示已在后台启动，不代表它运行成功）")
+            appendLine("下一步：用 terminal_read 看它的日志，或 wait_for_comfy 等就绪。")
+        } else {
+            appendLine("退出码 $code（$status）")
+        }
         if (result.text.isBlank()) {
             append("（无输出）")
         } else {
@@ -341,6 +349,9 @@ internal class McpTerminalHost(
             appendLine("（目前为止没有输出）")
         }
         append("如果它不该一直跑：用 terminal_interrupt 发 Ctrl+C；要持续看输出用 terminal_read。")
+        // v0.2.99（复审 §3.1）：超时恰恰是长任务的**典型症状**，这里最该提醒分终端
+        // ——此前只有 formatOutput 加了提示，等于最需要的时候反而不说。
+        longTaskHint(command, name)?.let { append(it) }
     }
 
     /**

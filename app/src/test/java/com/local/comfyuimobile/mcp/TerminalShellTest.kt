@@ -29,6 +29,50 @@ class TerminalShellTest {
         assertTrue(wrapped, wrapped.endsWith("echo \"$mark:${'$'}?\""))
     }
 
+    // ===== P0（v0.2.99 复审）：后台命令 `&` 结尾 =====
+
+    @Test
+    fun backgroundCommandUsesNewlineNotSemicolon() {
+        // `cmd &; echo ...` 是 **bash 语法错误**——`&` 本身就是命令分隔符，后面
+        // 不能再跟 `;`。整行都不执行，于是标记永不出现、干等到超时，
+        // 而用户只看到"命令没结束"，完全看不出是语法错误。
+        // 已用 bash 实测：该写法 exit=2、stdout 为空。
+        val wrapped = TerminalShell.wrap("bash start.sh &", token)
+        assertFalse("& 后不能紧跟分号：$wrapped", wrapped.contains("&;"))
+        assertTrue("应改用换行分隔：$wrapped", wrapped.contains("&\n"))
+        assertTrue(wrapped, wrapped.endsWith("echo \"$mark:${'$'}?\""))
+    }
+
+    @Test
+    fun nohupBackgroundCommandIsWrappedSafely() {
+        // 启动 ComfyUI 最经典的写法（前台跑永不退出，必须后台）。
+        val wrapped = TerminalShell.wrap("nohup bash _st.sh > comfy.log 2>&1 &", token)
+        assertFalse(wrapped, wrapped.contains("&;"))
+        assertTrue(wrapped, wrapped.contains("&\n"))
+        // 原命令的重定向不能被破坏。
+        assertTrue(wrapped, wrapped.startsWith("nohup bash _st.sh > comfy.log 2>&1 &"))
+    }
+
+    @Test
+    fun trailingSpacesStillDetectedAsBackground() {
+        assertFalse(TerminalShell.wrap("bash start.sh &   ", token).contains("&;"))
+    }
+
+    @Test
+    fun plainCommandStillUsesSemicolon() {
+        // 对照组：普通命令不能因为这次改动而变了行为。
+        assertTrue(TerminalShell.wrap("echo hi", token).startsWith("echo hi; "))
+    }
+
+    @Test
+    fun isBackgroundDetection() {
+        assertTrue(TerminalShell.isBackground("bash start.sh &"))
+        assertTrue(TerminalShell.isBackground("bash start.sh &   "))
+        assertFalse(TerminalShell.isBackground("bash start.sh"))
+        // `&&` 是逻辑与，不是后台——不能误判。
+        assertFalse(TerminalShell.isBackground("ls && echo hi"))
+    }
+
     @Test
     fun extractsOutputAndExitCodeSkippingEcho() {
         val buffer =
