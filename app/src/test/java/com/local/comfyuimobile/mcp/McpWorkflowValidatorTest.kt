@@ -53,6 +53,8 @@ class McpWorkflowValidatorTest {
     @Test
     fun danglingLinkIsAnError() {
         // 手改 JSON 的头号错误：删了节点忘了改引用。
+        // 注意这里必须能抓到——解析器会把悬空引用当普通 widget 值，
+        // 所以校验器是自己扫原始 JSON 的（下方 numericalArray 用例锁住不误报）。
         val broken = JSONObject(
             """
             {
@@ -64,6 +66,33 @@ class McpWorkflowValidatorTest {
         val report = McpWorkflowValidator.validate(broken, null)
         assertFalse(report.ok)
         assertTrue("应指出指向 999 的连线", report.errors.any { it.contains("999") })
+    }
+
+    @Test
+    fun numericalArraysAreNotMistakenForLinks() {
+        // resolution:[1024,1024] 这类数字数组不是连线。判定要求首元素是**字符串**，
+        // 否则会把所有双数字参数都误报成悬空连线——那会让预检变成噪音。
+        val withResolution = JSONObject(
+            """
+            {
+              "3": {"class_type":"KSampler","inputs":{"resolution":[1024,1024],"seed":1}},
+              "10":{"class_type":"SaveImage","inputs":{"images":["3",0]}}
+            }
+            """.trimIndent(),
+        )
+        val report = McpWorkflowValidator.validate(withResolution, null)
+        assertTrue("数字数组不该被当成连线，实际错误：${report.errors}", report.ok)
+    }
+
+    @Test
+    fun nonExistentUpstreamIsCaughtEvenThoughParserHidesIt() {
+        // 设计约束回归：如果将来有人把实现改回用 parsed.links，这条会立刻失败——
+        // 因为解析器把 "首元素不在节点表里" 的数组判为非连线，悬空引用就查不到了。
+        val oneNode = JSONObject(
+            """{"10":{"class_type":"SaveImage","inputs":{"images":["3",0]}}}""".trimIndent(),
+        )
+        val report = McpWorkflowValidator.validate(oneNode, null)
+        assertTrue("必须能看到指向不存在节点 3 的连线", report.errors.any { it.contains("3") })
     }
 
     @Test
