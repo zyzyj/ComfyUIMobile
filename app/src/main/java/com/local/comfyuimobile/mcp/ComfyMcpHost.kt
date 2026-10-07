@@ -1,10 +1,13 @@
 package com.local.comfyuimobile.mcp
 
 import com.local.comfyuimobile.data.AppLogger
+import com.local.comfyuimobile.data.AuthCookieProvider
 import com.local.comfyuimobile.data.WorkflowFormat
 import com.local.comfyuimobile.model.ResultMedia
 import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.ParameterField
+import com.local.comfyuimobile.network.AiStudioKernelClient
+import com.local.comfyuimobile.network.AiStudioProtocol
 import com.local.comfyuimobile.network.ComfyClient
 import com.local.comfyuimobile.network.NodeAvailability
 import com.local.comfyuimobile.network.ResultParser
@@ -336,9 +339,13 @@ internal class ComfyMcpHost(
      * 比拿 `list_models` 试探准（后者要拉几 MB 的 object_info）。
      */
     override suspend fun waitForComfy(timeoutSeconds: Int): String {
+        // v0.2.97：先尝试自动接入。以前只探测"App 里配好的地址"，于是 AI 启动完
+        // GPU 还得让用户回 App 连一次 ComfyUI（F9 要求全程不用介入）。
+        // 能从项目 endpoint 推出来的话，就直接把地址与项目级 Cookie 装上再探。
+        val attached = runCatching { autoAttachComfy() }.getOrNull()
         if (client.serverUrl().isBlank()) {
-            return "App 尚未连接 ComfyUI 地址。请先在 App 里连接（或启动云端环境后回到 App 连接），" +
-                "然后再调用本工具。"
+            return "尚未连接 ComfyUI，也没能自动推出地址（${attached ?: "无可用项目"}）。" +
+                "请先用 list_projects / start_gpu 启动一个项目，或在 App 里手动连接 ComfyUI 后重试。"
         }
         val deadline = System.currentTimeMillis() + timeoutSeconds * 1000L
         var attempts = 0
@@ -349,16 +356,59 @@ internal class ComfyMcpHost(
             if (ok) {
                 val waited = (System.currentTimeMillis() - startedAt) / 1000
                 AppLogger.info("MCP 等待 ComfyUI：第 $attempts 次探测成功，等了 ${waited}s")
-                return "ComfyUI 已就绪（等了 ${waited} 秒，探测 $attempts 次）。可以提交出图了。"
+                val where = client.serverUrl()
+                val how = if (attached == null) "（用 App 里已配好的地址）" else "（$attached）"
+                return "ComfyUI 已就绪 $how：$where（等了 ${waited} 秒，探测 $attempts 次）。可以提交出图了。"
             }
             if (System.currentTimeMillis() >= deadline) {
                 // 超时不自作主张：说清"没等到"，并给出下一步该做什么。
-                return "等待 ${timeoutSeconds} 秒后 ComfyUI 仍不可达（探测 $attempts 次）。" +
-                    "可能原因：① 云端项目未启动 ② 启动脚本还没跑完 ③ 地址/登录态不对。" +
-                    "建议：确认项目已启动后重试，或先检查启动脚本的日志。"
+                return "等待 ${timeoutSeconds} 秒后 ComfyUI 仍不可达（探测 $attempts 次，地址 ${client.serverUrl()}）。" +
+                    "可能原因：① 项目刚启动、环境还没拉起 ② 启动脚本还没跑完 ③ 登录态失效。" +
+                    "建议：用 terminal_read 看启动脚本日志，或项目启动后稍等再试。"
             }
             delay(WAIT_FOR_COMFY_POLL_MILLIS)
         }
+    }
+
+    /**
+     * 从运行中的项目推出 ComfyUI 地址并装上 Cookie（v0.2.97）。
+     *
+     * 返回一句"从哪推出来的"说明；推不出来返回 null（调用方会回退到"用偏好里的地址"）。
+     * 前提是**项目正在运行**：没跑的话 baseinfo 回的是空 baseUrl，也没有 api_serving 可探。
+     */
+    private suspend fun autoAttachComfy(): String? {
+        val terminalHost = terminal ?: return null
+        val (account, project) = terminalHost.runningProjectOrNull() ?: return null
+        val endpoint = terminalHost.endpointFor(account, project.projectId) ?: return null
+        val url = comfyUiUrlOf(endpoint) ?: return null
+        // 项目级 Cookie（ide-proxy / user-{uid}-{pid}）才是 api_serving 反代真正校验的，
+        // 账号 Cookie（BDUSS）不够——与界面"连终端后自动连 ComfyUI"同一条链路。
+        runCatching { terminalHost.warmUpCookies(account, endpoint) }
+        val cookie = terminalHost.exportCookies()
+        client.setServer(url)
+        client.setAuthCookie(cookie)
+        AuthCookieProvider.current = cookie
+        AppLogger.info("MCP 已自动接入 ComfyUI：项目 ${project.projectId}")
+        return "自动接入项目 ${project.displayName()} 的 api_serving"
+    }
+
+    /**
+     * 由项目 endpoint 拼出 api_serving 的 8188 地址。
+     *
+     * 与界面 [com.local.comfyuimobile.MainViewModel] 里的 comfyUiUrl 同一规则：
+     * 平台强制 https、必须显式带 443（不带端口会被规范化逻辑补成 8188 而拼错地址）。
+     */
+    private fun comfyUiUrlOf(endpoint: AiStudioKernelClient.KernelEndpoint): String? {
+        val base = endpoint.baseUrl.ifBlank { endpoint.basePath }
+        if (base.isBlank()) return null
+        val absolute = if (base.startsWith("http")) base
+        else AiStudioProtocol.BASE_URL + "/" + base.trim('/')
+        val secured = when {
+            absolute.startsWith("http://") -> "https://" + absolute.removePrefix("http://")
+            absolute.startsWith("https://") -> absolute
+            else -> "https://$absolute"
+        }
+        return secured.trimEnd('/') + "/api_serving/8188"
     }
 
     /** AI Studio 通道不可用时的统一话术（单测环境或未注入）。 */

@@ -160,6 +160,31 @@ internal class McpTerminalHost(
 
     // ===== 内部 =====
 
+    /**
+     * 取当前运行中的项目（连同账号）。给 wait_for_comfy 自动接入用。
+     *
+     * 直接转发给 [activeProject]，让调用方不必自己处理异常——取不到就是没项目。
+     */
+    suspend fun runningProjectOrNull() = runCatching { activeProject() }.getOrNull()
+
+    /** 取项目 endpoint（拿不到时返回 null，不抛）。 */
+    suspend fun endpointFor(
+        account: AiStudioAccount,
+        projectId: String,
+    ): AiStudioKernelClient.KernelEndpoint? =
+        runCatching { kernel.fetchEndpoint(account, projectId, "") }.getOrNull()
+
+    /** 预热项目级 Cookie（ide-proxy 等）；供 ComfyUI 反代鉴权用。 */
+    suspend fun warmUpCookies(
+        account: AiStudioAccount,
+        endpoint: AiStudioKernelClient.KernelEndpoint,
+    ) {
+        kernel.warmUpProjectCookies(account, endpoint)
+    }
+
+    /** 导出已捕获的 Cookie（含项目级）给 ComfyClient 用。 */
+    fun exportCookies(): String = kernel.exportCookies()
+
     private suspend fun requireContext(): Pair<AiStudioAccount, AiStudioProject> =
         activeProject() ?: throw IllegalStateException(
             "还没有可用的 AI Studio 项目。请先 login（App 的「账号」页）并 start_gpu 启动一个项目，" +
