@@ -168,7 +168,7 @@ internal class McpTerminalHost(
                     return@withLock renamed + formatOutput(name, cmd, result)
                 }
                 if (System.currentTimeMillis() >= deadline) {
-                    return@withLock renamed + formatTimeout(name, timeout, result)
+                    return@withLock renamed + formatTimeout(name, cmd, timeout, result)
                 }
                 delay(POLL_MILLIS)
             }
@@ -337,6 +337,7 @@ internal class McpTerminalHost(
 
     private fun formatTimeout(
         name: String,
+        command: String,
         timeoutSeconds: Int,
         partial: TerminalShell.Result,
     ): String = buildString {
