@@ -432,6 +432,9 @@ private fun MoreScreen(onOpen: (MainPage) -> Unit) {
     val entries = listOf(
         Triple(MainPage.CONSOLE, "云端终端：执行命令、启动 ComfyUI", "控制台"),
         Triple(MainPage.TASKS, "服务器任务队列与历史", "任务"),
+        // v0.2.98（优化方案 §5.2）：MCP 原先要「更多 → 设置 → MCP 服务」三步，
+        // 而它是切到 AiCode 前后最常确认的一页（服务还在跑吗、最近调了什么）。
+        Triple(MainPage.MCP, "让 AiCode 直接操作本 App 连着的 ComfyUI", "MCP 服务"),
     )
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -502,7 +505,7 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
             // 无来路（如通知/分享直接进来）时回它所属的主页面。
             page == MainPage.PARAMETERS -> page = MainPage.WORKFLOWS
             page == MainPage.STORAGE -> page = MainPage.ACCOUNT
-            page in setOf(MainPage.CONSOLE, MainPage.TASKS) -> page = MainPage.MORE
+            page in setOf(MainPage.CONSOLE, MainPage.TASKS, MainPage.MCP) -> page = MainPage.MORE
         }
     }
     // 只在“确实有路可退”时拦返回键；主页面（栈空）不拦，交给系统退出 App。
@@ -510,7 +513,7 @@ private fun ConnectedApp(state: AppUiState, viewModel: MainViewModel, snackbar: 
     val parentOfCurrent: MainPage? = when (page) {
         MainPage.PARAMETERS -> MainPage.WORKFLOWS
         MainPage.STORAGE -> MainPage.ACCOUNT
-        MainPage.CONSOLE, MainPage.TASKS -> MainPage.MORE
+        MainPage.CONSOLE, MainPage.TASKS, MainPage.MCP -> MainPage.MORE
         else -> null
     }
     BackHandler(enabled = settings || pageStack.isNotEmpty() || parentOfCurrent != null) { goBack() }
@@ -681,7 +684,7 @@ private fun ConnectedScaffold(
                             (target == MainPage.ACCOUNT && page == MainPage.STORAGE) ||
                             // 「更多」的子里页在底栏仍高亮「更多」，否则整栏全灰。
                             (target == MainPage.MORE && page in setOf(
-                                MainPage.CONSOLE, MainPage.TASKS,
+                                MainPage.CONSOLE, MainPage.TASKS, MainPage.MCP,
                             )),
                         onClick = { onNavigate(target) },
                         icon = { Icon(target.icon, null, Modifier.size(22.dp)) },
@@ -5698,25 +5701,52 @@ private fun ServerConnectionCard(state: AppUiState, viewModel: MainViewModel) {
 
 @Composable
 private fun RawResponseCard(raw: String, context: Context) {
+    // v0.2.98（优化方案 §5.2 账号页）：原先这张卡片把原始响应 JSON 直接摆出来，
+    // 还带一键复制——而响应里可能含用户 ID、Cookie 片段。改为：
+    //   ① 默认**收拢**，不主动展示；
+    //   ② 展开后先过脱敏（token / bdToken / cookie 一律换成 <已省略>）；
+    //   ③ 复制出去的是**脱敏后**的文本，不再是一比一原文。
+    // 保留这个卡片本身，是因为平台改版导致解析失败时，它是用户反馈的唯一依据。
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val safe = remember(raw) { AiStudioProtocol.redactSecrets(raw) }
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded },
+            ) {
                 Text(
                     "原始响应（解析异常时反馈用）",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
-                IconButton(onClick = {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("AI Studio 响应", raw))
-                }) { Icon(Icons.Outlined.ContentCopy, "复制原始响应") }
+                Icon(
+                    if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    null,
+                )
             }
             Text(
-                raw.take(500),
+                "已隐藏敏感字段（token / cookie）。展开后复制的是脱敏文本。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (expanded) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("AI Studio 响应", safe))
+                    }) { Text("复制（已脱敏）") }
+                }
+                Text(
+                    safe.take(500),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
