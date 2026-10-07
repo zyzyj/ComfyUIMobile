@@ -1042,13 +1042,20 @@ private fun WorkflowRow(
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(entry.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
-                    entry.path,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                // v0.2.99：副标题原先总是再显示一遍 entry.path，而 path 的末段
+                // **就是** entry.name（`anima.json` / `workflows/anima.json`）——同一行
+                // 重复两次同一文件名，占地又没信息。改为只在确实属于子目录时
+                // 显示所在目录（否则这行干脆不出现，行高也更紧凑）。
+                val parentDir = entry.path.substringBeforeLast('/', "")
+                if (parentDir.isNotBlank()) {
+                    Text(
+                        parentDir,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             if (!entry.isDirectory) {
                 Text(
