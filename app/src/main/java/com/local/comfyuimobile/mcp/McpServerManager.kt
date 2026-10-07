@@ -29,6 +29,8 @@ internal class McpServerManager(
     private val currentWorkflowPath: () -> String?,
     private val refreshCookie: suspend () -> Unit,
     private val clientId: String,
+    /** AI Studio 通道（v0.2.97）。null = 不启用，相关工具会返回明确提示。 */
+    private val aiStudio: AiStudioBridge? = null,
 ) {
 
     private var server: McpServer? = null
@@ -53,8 +55,6 @@ internal class McpServerManager(
         requestedPort: Int = DEFAULT_PORT,
         /** 是否启用 Bearer 鉴权（F1：默认 false = 免鉴权）。 */
         requireAuth: Boolean = false,
-        /** AI Studio 通道（v0.2.97）。null = 不启用，相关工具会返回明确提示。 */
-        aiStudio: AiStudioBridge? = null,
         resultSink: (suspend (ResultMedia, File) -> Unit)? = null,
         onSubmitted: (suspend (promptId: String) -> Unit)? = null,
     ): Int {
