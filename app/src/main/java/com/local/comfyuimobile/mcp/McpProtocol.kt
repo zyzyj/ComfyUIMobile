@@ -84,13 +84,14 @@ internal object McpProtocol {
         .put("error", JSONObject().put("code", code).put("message", message))
 
     /** `initialize` 结果。只声明 tools 能力——resources / prompts 客户端不支持（源码级确证）。 */
-    fun initializeResult(): JSONObject = JSONObject()
+    fun initializeResult(instructions: String? = null): JSONObject = JSONObject()
         .put("protocolVersion", PROTOCOL_VERSION)
         .put("capabilities", JSONObject().put("tools", JSONObject()))
         .put(
             "serverInfo",
             JSONObject().put("name", SERVER_NAME).put("version", SERVER_VERSION),
         )
+        .apply { if (!instructions.isNullOrBlank()) put("instructions", instructions) }
 
     /** 工具描述符 → `tools/list` 的一项。 */
     fun toolDescriptor(name: String, description: String, inputSchema: JSONObject): JSONObject =

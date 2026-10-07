@@ -45,7 +45,7 @@ internal interface McpToolHost {
     suspend fun jobStatusBatch(ids: List<String>): String
 
     /** 列出一个工作流里可调的参数（v0.2.91）：返回给模型的文本清单。 */
-    suspend fun describeWorkflow(workflow: String?): String
+    suspend fun describeWorkflow(workflow: String?, workflowJson: String?): String
 
     /**
      * 提交前预检工作流（v0.2.96）：返回给模型的文本报告。
@@ -53,7 +53,7 @@ internal interface McpToolHost {
      * 存在的理由：一次错误提交要等几十秒才在服务器侧暴露，而在 AI Studio 上
      * 那段等待是**真金白银的算力卡**。把错误挪到提交前，零成本换掉它。
      */
-    suspend fun validateWorkflow(workflow: String?): String
+    suspend fun validateWorkflow(workflow: String?, workflowJson: String?): String
 
     // ===== AI Studio 通道（v0.2.97）=====
     // 让 AI 自己走完"启动 GPU → 等环境 → 跑启动脚本 → 连 ComfyUI → 出图"全程，
@@ -192,7 +192,7 @@ internal class McpToolRegistry(
     suspend fun dispatch(method: String, params: JSONObject, id: String?): JSONObject? {
         if (id == null && method.startsWith("notifications/")) return null
         return when (method) {
-            "initialize" -> McpProtocol.success(id, McpProtocol.initializeResult())
+            "initialize" -> McpProtocol.success(id, McpProtocol.initializeResult(SERVER_INSTRUCTIONS))
             "tools/list" -> McpProtocol.success(id, JSONObject().put("tools", toolList()))
             "tools/call" -> handleToolCall(id, params)
             "ping" -> McpProtocol.success(id, JSONObject())
@@ -227,8 +227,18 @@ internal class McpToolRegistry(
     private suspend fun invoke(name: String, args: JSONObject): ToolResult = when (name) {
         TOOL_LIST_MODELS -> ToolResult(host.listModels(args.optString("type").takeIf { it.isNotBlank() }))
         TOOL_LIST_WORKFLOWS -> ToolResult(host.listWorkflows())
-        TOOL_DESCRIBE_WORKFLOW -> ToolResult(host.describeWorkflow(args.optString("workflow").trim().takeIf { it.isNotBlank() }))
-        TOOL_VALIDATE_WORKFLOW -> ToolResult(host.validateWorkflow(args.optString("workflow").trim().takeIf { it.isNotBlank() }))
+        TOOL_DESCRIBE_WORKFLOW -> ToolResult(
+            host.describeWorkflow(
+                args.optString("workflow").trim().takeIf { it.isNotBlank() },
+                args.optString("workflow_json").trim().takeIf { it.isNotBlank() },
+            ),
+        )
+        TOOL_VALIDATE_WORKFLOW -> ToolResult(
+            host.validateWorkflow(
+                args.optString("workflow").trim().takeIf { it.isNotBlank() },
+                args.optString("workflow_json").trim().takeIf { it.isNotBlank() },
+            ),
+        )
         TOOL_GENERATE -> renderGenerate(
             host.generate(
                 parseGenerate(args),
@@ -372,7 +382,7 @@ internal class McpToolRegistry(
                     .put("status", "done")
                     .put("job_id", outcome.jobId)
                     .put("images", arr)
-                    .put("hint", "用 curl 下载 url 到容器本地后用 viewImage 查看")
+                    .put("hint", "图片已给出 URL，用 curl 下载到容器本地后用 viewImage 查看（这是唯一该用脚本的场景；调 MCP 请用原生工具）")
                     .toString(),
             )
         }
@@ -439,10 +449,12 @@ internal class McpToolRegistry(
             McpProtocol.toolDescriptor(
                 TOOL_DESCRIBE_WORKFLOW,
                 "查看一个工作流里有哪些可调参数（field key、当前值、可选值），并给出每个字段的用途说明。" +
-                    "出图前先调它，才能用 generate 的 params 改 steps / cfg / 采样器 / 尺寸 / 种子等。",
+                    "出图前先调它，才能用 generate 的 params 改 steps / cfg / 采样器 / 尺寸 / 种子等。" +
+                    "可传 workflow_json 内联（与 generate 同一份判定）。",
                 schema(
                     JSONObject()
-                        .put("workflow", JSONObject().put("type", "string").put("description", "工作流路径；缺省用 App 当前打开的工作流")),
+                        .put("workflow", JSONObject().put("type", "string").put("description", "工作流路径；缺省用 App 当前打开的工作流"))
+                        .put("workflow_json", JSONObject().put("type", "string").put("description", "内联的 API 格式工作流 JSON；给了它就忽略 workflow")),
                     required = JSONArray(),
                 ),
             ),
@@ -451,9 +463,12 @@ internal class McpToolRegistry(
             McpProtocol.toolDescriptor(
                 TOOL_VALIDATE_WORKFLOW,
                 "提交前预检工作流：检查格式、节点是否已安装、连线引用是否有效、是否有输出节点。" +
-                    "**建议在 generate 前先调它**——错误提交要等在服务器侧报错，那段时间在 AI Studio 上是在烧算力卡。",
+                    "**建议在 generate 前先调它**——错误提交要等在服务器侧报错，那段时间在 AI Studio 上是在烧算力卡。" +
+                    "可传 workflow_json 内联（内联提交也能预检）。",
                 schema(
-                    JSONObject().put("workflow", JSONObject().put("type", "string").put("description", "工作流路径；缺省用 App 当前打开的工作流")),
+                    JSONObject()
+                        .put("workflow", JSONObject().put("type", "string").put("description", "工作流路径；缺省用 App 当前打开的工作流"))
+                        .put("workflow_json", JSONObject().put("type", "string").put("description", "内联的 API 格式工作流 JSON；给了它就忽略 workflow")),
                 ),
             ),
         )
@@ -638,6 +653,19 @@ internal class McpToolRegistry(
 
         /** 批量 job_status 一次最多查多少个 id（与 host 侧同一上限）。 */
         const val MAX_BATCH_IDS = 16
+
+        /**
+         * 会话开始时发一次的总体约定（v0.2.98）。
+         *
+         * 放这里而不是每个工具的描述里：**工具描述每轮都要付 token**，而
+         * `instructions` 只在 initialize 时发一次。只把"每个工具都适用"的两条
+         * 放这（真机实测 AI 会自己写 curl/python 脚本绕过 MCP 工具，也会忘了
+         * GPU 就绪 ≠ ComfyUI 就绪）。具体场景的"下一步"由各工具的返回值给。
+         */
+        const val SERVER_INSTRUCTIONS =
+            "直接使用本服务的工具，不要自己写 bash/python/curl 脚本通过 HTTP 调它。\n" +
+                "注意：GPU 就绪 ≠ ComfyUI 就绪——start_gpu 之后要先用 terminal_exec 跑启动脚本，" +
+                "再调 wait_for_comfy。启动脚本路径各人环境不同，用 ls / find 先找，不要假定。"
 
         /** 所有工具名（供启动期自检命名约束）。 */
         val TOOL_NAMES = listOf(

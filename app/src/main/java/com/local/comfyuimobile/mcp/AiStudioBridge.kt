@@ -219,7 +219,15 @@ internal class AiStudioBridge(
             .getOrElse { error -> throw describe("启动项目", error) }
         return buildString {
             appendLine("已提交启动请求：项目 $pid，档位 ${chosen.displayName()}（schedule=${chosen.scheduleName}）。")
-            append("启动需要 1-2 分钟。之后可用 wait_for_comfy 等 ComfyUI 就绪，或 terminal 工具看启动日志。")
+            // P1-3：真机实测 AI 启动 GPU 后直接调 wait_for_comfy，等了 300 秒超时——
+            // 因为**GPU 就绪 ≠ ComfyUI 起来了**。这里必须把下一步说透，
+            // 否则 AI 只能靠超时才能学到这件事。
+            appendLine()
+            appendLine("⚠️ 重要：GPU 起来 ≠ ComfyUI 起来了。直接调 wait_for_comfy 会超时。")
+            appendLine("下一步必须：")
+            appendLine("  1. 用 terminal_exec 找到并运行 ComfyUI 启动脚本")
+            appendLine("     （各人环境不同，不要假定路径；可用 ls / find 先找，常见名如 _st.sh / start.sh）")
+            appendLine("  2. 再调 wait_for_comfy 等它就绪（命令未结束时用 terminal_read 看日志）")
             if (result.isNotBlank()) appendLine().append(result)
         }
     }
