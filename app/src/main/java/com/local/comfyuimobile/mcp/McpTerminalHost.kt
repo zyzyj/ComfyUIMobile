@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * 因为界面那条终端是共享的：清空会顺手吃掉用户正在看的输出。
  */
 internal class McpTerminalHost(
-    private val kernel: AiStudioKernelClient,
+    private val kernel: TerminalBackend,
     /** 取当前绑定的项目；与 AiStudioBridge 不同，终端需要项目才能拿到 endpoint。 */
     private val activeProject: suspend () -> Pair<AiStudioAccount, AiStudioProject>?,
 ) {
@@ -103,20 +103,31 @@ internal class McpTerminalHost(
         // 只记命令与终端名，不记输出（输出可能很长，且已在缓冲区里）。
         AppLogger.info("MCP 终端执行[${terminal?.trim().orEmpty().ifBlank { DEFAULT_TERMINAL }}]：${cmd.take(500)}")
 
-        val name = terminal?.trim()?.takeIf { it.isNotBlank() } ?: DEFAULT_TERMINAL
+        val requested = terminal?.trim()?.takeIf { it.isNotBlank() } ?: DEFAULT_TERMINAL
         val timeout = (timeoutSeconds ?: TerminalShell.DEFAULT_TIMEOUT_SECONDS).coerceIn(1, 600)
 
-        val buffer = buffers.getOrPut(name) { StringBuilder() }
-        val lock = locks.getOrPut(name) { Mutex() }
+        // 锁按**请求名**取：同一个名字的两次调用必须串行（它们会去建同一个会话）。
+        val lock = locks.getOrPut(requested) { Mutex() }
         // 整条命令（含建会话）都在锁内：AI 的两条命令不会互相插花，也不会与界面上的输入插花；
         // 同时避免两个并发调用各自连一次 WS。
         return lock.withLock {
-            val session = ensureSession(name)
+            // v0.2.98 修 P0-1：ensureSession 会把不存在的名字换成新建的随机名。
+            // 以前 exec 继续用**请求名**读缓冲区，而输出写的是**实际名**——
+            // 两个缓冲区不是一个，标记永远不出现，只能等超时（timeout 设多少都一样）。
+            val target = ensureSession(requested)
+            val name = target.name
+            val buffer = buffers.getOrPut(name) { StringBuilder() }
             // 快照起点：命令的输出一定在起点之后（工具刚发送它）。
             val startOffset = synchronized(buffer) { buffer.length }
             val token = "t${tokenCounter.incrementAndGet()}x${(System.nanoTime() % 100000).toString(16)}"
-            if (!kernel.sendInput(TerminalShell.wrap(cmd, token), session)) {
+            if (!kernel.sendInput(TerminalShell.wrap(cmd, token), target)) {
                 throw IllegalStateException("终端 $name 的会话已断开，请重试（会自动重连）。")
+            }
+            // 名字被改过时要说出来：否则 AI 下次还传 "probe"，每次都重建一个终端。
+            val renamed = if (name != requested) {
+                "（终端「$requested」不存在，已新建并改用「$name」；下次可直接传 $name 复用）\n"
+            } else {
+                ""
             }
             val deadline = System.currentTimeMillis() + timeout * 1000L
             while (true) {
@@ -124,10 +135,10 @@ internal class McpTerminalHost(
                 val result = TerminalShell.extract(snapshot, token)
                 // 用 if/else 表达式返回，而不是 `break <值>`——Kotlin 没有带值的 break。
                 if (result.finished) {
-                    return@withLock formatOutput(name, cmd, result)
+                    return@withLock renamed + formatOutput(name, cmd, result)
                 }
                 if (System.currentTimeMillis() >= deadline) {
-                    return@withLock formatTimeout(name, timeout, result)
+                    return@withLock renamed + formatTimeout(name, timeout, result)
                 }
                 delay(POLL_MILLIS)
             }
@@ -197,7 +208,10 @@ internal class McpTerminalHost(
         )
 
     /**
-     * 确保终端 `name` 已连上 WebSocket。
+     * 确保终端 `name` 已连上 WebSocket，并返回**实际使用的会话**。
+     *
+     * **返回会话而不是 Unit**（v0.2.98 修 P0-1）：名字不存在时平台会分配一个新名，
+     * 调用方必须知道最终叫什么，否则输出写进 A 的缓冲区、却去读 B 的。
      *
      * 终端会在项目重启后消失，所以每次都先验：本地有会话就直接用；否则探测平台
      * （有就复用，没有就建）再连。**不能只信本地**——本地会话可能是上一个项目留下的。
@@ -229,6 +243,9 @@ internal class McpTerminalHost(
             account = account,
             endpoint = endpoint,
             name = name,
+            // MCP 绝不当"界面当前终端"：否则 AI 一开终端就把用户在控制台看的那条顶掉，
+            // 用户敲的命令会发到 AI 的终端去（P0-2）。
+            asUiCurrent = false,
             onOutput = { chunk -> synchronized(buffer) { buffer.append(chunk) } },
             onOpen = {
                 // locale 修正：平台的 en_US.UTF-8 没生成，中文文件名会被转义成
