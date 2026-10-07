@@ -17,6 +17,7 @@ import com.local.comfyuimobile.model.JobState
 import com.local.comfyuimobile.model.ResultSource
 import com.local.comfyuimobile.mcp.AiStudioBridge
 import com.local.comfyuimobile.mcp.KernelTerminalBackend
+import com.local.comfyuimobile.mcp.McpCallLog
 import com.local.comfyuimobile.mcp.McpServerManager
 import com.local.comfyuimobile.mcp.McpTerminalHost
 import com.local.comfyuimobile.network.AiStudioKernelClient
@@ -140,6 +141,10 @@ class McpServerService : Service() {
         )
         markRunning(true)
         AppLogger.info("MCP 前台服务已就绪：127.0.0.1:$bound")
+        // §4.5：真机日志里中途出现过一次 initialize，可能是"App 进程被杀后重启"
+        // （那就是 AI 的那次长等待白等了）。启动也在调用日志里记一条——它在界面上
+        // 可见、且（v0.2.97 起）会落盘，于是重启与调用能拼成一条时间线。
+        McpCallLog.log("服务启动", ok = true, detail = "监听 127.0.0.1:$bound")
         startForeground(FOREGROUND_ID, buildNotification(bound))
         observePreferences(created, bound)
     }
