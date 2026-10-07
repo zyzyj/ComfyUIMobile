@@ -31,9 +31,26 @@ internal object TerminalShell {
     /** 标记前缀。带上调用方给的随机 token，避免和命令自身的输出撞车。 */
     fun marker(token: String): String = "__CM_${token}__"
 
-    /** 把命令包成「跑完打标记」的形式。`$?` 在双引号里会被 shell 展开成退出码。 */
-    fun wrap(command: String, token: String): String =
-        "$command; echo \"${marker(token)}:\$?\""
+    /**
+     * 把命令包成「跑完打标记」的形式。`$?` 在双引号里会被 shell 展开成退出码。
+     *
+     * **后台命令（`&` 结尾）必须用换行而不是分号**（v0.2.99 修 P0）：
+     * `cmd &; echo ...` 是 **bash 语法错误**（`&` 本身就是命令分隔符，后面不能再跟 `;`），
+     * 整行都不会执行——于是标记永不出现，只能干等到超时，而用户看到的是
+     * "命令没结束"，完全看不出是语法错误。已用 bash 实测：该写法 exit=2、stdout 为空。
+     * `cmd &` + 换行 是合法分隔（实测 exit=0）。
+     *
+     * 这条对主链是阻断性的：**启动 ComfyUI 必须后台跑**（前台跑永不退出），
+     * 而 `bash start.sh &` / `nohup bash _st.sh > log 2>&1 &` 是最经典的写法。
+     */
+    fun wrap(command: String, token: String): String {
+        val cmd = command.trimEnd()
+        val separator = if (cmd.endsWith("&")) "\n" else "; "
+        return "$cmd$separator" + "echo \"${marker(token)}:\$?\""
+    }
+
+    /** 该命令是不是后台运行（以 `&` 结尾）。 */
+    fun isBackground(command: String): Boolean = command.trimEnd().endsWith("&")
 
     /**
      * 提取结果。
