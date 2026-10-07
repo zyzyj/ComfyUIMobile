@@ -322,26 +322,46 @@ class AppPreferences(private val context: Context) {
      * （与 ComfyUI 服务器 Cookie 同一套处理），所以设备 root / 手动导出仍是唯一
      * 能读到它的路径——那是用户自己掌控的范围。
      */
+    /**
+     * 只更新一个账号（v0.2.97）：MCP 侧刷新令牌后回写用。
+     *
+     * 不复用 [saveAiStudioAccounts] 是因为那条要求调用方手里有**完整**账号列表，
+     * 而服务侧只能读到偏要快照的副本——用它会把快照写回去，覆盖掉 App 在期间
+     * 改过的其他账号。这里在 edit 事务内重新读出当前列表再改。
+     */
+    suspend fun updateAiStudioAccount(updated: AiStudioAccount) {
+        context.dataStore.edit { preferences ->
+            val current = decodeAiStudioAccounts(preferences[Keys.aiStudioAccounts].orEmpty())
+            if (current.none { it.id == updated.id }) return@edit
+            preferences[Keys.aiStudioAccounts] = encodeAiStudioAccounts(
+                current.map { if (it.id == updated.id) updated else it },
+            )
+        }
+    }
+
     suspend fun saveAiStudioAccounts(accounts: List<AiStudioAccount>, activeId: String) {
         context.dataStore.edit { preferences ->
-            preferences[Keys.aiStudioAccounts] = JSONArray().apply {
-                accounts.forEach { account ->
-                    put(
-                        JSONObject()
-                            .put("id", account.id)
-                            .put("nickname", account.nickname)
-                            .put("uid", account.uid)
-                            .put("cookie", account.cookie)
-                            .put("bdToken", account.bdToken)
-                            .put("bdTokenFetchedAt", account.bdTokenFetchedAt)
-                            .put("lastUsedAt", account.lastUsedAt)
-                            .put("lastSignInAt", account.lastSignInAt),
-                    )
-                }
-            }.toString()
+            preferences[Keys.aiStudioAccounts] = encodeAiStudioAccounts(accounts)
             preferences[Keys.aiStudioActiveId] = activeId
         }
     }
+
+    private fun encodeAiStudioAccounts(accounts: List<AiStudioAccount>): String =
+        JSONArray().apply {
+            accounts.forEach { account ->
+                put(
+                    JSONObject()
+                        .put("id", account.id)
+                        .put("nickname", account.nickname)
+                        .put("uid", account.uid)
+                        .put("cookie", account.cookie)
+                        .put("bdToken", account.bdToken)
+                        .put("bdTokenFetchedAt", account.bdTokenFetchedAt)
+                        .put("lastUsedAt", account.lastUsedAt)
+                        .put("lastSignInAt", account.lastSignInAt),
+                )
+            }
+        }.toString()
 
     /**
      * 逐条解析，坏数据只跳过那一条。

@@ -47,6 +47,14 @@ internal class ComfyMcpHost(
      * 回调让上层把这个 promptId 纳入跟踪（写偏好 → ViewModel 观察 → 起监控）。
      */
     private val onSubmitted: (suspend (promptId: String) -> Unit)? = null,
+    /**
+     * AI Studio 通道（v0.2.97）。null = 不可用（单测）。
+     *
+     * 单独抽一个对象而不是把 [ComfyClient] 改成什么都能干：ComfyUI 反代与 AI Studio
+     * 平台是两套完全不同的鉴权（前者靠 cookie 里的 ide-proxy，后者靠 BDUSS+bdToken），
+     * 混在一个 client 里很容易把一边的凭据带到另一边去。
+     */
+    private val aiStudio: AiStudioBridge? = null,
 ) : McpToolHost {
 
     override suspend fun listModels(type: String?): String {
@@ -345,6 +353,22 @@ internal class ComfyMcpHost(
             delay(WAIT_FOR_COMFY_POLL_MILLIS)
         }
     }
+
+    /** AI Studio 通道不可用时的统一话术（单测环境或未注入）。 */
+    private fun requireAiStudio(): AiStudioBridge = aiStudio
+        ?: throw IllegalStateException("AI Studio 通道未启用（当前运行环境不支持）。")
+
+    override suspend fun listAiStudioProjects(): String = requireAiStudio().listProjects()
+
+    override suspend fun gpuStatus(projectId: String): String = requireAiStudio().gpuStatus(projectId)
+
+    override suspend fun listGpuOptions(projectId: String): String =
+        requireAiStudio().listGpuOptions(projectId)
+
+    override suspend fun startGpu(projectId: String, schedule: String?): String =
+        requireAiStudio().startGpu(projectId, schedule)
+
+    override suspend fun stopGpu(projectId: String): String = requireAiStudio().stopGpu(projectId)
 
     override suspend fun jobStatus(jobId: String): GenerateOutcome {
         requireConnected()
