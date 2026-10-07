@@ -83,6 +83,9 @@ class McpServerTest {
                 else -> "已请求取消本 App 提交的任务；另有 2 个非本 App 提交的任务保留未动"
             }
 
+        override suspend fun waitForComfy(timeoutSeconds: Int): String =
+            "ComfyUI 已就绪（假实现）"
+
         override suspend fun jobStatus(jobId: String): GenerateOutcome = GenerateOutcome.Done(
             jobId,
             listOf(
@@ -110,6 +113,9 @@ class McpServerTest {
         val server = McpServer(
             port = 0,
             token = TOKEN,
+            // 本套测试验证的是带 token 的鉴权路径（401 等），所以显式开启鉴权。
+            // 免鉴权是 App 的默认值（F1），但不是这里要测的行为。
+            requireAuth = true,
             tools = McpToolRegistry(host, files) { "http://127.0.0.1:${portHolder[0]}/files/" },
             // 必须与 registry 共用同一实例：各建一份的话，工具登记的文件在文件端点里
             // 根本查不到（这条曾经真的错过，由本测试拦住）。
