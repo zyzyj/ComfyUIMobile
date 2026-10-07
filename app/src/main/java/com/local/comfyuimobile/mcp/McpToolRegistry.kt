@@ -10,10 +10,14 @@ import org.json.JSONObject
  *  - [McpToolHost]：真正干活的一侧（查 ComfyUI、出图），由 App 侧实现；
  *  - [McpToolRegistry]：参数校验、结果序列化、方法路由——纯逻辑。
  *
- * 工具清单（规划书 §5）。刻意**不含 `terminal`**：MCP 的 tool call 由 AiCode 自主发起、
- * 不经过本 App 的界面，而现有安全模型（[com.local.comfyuimobile.model.TerminalCommandSafety]
- * 的三档 + 人工确认）正建立在"用户点确认"这个前提上。把"提议 + 人工确认"改成
- * "server 自行拒绝"是一次独立的安全模型改造，不该和首次打通混在一批改动里。
+ * 工具清单（规划书 §5）：模型/工作流/出图/任务查询与取消，加上 v0.2.97 的
+ * AI Studio 通道与终端。
+ *
+ * v0.2.85 曾刻意不含 terminal，理由是"安全模型建立在用户点确认上"。**v0.2.97 把这条改了**：
+ * MCP 的 tool call 由 AiCode 自主发起、不经过本 App 界面，没有可确认的人，所以终端的
+ * 判定改成"只拒绝灾难性操作"（[com.local.comfyuimobile.model.TerminalCommandSafety.isCatastrophic]），
+ * 其余一律执行。这是用户拍板的选择（F3 / F7 / F10），不是遗漏——详见
+ * [com.local.comfyuimobile.mcp.McpTerminalHost] 的类注释。
  */
 internal interface McpToolHost {
 
