@@ -83,7 +83,16 @@ internal class McpTerminalHost(
                     appendLine("- $name（$connected）")
                 }
             }
-            append("terminal_exec 的 terminal 参数传这些名字；省略则用 default。")
+            appendLine("terminal_exec 的 terminal 参数传这些名字；省略则用 default。")
+            appendLine()
+            // v0.2.99：AI 不会主动分开用终端，是因为这里没告诉它**为什么**要分开。
+            // 只说"可以传 terminal 参数"不够——得说清共用一条的后果（真机实测它一直共用）。
+            appendLine("建议开两条终端，各司其职：")
+            appendLine("  A（如 comfy）：专门跑 ComfyUI，日志持续输出，不要在上面跑临时命令")
+            appendLine("  B（如 work）：跑下载 / 查询 / git 等临时命令，输出干净")
+            appendLine("原因：终端是纯流式输出，共用一条会把 ComfyUI 的日志混进你的命令结果里")
+            appendLine("（解析不出正确输出），长任务还会把查询命令排队卡住。")
+            append("长任务（下载/启动脚本/训练）与临时查询请分开用不同终端。")
         }
     }
 
@@ -303,7 +312,20 @@ internal class McpTerminalHost(
             appendLine("输出：")
             append(result.text)
         }
+        // v0.2.99（计划书 2.1 ④）：长任务在共用终端上跑，日志会持续刷屏、
+        // 还会把后续查询命令排队卡住。发现这种情况就提醒分开用。
+        // 只在**没指定 terminal**（即用 default）时提——指定了就说明它已在意。
+        longTaskHint(command, name)?.let { append(it) }
     }
+
+    /**
+     * 长任务跑在共用终端上时，给一句"下次分"的提醒；否则返回 null。
+     *
+     * 纯函数（便于单测）：只看命令里有没有明显的长时间特征 +
+     * 是否带后台符号（带了就说明调用方已在处理"不等它"）。
+     */
+    private fun longTaskHint(command: String, terminalName: String): String? =
+        TerminalTaskHeuristics.longTaskHint(command, terminalName)
 
     private fun formatTimeout(
         name: String,

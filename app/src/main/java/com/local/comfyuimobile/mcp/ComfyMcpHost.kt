@@ -94,7 +94,13 @@ internal class ComfyMcpHost(
             }
             return "服务器上没有可用的 $label（或该节点类型未被安装）。"
         }
-        return lines.joinToString("\n")
+        // v0.2.99（计划书 2.1 ③）：下载完模型/LoRA 后**必须重启 ComfyUI**，
+        // 否则它不会重新扫目录、新文件不会出现在这份列表里。
+        // 实机最容易错的就是这一步：AI 会以为下载失败、或生成时报"找不到 LoRA"。
+        return lines.joinToString("\n") +
+            "\n提示：以上列表来自 ComfyUI 启动时扫描的结果。若刚下载过模型/LoRA 但这里没看到，" +
+            "**需要重启 ComfyUI**（否则它不会重新扫目录）：在跑 ComfyUI 的那条终端上" +
+            "先 terminal_interrupt 发 Ctrl+C，再重跑启动脚本，然后 wait_for_comfy。"
     }
 
     /**
