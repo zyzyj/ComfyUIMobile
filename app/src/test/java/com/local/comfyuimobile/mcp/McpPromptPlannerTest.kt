@@ -35,11 +35,13 @@ class McpPromptPlannerTest {
         prompt: String = "a cat",
         negative: String = "",
         workflow: String? = null,
+        workflowJson: String? = null,
         checkpoint: String? = null,
         lora: String? = null,
         count: Int = 1,
         params: Map<String, String> = emptyMap(),
-    ) = GenerateRequest(prompt, negative, workflow, checkpoint, lora, count, params)
+        wait: Boolean = false,
+    ) = GenerateRequest(prompt, negative, workflow, workflowJson, checkpoint, lora, count, params, wait)
 
     // ===== v0.2.91：任意参数注入 =====
 
