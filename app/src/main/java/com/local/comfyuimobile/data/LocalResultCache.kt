@@ -16,8 +16,17 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
-class LocalResultCache(context: Context) {
-    private val root = File(context.filesDir, "result_cache")
+/**
+ * 本地作品缓存：把结果图收存进 App 私有目录 + 一个 JSON 索引。
+ *
+ * v0.3.2：主构造改为直接收目录（测试可注入临时目录），`Context` 构造委托它——
+ * 与 [WorkflowDraftStore] 的模式互为镜像，目的相同：落盘逻辑可脱离 Android 单测。
+ */
+class LocalResultCache private constructor(private val root: File) {
+    constructor(context: Context) : this(File(context.filesDir, "result_cache"))
+
+    internal constructor(directory: File) : this(File(directory, "result_cache"))
+
     private val indexFile = File(root, "index.json")
 
     suspend fun load(): List<ResultMedia> = withContext(Dispatchers.IO) {
