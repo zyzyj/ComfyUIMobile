@@ -6,7 +6,9 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.wifi.WifiManager
 import android.os.IBinder
+import android.os.PowerManager
 import com.local.comfyuimobile.MainActivity
 import com.local.comfyuimobile.R
 import com.local.comfyuimobile.data.AppLogger
@@ -59,6 +61,37 @@ class McpServerService : Service() {
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var manager: McpServerManager? = null
+
+    /**
+     * 息屏保活锁（v0.3.0，清单 P0-1）。
+     *
+     * 实测：息屏挂机出 9 张后开始报 `Unable to resolve host "aistudio.baidu.com"`——
+     * **不是** Connection refused，说明进程还活着、但**网络被 Doze 掐了**。
+     * 根因是本服务没持 WakeLock/WifiLock，而 App 自己出图那条链
+     * （[JobMonitorService]）有——两条平行路径只给一条上了锁。
+     * 写法照搬那边（`PARTIAL_WAKE_LOCK` + `WIFI_MODE_FULL_HIGH_PERF`，
+     * `setReferenceCounted(false)`），权限早已在 Manifest 里。
+     */
+    private val wakeLock by lazy {
+        getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:mcp")
+            .apply { setReferenceCounted(false) }
+    }
+    private val wifiLock by lazy {
+        getSystemService(WifiManager::class.java)
+            .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "$packageName:mcp")
+            .apply { setReferenceCounted(false) }
+    }
+
+    private fun holdBackgroundLocks() {
+        if (!wakeLock.isHeld) wakeLock.acquire()
+        if (!wifiLock.isHeld) wifiLock.acquire()
+    }
+
+    private fun releaseBackgroundLocks() {
+        if (wifiLock.isHeld) wifiLock.release()
+        if (wakeLock.isHeld) wakeLock.release()
+    }
     private var client: ComfyClient? = null
     /** 服务当前生效的服务器地址与 Cookie；用于跳过偏好流里的重复推送。 */
     @Volatile private var appliedUrl: String = ""
@@ -81,6 +114,14 @@ class McpServerService : Service() {
 
     private suspend fun startServer(token: String) {
         val stored = runCatching { AppPreferences(this).settings.first() }.getOrNull()
+        // v0.3.0（清单 P3）：sticky 重建（onStartCommand 收到 null intent）会重新走这里。
+        // 若用户已经关了 MCP（偏好 enabled=false），不应该被系统拉起来——
+        // 否则"关了又自己活了"，用户以为开关坏了。
+        if (stored?.mcpServerEnabled != true) {
+            AppLogger.info("MCP 服务被系统重建，但开关已关闭，不再启动（改为正常停止）")
+            stopServer()
+            return
+        }
         val resolvedToken = token.ifBlank { stored?.mcpServerToken.orEmpty() }
         // 免鉴权模式下不需要 token（F1）；只有开启鉴权时才要求必须有。
         val requireAuth = stored?.mcpServerRequireAuth == true
@@ -146,6 +187,10 @@ class McpServerService : Service() {
         // 可见、且（v0.2.97 起）会落盘，于是重启与调用能拼成一条时间线。
         McpCallLog.log("服务启动", ok = true, detail = "监听 127.0.0.1:$bound")
         startForeground(FOREGROUND_ID, buildNotification(bound))
+        // 服务真正就绪才持锁：MCP 的价值就在于"用户切走后 AI 还能继续调"，
+        // 息屏后网络被 Doze 掐断正是实测断链的原因。服务停止/销毁必须释放，
+        // 否则用户关了 MCP 仍在白白耗电。
+        holdBackgroundLocks()
         observePreferences(created, bound)
     }
 
@@ -259,6 +304,7 @@ class McpServerService : Service() {
                 .onFailure { AppLogger.warn("保存 MCP 开关失败", it) }
         }
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        releaseBackgroundLocks()
         stopSelf()
     }
 
@@ -266,6 +312,9 @@ class McpServerService : Service() {
         runCatching { manager?.stop() }
         manager = null
         markRunning(false)
+        // 锁必须在 onDestroy 释放：stopServer 只覆盖"用户主动关"，
+        // 系统回收服务（swipe/低内存）走的是 onDestroy。漏了就一直持有到进程死。
+        releaseBackgroundLocks()
         scope.cancel()
         super.onDestroy()
     }
@@ -291,7 +340,7 @@ class McpServerService : Service() {
         )
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("MCP 服务运行中")
+            .setContentTitle("MCP 服务运行中 · 息屏保活已开启")
             .setContentText(
                 when {
                     // P1-2：没连服务器时不能假装一切正常——否则用户切到 AiCode 后
