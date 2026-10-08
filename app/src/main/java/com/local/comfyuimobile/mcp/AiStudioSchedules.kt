@@ -118,6 +118,23 @@ internal object AiStudioSchedules {
     fun trim(value: Double): String = trimNumber(value)
 
     /**
+     * 档位可用性一览（v0.3.4，清单 §1.2）。纯函数，可单测。
+     *
+     * 算力卡是**按档位独立**的（用户实测：CPU 48h / DCU 56h / V100 47h / A100 仅 4h）。
+     * 某一档用完不等于没得玩——把全部档位的剩余摆出来，AI 才会去换可用的档位，
+     * 而不是直接告诉用户「没算力了，明天再来」。
+     */
+    fun availabilityHint(schedules: List<AiStudioSchedule>): String = buildString {
+        appendLine("算力卡按档位独立计算——这一档用完，其他档位可能仍有余额。当前可选：")
+        if (schedules.isEmpty()) {
+            append("（读不到档位列表）")
+        } else {
+            schedules.forEach { appendLine("  " + describe(it)) }
+        }
+        append("挑一个可用的档位重传 schedule 即可；档位规格与价格不同，不要盲目选最贵的。")
+    }
+
+    /**
      * start_gpu 返回里关于「档位怎么来的」那句话（v0.3.4，清单 §1.1）。纯函数，可单测。
      *
      * 关键：**回落必须明说**。用户上次用便宜的档，余额用完后静默回落到列表首项
