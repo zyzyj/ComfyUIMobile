@@ -76,7 +76,7 @@ class ScheduleBillingTest {
 
     @Test
     fun availabilityHintHandlesEmptyList() {
-        val hint = AiStudioBridge.availabilityHintForTest(emptyList())
+        val hint = AiStudioBridge.availabilityHint(emptyList())
         assertTrue(hint, hint.contains("读不到"))
     }
 }
