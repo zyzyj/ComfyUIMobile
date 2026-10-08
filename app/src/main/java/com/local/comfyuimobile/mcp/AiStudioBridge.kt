@@ -248,6 +248,14 @@ internal class AiStudioBridge(
             appendLine("  1. 用 terminal_exec 找到并运行 ComfyUI 启动脚本")
             appendLine("     （各人环境不同，不要假定路径；可用 ls / find 先找，常见名如 _st.sh / start.sh）")
             appendLine("  2. 再调 wait_for_comfy 等它就绪（命令未结束时用 terminal_read 看日志）")
+            appendLine()
+            // v0.3.2（清单 3.1，平台官方 FAQ Q11）：Work 目录是持久化的，但每次启动
+            // 要重新加载全部文件——文件多时要数分钟才显示完整。真机实测用户以为
+            // "ComfyUI 全不见了"，AI 也可能因此判定环境为空而**重装**——
+            // 每次重装都在白烧算力卡。这条只适合 start_gpu 场景，放返回值不放 instructions。
+            appendLine("⚠️ 刚启动时看不到文件 ≠ 丢了：持久化目录（如 /home/aistudio/work）")
+            appendLine("   挂载同步需要数分钟。ls 发现目录空/不完整时，先等 3~5 分钟再看；")
+            appendLine("   **不要因为一时看不到就重装 ComfyUI**（那会白烧大量算力卡）。")
             if (result.isNotBlank()) appendLine().append(result)
         }
     }
