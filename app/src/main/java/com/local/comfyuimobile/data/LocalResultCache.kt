@@ -21,11 +21,11 @@ import java.nio.file.StandardCopyOption
  *
  * v0.3.2：主构造改为直接收目录（测试可注入临时目录），`Context` 构造委托它——
  * 与 [WorkflowDraftStore] 的模式互为镜像，目的相同：落盘逻辑可脱离 Android 单测。
+ * 主构造 internal（app 单模块内没有外部调用方；private 会与 Context 构造形成
+ * File 参数的重载二义性——Kotlin 重载解析不区分参数来源类型）。
  */
-class LocalResultCache private constructor(private val root: File) {
+class LocalResultCache internal constructor(private val root: File) {
     constructor(context: Context) : this(File(context.filesDir, "result_cache"))
-
-    internal constructor(directory: File) : this(File(directory, "result_cache"))
 
     private val indexFile = File(root, "index.json")
 
