@@ -46,6 +46,7 @@ class McpServerTest {
             lastRequest = request
             if (request.prompt == "fail") return GenerateOutcome.Failed("假失败")
             if (request.prompt == "slow") return GenerateOutcome.Running("job-run", 120, "仍在跑")
+            if (request.prompt == "queue") return GenerateOutcome.Queued("job-q", 5, 2, "排队中")
             return GenerateOutcome.Done(
                 "job-1",
                 listOf(
@@ -60,7 +61,7 @@ class McpServerTest {
         }
 
         /** 批量查询：这里按 id 后缀给出不同阶段，便于断言 queued/running/done。 */
-        override suspend fun jobStatusBatch(ids: List<String>): String = ids.joinToString("\n") { id ->
+        override suspend fun jobStatusBatch(ids: List<String>, waitSeconds: Int): String = ids.joinToString("\n") { id ->
             when {
                 id.endsWith("q") -> "$id  queued · 位置 2 · 排队中，前面还有 1 个"
                 id.endsWith("r") -> "$id  running · 位置 1 · 执行中"
@@ -101,7 +102,7 @@ class McpServerTest {
         override suspend fun terminalRead(terminal: String?, maxLines: Int?): String = "暂无输出"
         override suspend fun terminalInterrupt(terminal: String?): String = "已发送 Ctrl+C"
 
-        override suspend fun jobStatus(jobId: String): GenerateOutcome = GenerateOutcome.Done(
+        override suspend fun jobStatus(jobId: String, waitSeconds: Int): GenerateOutcome = GenerateOutcome.Done(
             jobId,
             listOf(
                 McpMedia(
@@ -539,5 +540,65 @@ class McpServerTest {
 
         /** 单次连接/读取上限。默认是无限——一旦服务端不回，测试会挂到 CI 超时。 */
         const val TIMEOUT_MILLIS = 5_000
+    }
+
+    // ===== 引导文本的护栏（v0.3.2，文档 §3.5 ②）=====
+
+    /**
+     * 抽出文本里「长得像本服务工具名」的 token，逐个断言真的存在。
+     *
+     * 为什么要有它：引导里的工具名全是**手写字符串**（曾 21 次 generate、10 次
+     * job_status 全是字面量），改工具名时编译器不报错——指向一个不存在的工具
+     * 是静默误导，AI 会去调一个 404。这是唯一能自动拦住它的手段。
+     *
+     * 判定规则：`[a-z]+(_[a-z]+)+`（snake_case），排除纯数字/参数名——
+     * 已知会出现的非工具 token（wait_seconds / job_id / workflow_json 等）
+     * 单列在白名单里，新增参数时同步维护。
+     */
+    private val NON_TOOL_SNAKE_TOKENS = setOf(
+        "wait_seconds", "timeout_seconds", "job_id", "job_ids", "workflow_json",
+        "workflow_path", "terminal_read", "terminal_exec", "terminal_list", "terminal_interrupt",
+        "schedule_name", "comfy_mobile", "webp", "api_prompt", "aigc_image", "aigc_audio",
+        // 以下不是本服务工具，但确实会出现在引导/返回里：
+        // 返回字段名 / 参数名 / ComfyUI 自己的 API 端点（引用它是合法的）。
+        "elapsed_sec", "max_lines", "project_id", "object_info",
+    )
+
+    private fun toolNameTokens(text: String): List<String> =
+        Regex("[a-z]+(_[a-z]+)+").findAll(text)
+            .map { it.value }
+            .filter { it !in NON_TOOL_SNAKE_TOKENS }
+            .filter { it !in McpToolRegistry.TOOL_NAMES }
+            .toList()
+
+    @Test
+    fun allToolDescriptionsOnlyReferenceRealTools() = withServer { port, _ ->
+        val (code, body) = postMcp(port, """{"jsonrpc":"2.0","id":2,"method":"tools/list"}""")
+        assertEquals(200, code)
+        val tools = JSONObject(body).getJSONObject("result").getJSONArray("tools")
+        val offenders = mutableMapOf<String, List<String>>()
+        for (i in 0 until tools.length()) {
+            val tool = tools.getJSONObject(i)
+            val text = tool.getString("description") +
+                tool.optJSONObject("inputSchema")?.toString().orEmpty()
+            val bad = toolNameTokens(text)
+            if (bad.isNotEmpty()) offenders[tool.getString("name")] = bad
+        }
+        assertTrue("引导里引用了不存在的工具名：$offenders", offenders.isEmpty())
+    }
+
+    @Test
+    fun generateHintsOnlyReferenceRealTools() = withServer { port, _ ->
+        val offenders = mutableMapOf<String, List<String>>()
+        for (prompt in listOf("queue", "slow", "fail", "a cat")) {
+            val (_, body) = postMcp(
+                port,
+                """{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"generate","arguments":{"prompt":"$prompt"}}}""",
+            )
+            val text = JSONObject(body).getJSONObject("result")
+                .getJSONArray("content").getJSONObject(0).getString("text")
+            toolNameTokens(text).takeIf { it.isNotEmpty() }?.let { offenders[prompt] = it }
+        }
+        assertTrue("generate 返回文本里引用了不存在的工具名：$offenders", offenders.isEmpty())
     }
 }
