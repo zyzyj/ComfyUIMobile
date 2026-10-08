@@ -236,6 +236,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.local.comfyuimobile.MainViewModel
 import com.local.comfyuimobile.network.AiStudioProtocol
 import com.local.comfyuimobile.network.LanAddress
@@ -2317,13 +2318,17 @@ private fun ResultMediaGrid(
     onToggleSelection: (ResultMedia) -> Unit,
 ) {
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(105.dp),
+        // v0.3.1（清单 §3.2）：105dp 时卡片里还有一行文件名，实际图片区只剩
+        // ~90dp，密集且信息挤；与相册视图的 150dp 对齐到 130dp。
+        columns = GridCells.Adaptive(130.dp),
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        gridItems(media, key = { it.stableKey() }) { item ->
+        // contentType（清单 §3.2 第 5 项）：网格里全是同构的图片卡片，声明后
+        // Compose 复用时可以跳过类型判断；key 已是稳定编码（stableKey）。
+        gridItems(media, key = { it.stableKey() }, contentType = { "media" }) { item ->
             val selected = item.stableKey() in selectedKeys
             Card(
                 Modifier.fillMaxWidth().combinedClickable(
@@ -2398,12 +2403,31 @@ private fun AlbumTile(
 }
 
 @Composable
-private fun MediaCover(media: ResultMedia, modifier: Modifier = Modifier) {
+private fun MediaCover(media: ResultMedia, modifier: Modifier = Modifier, sampleSize: Int = 256) {
     if (media.kind == MediaKind.IMAGE) {
+        // v0.3.1（清单 §3.2 P0）：本地图原先直接把原图丢给 Coil——本地作品是
+        // 2000+ 像素的 PNG（几 MB），网格里几十个格子每个都解码全尺寸原图，
+        // 内存翻几十倍、滚动掉帧。云端图有 preview 参数所以没事，
+        // 本地图没这个参数（Coil 对本地 File/Uri 不走服务端缩略）。
+        //
+        // 修法：显式传 size(px)——Coil 会按目标尺寸用 inSampleSize 采样解码，
+        // 内存降一个数量级。这个改动对云端图也无害（云端已被服务端缩过，
+        // 再声明目标尺寸只影响本地解码缓存）。
+        //
+        // 同时补：① 占位色块（此前解码前格子是空的，滚动时"闪一下"）；
+        // ② crossfade 过渡（Coil 默认没有，加载完成会硬切）。
+        val context = LocalContext.current
+        val request = remember(media.url, media.localPath, sampleSize) {
+            ImageRequest.Builder(context)
+                .data(previewUrl(media))
+                .size(sampleSize)
+                .crossfade(true)
+                .build()
+        }
         AsyncImage(
-            model = previewUrl(media),
+            model = request,
             contentDescription = media.filename,
-            modifier = modifier,
+            modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
             contentScale = ContentScale.Crop,
         )
     } else {
