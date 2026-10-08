@@ -68,7 +68,7 @@ class ScheduleBillingTest {
             AiStudioSchedule(scheduleName = "V100", label = "V100 16GB", available = false),
             AiStudioSchedule(scheduleName = "DCU", label = "DCU", available = true, weekRemainingMinutes = 3360.0),
         )
-        val hint = AiStudioBridge.availabilityHint(schedules)
+        val hint = AiStudioSchedules.availabilityHint(schedules)
         assertTrue("应说明按档位独立：$hint", hint.contains("独立"))
         assertTrue("应列出 DCU 的剩余：$hint", hint.contains("3360"))
         assertTrue("应给出行动：$hint", hint.contains("schedule"))
@@ -76,7 +76,7 @@ class ScheduleBillingTest {
 
     @Test
     fun availabilityHintHandlesEmptyList() {
-        val hint = AiStudioBridge.availabilityHint(emptyList())
+        val hint = AiStudioSchedules.availabilityHint(emptyList())
         assertTrue(hint, hint.contains("读不到"))
     }
 }

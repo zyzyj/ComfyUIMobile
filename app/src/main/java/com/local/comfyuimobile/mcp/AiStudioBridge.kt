@@ -3,7 +3,6 @@ package com.local.comfyuimobile.mcp
 import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.data.AppPreferences
 import com.local.comfyuimobile.model.AiStudioAccount
-import com.local.comfyuimobile.model.AiStudioSchedule
 import com.local.comfyuimobile.network.AiStudioClient
 import com.local.comfyuimobile.network.AiStudioException
 import com.local.comfyuimobile.network.AiStudioRiskControl
@@ -239,7 +238,7 @@ internal class AiStudioBridge(
                     // （实测 CPU 48h / DCU 56h / V100 47h / A100 仅 4h）。
                     // 不引导的话，AI 会告诉用户「没算力了」——而其他档位可能还剩几十小时。
                     throw IllegalStateException(
-                        error.message + "\n" + availabilityHint(schedules),
+                        error.message + "\n" + AiStudioSchedules.availabilityHint(schedules),
                         error,
                     )
                 }
@@ -316,16 +315,6 @@ internal class AiStudioBridge(
      * 某一档用完不等于没得玩——把全部档位的剩余摆出来，AI 才会去换可用的档位，
      * 而不是直接告诉用户「没算力了，明天再来」。
      */
-    internal fun availabilityHint(schedules: List<AiStudioSchedule>): String = buildString {
-        appendLine("算力卡按档位独立计算——这一档用完，其他档位可能仍有余额。当前可选：")
-        if (schedules.isEmpty()) {
-            append("（读不到档位列表）")
-        } else {
-            schedules.forEach { appendLine("  " + AiStudioSchedules.describe(it)) }
-        }
-        append("挑一个可用的档位重传 schedule 即可；档位规格与价格不同，不要盲目选最贵的。")
-    }
-
     private fun describe(action: String, error: Throwable): Throwable {
         if (error is CancellationException) throw error
         val code = (error as? AiStudioException)?.errorCode
