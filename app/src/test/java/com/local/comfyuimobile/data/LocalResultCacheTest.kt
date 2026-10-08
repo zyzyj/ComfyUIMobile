@@ -47,12 +47,14 @@ class LocalResultCacheTest {
         val stored = cache.add(media(), temp, ResultSource.MCP)
 
         // 收存点必须在缓存自己的目录里，不能还是那个临时路径。
-        assertTrue("应落在缓存目录内：${stored.localPath}", stored.localPath.contains("result_cache"))
-        assertTrue("收存文件应存在", File(stored.localPath).isFile)
-        assertTrue("内容应一致", File(stored.localPath).readBytes().contentEquals(byteArrayOf(1, 2, 3)))
+        val path = stored.localPath
+        assertTrue("localPath 应已写入：$stored", path != null)
+        assertTrue("应落在缓存目录内：$path", path!!.contains("result_cache"))
+        assertTrue("收存文件应存在", File(path).isFile)
+        assertTrue("内容应一致", File(path).readBytes().contentEquals(byteArrayOf(1, 2, 3)))
         // 复制完成后，即使临时文件被清（模拟 McpFileStore TTL/停服），收存的本体还在。
         temp.delete()
-        assertTrue("临时文件删除后收存件不应受影响", File(stored.localPath).isFile)
+        assertTrue("临时文件删除后收存件不应受影响", File(path).isFile)
     }
 
     @Test
