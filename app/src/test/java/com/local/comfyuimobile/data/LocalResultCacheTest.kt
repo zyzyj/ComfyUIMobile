@@ -36,9 +36,11 @@ class LocalResultCacheTest {
         url = "http://x/$filename",
     )
 
+    private fun cacheIn(dir: File) = LocalResultCache(File(dir, "result_cache"))
+
     @Test
     fun addCopiesFileIntoCacheDirectory() = runBlocking {
-        val cache = LocalResultCache(temporaryFolder.newFolder("base"))
+        val cache = cacheIn(temporaryFolder.newFolder("base"))
         // 模拟 MCP 那条路：一个随时会被清掉的临时文件。
         val temp = temporaryFolder.newFile("mcp-temp.png").apply { writeBytes(byteArrayOf(1, 2, 3)) }
 
@@ -57,7 +59,7 @@ class LocalResultCacheTest {
     fun addWithAlreadyStoredFileDoesNotCopyOntoItself() = runBlocking {
         // App 出图那条路（JobMonitorService）先用 destination() 算好落点再下载，
         // 传进来的 file 已经就是收存点——不能再对它做复制（同一文件原地复制无意义）。
-        val cache = LocalResultCache(temporaryFolder.newFolder("base"))
+        val cache = cacheIn(temporaryFolder.newFolder("base"))
         val media = media()
         val destination = cache.destination(media).apply {
             parentFile?.mkdirs()
@@ -73,14 +75,14 @@ class LocalResultCacheTest {
     @Test
     fun sourceSurvivesReload() = runBlocking {
         val dir = temporaryFolder.newFolder("base")
-        val cache = LocalResultCache(dir)
+        val cache = cacheIn(dir)
         val temp = temporaryFolder.newFile("m.png").apply { writeBytes(byteArrayOf(1)) }
 
         cache.add(media(), temp, ResultSource.MCP)
 
         // 新实例（模拟 App 重启后从索引读回）：source 必须还是 MCP，
         // 否则「仅 AI 生成」筛选在重启后把 AI 的图全部漏掉。
-        val reloaded = LocalResultCache(dir).load()
+        val reloaded = cacheIn(dir).load()
         assertEquals(1, reloaded.size)
         assertEquals(ResultSource.MCP, reloaded.first().source)
     }
@@ -91,7 +93,7 @@ class LocalResultCacheTest {
         // MCP 那路是 v0.2.91 才加的）。不能因此丢记录。
         val dir = temporaryFolder.newFolder("base")
         val img = temporaryFolder.newFile("old.png").apply { writeBytes(byteArrayOf(7)) }
-        val cache = LocalResultCache(dir)
+        val cache = cacheIn(dir)
         val media = media("old.png")
         cache.add(media, img, ResultSource.LOCAL)
         // 手工把索引里的 source 字段删掉，模拟旧版本写下的索引。
