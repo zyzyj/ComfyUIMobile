@@ -101,7 +101,18 @@ class McpServerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP || intent?.action == ACTION_PANIC) {
-            if (intent.action == ACTION_PANIC) panicStop() else stopServer()
+            if (intent.action == ACTION_PANIC) panicStop() else stopServer(StopReason.USER)
+            return START_NOT_STICKY
+        }
+        // v0.3.5（P0-2）：上一轮是「不该运行」而停的，这一轮就别再让系统重建了。
+        // 否则会变成：系统重建 → 立刻自停 → 系统再重建 → …（日志里 30 秒 24 次空转）。
+        val previous = lastStopReason
+        if (previous == StopReason.NOT_ENABLED || previous == StopReason.AUTH || previous == StopReason.START_FAILED) {
+            AppLogger.warn(
+                "MCP 上一轮因「$previous」停止，本轮不再重建（START_NOT_STICKY）。" +
+                    "若这是你没预料到的：请到 App 的 MCP 服务页确认开关状态；" +
+                    "这条日志反复出现说明存在自锁循环，属 bug",
+            )
             return START_NOT_STICKY
         }
         val token = intent?.getStringExtra(EXTRA_TOKEN).orEmpty()
@@ -119,7 +130,7 @@ class McpServerService : Service() {
         // 否则"关了又自己活了"，用户以为开关坏了。
         if (stored?.mcpServerEnabled != true) {
             AppLogger.info("MCP 服务被系统重建，但开关已关闭，不再启动（改为正常停止）")
-            stopServer()
+            stopServer(StopReason.NOT_ENABLED)
             return
         }
         val resolvedToken = token.ifBlank { stored?.mcpServerToken.orEmpty() }
@@ -127,7 +138,7 @@ class McpServerService : Service() {
         val requireAuth = stored?.mcpServerRequireAuth == true
         if (requireAuth && resolvedToken.isBlank()) {
             AppLogger.warn("MCP 前台服务启动被拒：已开启鉴权但没有令牌")
-            stopServer()
+            stopServer(StopReason.AUTH)
             return
         }
         // 用**服务自己的** ComfyClient：baseUrl / Cookie 从偏好里恢复。
@@ -203,10 +214,9 @@ class McpServerService : Service() {
      */
     private suspend fun adoptSubmittedJob(promptId: String) {
         if (promptId.isBlank()) return
-        val preferences = AppPreferences(this)
-        val current = runCatching { preferences.settings.first().submittedJobs }.getOrDefault(emptySet())
-        if (promptId in current) return
-        runCatching { preferences.saveSubmittedJobs(current + promptId) }
+        // v0.3.5（P1-2）：改用原子的 addSubmittedJob（读写同一事务），避免并发
+        // 提交时后写的覆盖先写的导致任务 id 丢失。
+        runCatching { AppPreferences(this).addSubmittedJob(promptId) }
             .onFailure { AppLogger.warn("MCP 任务登记失败：$promptId", it) }
     }
 
@@ -290,21 +300,58 @@ class McpServerService : Service() {
             error.message.orEmpty()
         }
         AppLogger.error("MCP 前台服务启动失败：$message", error)
-        stopServer()
+        stopServer(StopReason.START_FAILED)
     }
 
-    private fun stopServer() {
+    /**
+     * 停止服务的原因（v0.3.5）。
+     *
+     * 为什么要区分：`stopServer` 有 6 个调用点，只有「用户主动关」和「紧急停止」
+     * 才代表用户意愿。把开关写成 false 是**用户的决定**，系统/内部原因不该替他做。
+     * 以前一视同仁地写 false，结果是：开关一旦变成 false（哪怕只是一次误写），
+     * 服务重建 → 读到 false → 自停 → 又写 false → 永不自愈的自锁循环。
+     */
+    private enum class StopReason {
+        /** 用户在设置/MCP 页把开关拨到关。 */
+        USER,
+
+        /** sticky 重建后发现开关已是 false（不该继续运行）。 */
+        NOT_ENABLED,
+
+        /** 开了鉴权但没有 token。 */
+        AUTH,
+
+        /** 启动失败（端口占用、连接失败等）。 */
+        START_FAILED,
+
+        /** 用户点了常驻通知的「紧急停止」。 */
+        PANIC,
+    }
+
+    /**
+     * 上一轮的停止原因（进程内）。用于决定是否让系统继续重建——
+     * 「不该运行」而停的情况若仍返回 START_STICKY，就会变成空转循环。
+     */
+    @Volatile private var lastStopReason: StopReason? = null
+
+    private fun stopServer(reason: StopReason = StopReason.USER) {
         runCatching { manager?.stop() }
         manager = null
         markRunning(false)
-        // 关标记要真落盘，否则进程被杀后重开 App 会以为还开着、又拉起服务。
-        // 放 cleanupScope：onDestroy 会取消 scope，写盘可能被拦在半路。
-        cleanupScope.launch {
-            runCatching { AppPreferences(this@McpServerService).setMcpServerEnabled(false) }
-                .onFailure { AppLogger.warn("保存 MCP 开关失败", it) }
+        // 只有「用户主动关 / 紧急停止」才改开关。其余都是系统或内部行为，
+        // 不代表用户意愿——写成 false 会悄悄关掉用户的开关，并（见上）形成自锁。
+        //
+        // 保留 USER/PANIC 落盘的理由没变：进程被杀后重开 App 若读到 true
+        // 会自动拉起服务，用户明明关了却自己活了。
+        if (reason == StopReason.USER || reason == StopReason.PANIC) {
+            cleanupScope.launch {
+                runCatching { AppPreferences(this@McpServerService).setMcpServerEnabled(false, System.currentTimeMillis()) }
+                    .onFailure { AppLogger.warn("保存 MCP 开关失败", it) }
+            }
         }
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         releaseBackgroundLocks()
+        lastStopReason = reason
         stopSelf()
     }
 
@@ -379,7 +426,7 @@ class McpServerService : Service() {
     private fun panicStop() {
         val target = client
         if (target == null) {
-            stopServer()
+            stopServer(StopReason.PANIC)
             return
         }
         // 先把通知撤掉，用户立刻看到反馈；清队列在后台收尾。
@@ -401,7 +448,7 @@ class McpServerService : Service() {
                 if (cleaned == true) "MCP 紧急停止：远端队列已清理，现在停服务"
                 else "MCP 紧急停止：清理超时，仍停服务（远端队列可能仍有任务）",
             )
-            stopServer()
+            stopServer(StopReason.PANIC)
         }
     }
 

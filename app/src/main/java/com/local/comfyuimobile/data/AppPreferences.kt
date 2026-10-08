@@ -123,6 +123,7 @@ class AppPreferences(private val context: Context) {
         val quickBatchSettings = stringPreferencesKey("quick_batch_settings")
         val quickWorkflowPath = stringPreferencesKey("quick_workflow_path")
         val mcpServerEnabled = booleanPreferencesKey("mcp_server_enabled")
+        val mcpServerEnabledSeq = longPreferencesKey("mcp_server_enabled_seq")
         val mcpServerToken = stringPreferencesKey("mcp_server_token")
         val mcpServerRequireAuth = booleanPreferencesKey("mcp_server_require_auth")
         val mcpServerPort = intPreferencesKey("mcp_server_port")
@@ -188,8 +189,31 @@ class AppPreferences(private val context: Context) {
         context.dataStore.edit { it[Keys.promptHistory] = encodeStrings(history.take(PromptHistory.MAX_SIZE)) }
     }
 
+    /** 整体覆盖已提交任务集合（清理/重建场景用；新增单个 id 请用 [addSubmittedJob]）。 */
     suspend fun saveSubmittedJobs(ids: Set<String>) {
         context.dataStore.edit { it[Keys.submittedJobs] = encodeStrings(ids.toList().takeLast(200)) }
+    }
+
+    /**
+     * 登记一个已提交的任务 id（v0.3.5，P1-2）。
+     *
+     * **读写必须原子**：先 `settings.first()` 读、再 `saveSubmittedJobs` 写两步之间，
+     * 若另有一次提交，后写的集合会覆盖先写的 → **任务 id 丢失** → 该任务不进界面
+     * 跟踪（进度、通知、结果页都少一张）。所以把读和写放进同一个 `edit {}` 事务里。
+     *
+     * @return true 表示这次真的新增了（false = 已存在，重复登记）。
+     */
+    suspend fun addSubmittedJob(promptId: String): Boolean {
+        if (promptId.isBlank()) return false
+        var added = false
+        context.dataStore.edit { preferences ->
+            val current = decodeStrings(preferences[Keys.submittedJobs].orEmpty()).toSet()
+            if (promptId in current) return@edit
+            preferences[Keys.submittedJobs] =
+                encodeStrings((current + promptId).toList().takeLast(200))
+            added = true
+        }
+        return added
     }
 
     suspend fun setAutoSaveResults(enabled: Boolean) {
@@ -303,8 +327,26 @@ class AppPreferences(private val context: Context) {
         }
     }
 
-    suspend fun setMcpServerEnabled(enabled: Boolean) {
-        context.dataStore.edit { it[Keys.mcpServerEnabled] = enabled }
+    /**
+     * 写 MCP 开关（v0.3.5，P0-3）。
+     *
+     * @param seq 写入序号，**必须单调递增**。跨进程（服务有自己的 AppPreferences
+     *   实例）时靠它丢弃过期写入：迟到的旧写入不能覆盖更新的值——否则上一次
+     *   停止的余波会把用户这次的开启盖掉（「打开就关上」）。
+     *
+     * 为什么进程内的内存保护不够：内存态只在同一进程有效，服务与界面是
+     * **同一个进程**但各有各的实例；更重要的是进程重启后内存态就没了。
+     */
+    suspend fun setMcpServerEnabled(enabled: Boolean, seq: Long) {
+        context.dataStore.edit { preferences ->
+            val recorded = preferences[Keys.mcpServerEnabledSeq] ?: 0L
+            if (!McpSwitchGuard.shouldApply(seq, recorded)) {
+                AppLogger.warn("丢弃过期的 MCP 开关写入：seq=$seq < 已记录 $recorded")
+                return@edit
+            }
+            preferences[Keys.mcpServerEnabledSeq] = seq
+            preferences[Keys.mcpServerEnabled] = enabled
+        }
     }
 
     suspend fun setMcpServerToken(token: String) {

@@ -271,6 +271,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** MCP 自动拉起只试一次：偏好每次推送都重试会形成"启了又停"的抖动。 */
     private var mcpAutoStartAttempted = false
+    /**
+     * v0.3.5（P0-3）：MCP 开关的「内存领先磁盘」保护，与 `pendingAccountId` 同款。
+     *
+     * 用户点开启后，落盘是异步的；而服务停止时的落盘也是异步的。两者并发、
+     * 没有顺序保证——**上一次停止的迟到写入会把这次的 true 盖成 false**
+     * （表现就是「打开就关上」）。内存里记下用户的真实意图，恢复偏好时以它为准。
+     */
+    @Volatile private var pendingMcpEnabled: Boolean? = null
     init {
         // v0.2.81：把令牌刷新器接入两个 client。刷新出新 bdToken 后由 applyRefreshedToken
         // 回写账号并落盘（client 不知道账号列表与 DataStore）。
@@ -322,7 +330,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         recentWorkflowPaths = stored.recentWorkflows,
                         saveFolderUri = stored.saveFolderUri.ifBlank { null },
                         serverInput = resolvedServerInput,
-                        mcpServerEnabled = stored.mcpServerEnabled,
+                        // v0.3.5（P0-3）：同 pendingAccountId——用户刚点过的开关
+                        // 以内存为准，挡住服务那边迟到的异步落盘。
+                        mcpServerEnabled = pendingMcpEnabled ?: stored.mcpServerEnabled,
                         mcpServerToken = stored.mcpServerToken,
                         mcpServerRequireAuth = stored.mcpServerRequireAuth,
                         mcpServerConfiguredPort = stored.mcpServerPort,
@@ -363,7 +373,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 //  ③ 没检查 start() 返回值（手动路径会回拨开关并提示）。
                 // 现在与手动路径对齐：不带 token 也启动；真正尝试之后才锁门闩；
                 // 失败回拨开关并给提示。
-                if (stored.mcpServerEnabled && !McpServerService.isRunning() && !mcpAutoStartAttempted) {
+                // v0.3.5：自动拉起的判据同样以内存意图为准（与上面恢复偏好处一致）。
+                // 否则会出现「界面显示开、服务不拉起」或相反。
+                if ((pendingMcpEnabled ?: stored.mcpServerEnabled) && !McpServerService.isRunning() && !mcpAutoStartAttempted) {
                     val started = McpServerService.start(app, stored.mcpServerToken)
                     mcpAutoStartAttempted = true
                     if (!started) {
@@ -375,9 +387,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 notice = "MCP 服务自动启动失败，请确认通知权限已开启后手动打开",
                             )
                         }
-                        // 开关被回拨为 false，要落盘——否则下次进 App 又会试一次。
+                        // 开关被回拨为 false：内存意图也要同步改，否则界面与磁盘
+                        // 会各说一套（pendingMcpEnabled 会一直压住磁盘的 false）。
+                        pendingMcpEnabled = false
+                        // 要落盘——否则下次进 App 又会试一次。
                         viewModelScope.launch {
-                            runCatching { preferences.setMcpServerEnabled(false) }
+                            runCatching { preferences.setMcpServerEnabled(false, System.currentTimeMillis()) }
                                 .onFailure { AppLogger.error("保存 MCP 开关失败", it) }
                         }
                     }
@@ -950,6 +965,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 切到 AiCode"，此时本 App 已进后台，挂 ViewModel 的进程会被回收。
      */
     fun setMcpServerEnabled(enabled: Boolean) {
+        // 先记内存意图：下面两个 launch（ViewModel 的落盘 与 服务停止时的落盘）
+        // 并发且无顺序保证，磁盘值可能在一瞬间被盖回旧值（P0-3）。
+        pendingMcpEnabled = enabled
         if (enabled) {
             val token = _state.value.mcpServerToken.ifBlank {
                 val generated = McpServerManager.newToken()
@@ -974,7 +992,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(mcpServerEnabled = false, mcpServerPort = 0, notice = "MCP 服务已停止") }
         }
         viewModelScope.launch {
-            runCatching { preferences.setMcpServerEnabled(enabled) }
+            runCatching { preferences.setMcpServerEnabled(enabled, System.currentTimeMillis()) }
                 .onFailure { AppLogger.error("保存 MCP 开关失败", it) }
         }
     }
