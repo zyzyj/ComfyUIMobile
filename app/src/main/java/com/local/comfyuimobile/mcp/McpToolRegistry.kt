@@ -672,7 +672,12 @@ internal class McpToolRegistry(
                 "长任务（下载/启动脚本/训练）与临时查询分开用不同终端，" +
                 "否则输出会混在一起、查询还会被阻塞。\n" +
                 "注意：GPU 就绪 ≠ ComfyUI 就绪——start_gpu 之后要先用 terminal_exec 跑启动脚本，" +
-                "再调 wait_for_comfy。启动脚本路径各人环境不同，用 ls / find 先找，不要假定。"
+                "再调 wait_for_comfy。启动脚本路径各人环境不同，用 ls / find 先找，不要假定。\n" +
+                // v0.3.0（清单 P0-2）：App 进程被系统回收后，本地 MCP 服务就没了。
+                // 实测报错形态是 Connection refused（进程死了）或 Unable to resolve host
+                // （Doze 掐网）。此时反复重试只会白烧上下文——要停手并告知用户。
+                "如果工具调用持续失败（Connection refused / Unable to resolve host 等），" +
+                "说明手机上的 MCP 服务已停止或网络被系统掐断：请停止重试，告知用户回到 App 重新开启 MCP 服务。"
 
         /** 所有工具名（供启动期自检命名约束）。 */
         val TOOL_NAMES = listOf(
