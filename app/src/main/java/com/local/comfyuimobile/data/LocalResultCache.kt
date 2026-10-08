@@ -80,7 +80,7 @@ class LocalResultCache internal constructor(private val root: File) {
                 if (destination.isFile) destination else file
             }
             val records = readIndex().filterNot { it.optString("key") == key }.toMutableList()
-            records += encodeRecord(media, stored, key)
+            records += encodeRecord(media, stored, key, source)
             writeIndex(records)
             media.copy(
                 url = fileUri(stored),
@@ -169,7 +169,13 @@ class LocalResultCache internal constructor(private val root: File) {
         }
     }
 
-    private fun encodeRecord(media: ResultMedia, file: File, key: String) = JSONObject()
+    private fun encodeRecord(
+        media: ResultMedia,
+        file: File,
+        key: String,
+        /** 随索引落盘（v0.3.2）：否则重启后全部回退 LOCAL，「仅 AI 生成」筛选失效。 */
+        source: ResultSource,
+    ) = JSONObject()
         .put("key", key)
         .put("kv", ResultKey.VERSION)
         .put("jobId", media.jobId)
