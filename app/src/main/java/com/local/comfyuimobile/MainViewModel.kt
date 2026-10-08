@@ -354,10 +354,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (stored.autoDailyTasks) aiStudioAutoDailyTasks()
                 // v0.2.85：偏好恢复后按开关自动拉起 MCP 前台服务（用户开着开关重启 App 时
                 // 不该要再手动开一次）。只在从未拉起过时试一次，不在每次偏好推送时重启。
+                //
+                // v0.3.1（清单 §1）：这条路径有三处与手动开关（setMcpServerEnabled）
+                // 不一致，都是 v0.2.97 改免鉴权后漏改的（平行路径只改一条）：
+                //  ① 这里卡 `token.isNotBlank()`，而免鉴权模式下 token 可以是空的——
+                //    结果是静默失败：什么都不做、没日志，界面还显示"开"。
+                //  ② 门闩在 token 检查**之前**就置位——即使后来有了 token 也不再试。
+                //  ③ 没检查 start() 返回值（手动路径会回拨开关并提示）。
+                // 现在与手动路径对齐：不带 token 也启动；真正尝试之后才锁门闩；
+                // 失败回拨开关并给提示。
                 if (stored.mcpServerEnabled && !McpServerService.isRunning() && !mcpAutoStartAttempted) {
+                    val started = McpServerService.start(app, stored.mcpServerToken)
                     mcpAutoStartAttempted = true
-                    if (stored.mcpServerToken.isNotBlank()) {
-                        McpServerService.start(app, stored.mcpServerToken)
+                    if (!started) {
+                        AppLogger.warn("MCP 自动拉起失败（通常是通知权限未授予）")
+                        _state.update {
+                            it.copy(
+                                mcpServerEnabled = false,
+                                mcpServerPort = 0,
+                                notice = "MCP 服务自动启动失败，请确认通知权限已开启后手动打开",
+                            )
+                        }
+                        // 开关被回拨为 false，要落盘——否则下次进 App 又会试一次。
+                        viewModelScope.launch {
+                            runCatching { preferences.setMcpServerEnabled(false) }
+                                .onFailure { AppLogger.error("保存 MCP 开关失败", it) }
+                        }
                     }
                 }
                 if (!stored.localDraftsEnabled) {
