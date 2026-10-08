@@ -71,7 +71,9 @@ class LocalResultCache internal constructor(private val root: File) {
             } else {
                 destination.parentFile?.mkdirs()
                 runCatching {
-                    Files.copy(file.inputStream(), destination, StandardCopyOption.REPLACE_EXISTING)
+                    // Files.copy 的目标参数是 Path，不是 File（CI 编译器抓的：
+                    // File 重载在 java.nio.Files 上不存在，Kotlin 不做隐式转换）。
+                    Files.copy(file.inputStream(), destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
                 }.onFailure { error ->
                     AppLogger.error("结果收存失败：${media.filename}", error)
                 }
