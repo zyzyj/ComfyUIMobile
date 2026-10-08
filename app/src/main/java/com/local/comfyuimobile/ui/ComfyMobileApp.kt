@@ -252,6 +252,8 @@ import com.local.comfyuimobile.model.LoraStrengthSlot
 import com.local.comfyuimobile.model.LoraStrengthTarget
 import com.local.comfyuimobile.model.StrengthPhase
 import com.local.comfyuimobile.data.WorkflowBrowser
+import com.local.comfyuimobile.data.WorkflowContentCache
+import com.local.comfyuimobile.data.WorkflowFormat
 import com.local.comfyuimobile.data.WorkflowPath
 import com.local.comfyuimobile.model.AppDestination
 import com.local.comfyuimobile.model.AppUiState
@@ -934,6 +936,7 @@ private fun WorkflowScreen(state: AppUiState, viewModel: MainViewModel, onOpenPa
                 WorkflowRow(
                     entry = entry,
                     selected = state.previewWorkflow?.entry?.path == entry.path,
+                    serverUrl = state.activeServer?.baseUrl.orEmpty(),
                     onClick = {
                         if (entry.isDirectory) {
                             currentFolder = entry.path
@@ -986,12 +989,20 @@ private fun WorkflowScreen(state: AppUiState, viewModel: MainViewModel, onOpenPa
 private fun WorkflowRow(
     entry: WorkflowEntry,
     selected: Boolean,
+    /** 服务地址：用于查本机内容缓存（可为空，空则不标格式）。 */
+    serverUrl: String,
     onClick: () -> Unit,
     onDoubleClick: () -> Unit = {},
     onDelete: (() -> Unit)? = null,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
+    // 格式标记：**只读本机内容缓存**（零请求）。没缓存过就为 null，不显示、不猜。
+    // 用户打开过的工作流自然会有标记（打开时内容会被写入缓存）。
+    val formatLabel = remember(entry.path, serverUrl) {
+        if (entry.isDirectory) null
+        else WorkflowFormat.labelOf(WorkflowContentCache.get(serverUrl, entry.path))
+    }
     var appeared by remember { mutableStateOf(false) }
     // 列表项入场：逐个淡入 + 轻微上浮，避免整屏卡片"啪"地一次出现。
     // 只跑一次（appeared 锁住），滚动回来不会再触发。
@@ -1058,6 +1069,18 @@ private fun WorkflowRow(
                 }
             }
             if (!entry.isDirectory) {
+                // v0.2.99：格式标记（API / 画布）。**只在已有本机内容时显示**
+                // （零请求）；未缓存的不猜、不标，不为此发网络请求。
+                // generate 只吃 API 格式，标出来能避免用户导入后才发现不能用。
+                formatLabel?.let { label ->
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (label == "API") MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
                 Text(
                     formatSize(entry.size),
                     style = MaterialTheme.typography.labelSmall,
@@ -2424,7 +2447,20 @@ private fun ImageGalleryViewer(
     val current = if (resolvedSize != null) {
         rawCurrent.copy(intrinsicWidth = resolvedSize.first, intrinsicHeight = resolvedSize.second)
     } else rawCurrent
-    var chromeVisible by remember { mutableStateOf(true) }
+    // v0.2.99（用户拍板）：**默认纯净全屏**，操作栏与信息靠单击唤出。
+    // 以前默认 true（一进来就带上下两条操作栏），看图被挡住。
+    var chromeVisible by remember { mutableStateOf(false) }
+    /**
+     * 首次进入的“怎么唤出操作栏”提示，几秒后自动消失；单击后立即消失。
+     *
+     * 为什么需要它：默认全屏后，操作栏里那行操作说明**压根看不见**（本身就藏起来了），
+     * 第一次进来会以为保存/分享没了。
+     */
+    var showFirstHint by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(2_800)
+        showFirstHint = false
+    }
     var moreExpanded by remember { mutableStateOf(false) }
     var showInfo by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -2457,7 +2493,11 @@ private fun ImageGalleryViewer(
                     ZoomableGalleryImage(
                         media = items[page],
                         transform = transform,
-                        onTap = { chromeVisible = !chromeVisible },
+                        onTap = {
+                            chromeVisible = !chromeVisible
+                            // 已经会用了，提示不必再停留（它也会挡住底栏操作）。
+                            if (chromeVisible) showFirstHint = false
+                        },
                         onZoom = { chromeVisible = false },
                         onResolved = { size ->
                             val key = items[page].stableKey()
@@ -2489,6 +2529,23 @@ private fun ImageGalleryViewer(
                         }
                     }
                 }
+                // v0.2.99：默认全屏时，操作栏里的提示**根本看不见**（它就藏起来了）。
+                // 所以第一次进入时给一条独立的浮层提示，几秒后自己消失；
+                // 之后不再出现（避免每次看图都挡一下）。
+                if (showFirstHint) {
+                    Surface(
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp),
+                        color = Color.Black.copy(alpha = 0.7f),
+                        shape = RoundedCornerShape(18.dp),
+                    ) {
+                        Text(
+                            "单击唤出操作栏 · 双击缩放 · 左右换图",
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+                        )
+                    }
+                }
                 if (chromeVisible) {
                     Row(
                         Modifier.fillMaxWidth().align(Alignment.TopCenter)
@@ -2506,7 +2563,9 @@ private fun ImageGalleryViewer(
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                             Text(
-                                "单击沉浸 · 双击缩放 · 左右换图",
+                                // v0.2.99：默认全屏后，这行要告诉用户怎么唤出操作栏，
+                                // 否则第一次进来会以为功能没了。
+                                "单击出操作栏 · 双击缩放 · 左右换图",
                                 color = Color.White.copy(alpha = 0.72f),
                                 style = MaterialTheme.typography.labelSmall,
                             )

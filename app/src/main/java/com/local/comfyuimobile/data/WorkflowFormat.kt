@@ -16,6 +16,26 @@ object WorkflowFormat {
     fun isCanvas(root: JSONObject): Boolean = root.optJSONArray("nodes") != null
 
     /**
+     * 给界面的短标记（v0.2.99）。
+     *
+     * @param json 已缓存的工作流正文；null 表示**不知道**（没缓存过）。
+     * @return `"API"` / `"画布"` / null（未知就不标，不要猜）。
+     *
+     * 为什么做成"传已缓存内容"而不是"自己读文件"：界面要标记几十个工作流的格式，
+     * 逐个读就是几十次请求（AI Studio 反代下还要考虑登录态与限流）。
+     * 只标记本机已有内容的那些，零请求；用户打开过的工作流自然会亮出标记。
+     */
+    fun labelOf(json: String?): String? {
+        val raw = json?.takeIf { it.isNotBlank() } ?: return null
+        val root = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+        return when {
+            isApiPrompt(root) -> "API"
+            isCanvas(root) -> "画布"
+            else -> null
+        }
+    }
+
+    /**
      * 顶层是 {节点id: {class_type, inputs, ...}} 的 API prompt 格式判定：
      * 至少一个节点，且每个条目的 class_type 都是非空字符串。
      */
