@@ -486,11 +486,19 @@ internal class ComfyMcpHost(
     override suspend fun terminalInterrupt(terminal: String?): String =
         requireTerminal().interrupt(terminal)
 
-    override suspend fun jobStatus(jobId: String): GenerateOutcome {
+    override suspend fun jobStatus(jobId: String, waitSeconds: Int): GenerateOutcome {
         requireConnected()
-        // 查询时不再长等：已经知道任务在跑了，给一次短窗口即可，避免把 job_status 变成
-        // 第二个会卡住的 generate。
-        return finishOrRunning(jobId, awaitMillis = 0L, startedAt = System.currentTimeMillis())
+        // 查询时不再长等：已经知道任务在跑了，给一次短窗口即可，避免把 job_status
+        // 变成第二个会卡住的 generate。
+        //
+        // v0.3.2（文档 §4.1）：设计意图保留，但补了一个**显式选项**——真机实测 AI
+        // 只能 5 秒一次轮询（一次跑图查询了 14 次），因为没别的办法等终态。
+        // waitSeconds > 0 时同步等到终态/超时，一次调用拿结果；默认 0 保持原行为。
+        return finishOrRunning(
+            jobId,
+            awaitMillis = waitSeconds.coerceIn(0, MAX_WAIT_SECONDS).toLong() * 1000,
+            startedAt = System.currentTimeMillis(),
+        )
     }
 
     /**
@@ -499,8 +507,25 @@ internal class ComfyMcpHost(
      * AI 提交 8 个不同任务时，逐个查要 8 轮往返——与"提交/验收分离"直接冲突。
      * 队列只取一次，多个 job 共用同一份快照，既省请求也保证彼此一致。
      */
-    override suspend fun jobStatusBatch(ids: List<String>): String {
+    override suspend fun jobStatusBatch(ids: List<String>, waitSeconds: Int): String {
         requireConnected()
+        // v0.3.2：waitSeconds > 0 时先等一轮（任一任务到终态就继续），再统一查。
+        // 批量等待的结束条件是「全部到终态或超时」——逐个等会放大耗时。
+        if (waitSeconds > 0) {
+            val deadline = System.currentTimeMillis() + waitSeconds.coerceIn(0, MAX_WAIT_SECONDS) * 1000L
+            while (System.currentTimeMillis() < deadline) {
+                delay(WAIT_POLL_MILLIS)
+                val queue = runCatching { client.queue() }.getOrNull()
+                val allSettled = ids.take(MAX_BATCH_IDS).filter { it.isNotBlank() }.all { id ->
+                    val history = runCatching { client.history(id) }.getOrNull()
+                    val hasOutputs = history?.optJSONObject(id)
+                        ?.optJSONObject("outputs")?.keys()?.hasNext() == true
+                    val verdict = McpJobState.resolve(id, queue, history, hasOutputs)
+                    verdict.phase == McpJobState.Phase.DONE || verdict.phase == McpJobState.Phase.FAILED
+                }
+                if (allSettled) break
+            }
+        }
         val queue = runCatching { client.queue() }.getOrNull()
         val lines = mutableListOf<String>()
         var anySettled = false
@@ -653,6 +678,15 @@ internal class ComfyMcpHost(
 
         /** 批量 job_status 一次最多查多少个 id（防超长参数把请求撑爆）。 */
         const val MAX_BATCH_IDS = 16
+
+        /**
+         * job_status 可同步等待的上限（秒，v0.3.2）。单图 20~60s、批量更久，
+         * 300s 足够覆盖绝大多数场景；再长就该让 AI 用 terminal_read 去看日志了。
+         */
+        const val MAX_WAIT_SECONDS = 300
+
+        /** 批量等待时的轮询间隔。 */
+        const val WAIT_POLL_MILLIS = 2_000L
 
         /** describe_workflow 一次最多列多少字段（太长会挤爆模型上下文）。 */
         const val MAX_DESCRIBE_FIELDS = 40

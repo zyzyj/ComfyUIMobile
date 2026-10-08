@@ -38,11 +38,11 @@ internal interface McpToolHost {
      */
     suspend fun waitForComfy(timeoutSeconds: Int): String
 
-    /** 查一次已有任务的状态。 */
-    suspend fun jobStatus(jobId: String): GenerateOutcome
+    /** 查一次已有任务的状态；`waitSeconds > 0` 时同步等到终态或超时（v0.3.2）。 */
+    suspend fun jobStatus(jobId: String, waitSeconds: Int = 0): GenerateOutcome
 
     /** 批量查询多个任务的状态（v0.2.90）：返回给模型的文本，不走 GenerateOutcome。 */
-    suspend fun jobStatusBatch(ids: List<String>): String
+    suspend fun jobStatusBatch(ids: List<String>, waitSeconds: Int = 0): String
 
     /** 列出一个工作流里可调的参数（v0.2.91）：返回给模型的文本清单。 */
     suspend fun describeWorkflow(workflow: String?, workflowJson: String?): String
@@ -249,9 +249,11 @@ internal class McpToolRegistry(
         )
         TOOL_JOB_STATUS -> {
             val ids = parseJobIds(args)
+            // v0.3.2（文档 §4.1）：可选同步等待。默认 0（立即返回，保持原行为）。
+            val waitSeconds = args.opt("wait_seconds")?.let { args.optInt("wait_seconds") } ?: 0
             // 提交多个任务后逐个查要好多轮往返——支持一次传多个 id。
-            if (ids.size > 1) ToolResult(host.jobStatusBatch(ids))
-            else renderGenerate(host.jobStatus(ids.first()))
+            if (ids.size > 1) ToolResult(host.jobStatusBatch(ids, waitSeconds))
+            else renderGenerate(host.jobStatus(ids.first(), waitSeconds))
         }
         TOOL_WAIT_FOR_COMFY -> ToolResult(
             host.waitForComfy(args.optInt("timeout_seconds", 120).coerceIn(5, 900)),
@@ -355,7 +357,7 @@ internal class McpToolRegistry(
                 .put("elapsed_sec", outcome.elapsedSec)
                 .apply { outcome.position?.let { put("position", it) } }
                 .put("message", outcome.message)
-                .put("hint", "排队中，过几秒再用 job_status 查；排队不影响你先做别的")
+                .put("hint", "排队中（第 ${outcome.position ?: "?"} 位）。可传 wait_seconds（如 60）一次等到终态，不要短间隔反复查")
                 .toString(),
         )
         is GenerateOutcome.Running -> ToolResult(
@@ -364,7 +366,7 @@ internal class McpToolRegistry(
                 .put("job_id", outcome.jobId)
                 .put("elapsed_sec", outcome.elapsedSec)
                 .put("message", outcome.message)
-                .put("hint", "用 job_status 轮询，或直接在 App 里看进度")
+                .put("hint", "运行中。可传 wait_seconds（如 60）一次等到终态，不要短间隔反复查")
                 .toString(),
         )
         is GenerateOutcome.Done -> {
@@ -382,7 +384,7 @@ internal class McpToolRegistry(
                     .put("status", "done")
                     .put("job_id", outcome.jobId)
                     .put("images", arr)
-                    .put("hint", "图片已给出 URL，用 curl 下载到容器本地后用 viewImage 查看（这是唯一该用脚本的场景；调 MCP 请用原生工具）")
+                    .put("hint", "图片已给出 URL，用 curl 下载到容器本地后，用你自己的查看图片工具（如 viewImage）查看。下载图片是该用脚本的唯一场景；调用本服务请始终用原生工具")
                     .toString(),
             )
         }
@@ -476,7 +478,9 @@ internal class McpToolRegistry(
             McpProtocol.toolDescriptor(
                 TOOL_JOB_STATUS,
                 "查询一次生成任务的状态，返回 queued / running / done / failed。" +
-                    "可传 job_id（单个）或 job_ids（数组，最多 16 个）一次查多个；完成时给图片 URL。",
+                    "可传 job_id（单个）或 job_ids（数组，最多 16 个）一次查多个；完成时给图片 URL。" +
+                    "**推荐传 wait_seconds（如 60）一次等到终态**，不要短间隔反复查——" +
+                    "每次调用都占一轮对话，轮询既慢又费。",
                 schema(
                     JSONObject()
                         .put("job_id", JSONObject().put("type", "string").put("description", "generate 返回的 job_id"))
@@ -486,6 +490,11 @@ internal class McpToolRegistry(
                                 .put("type", "array")
                                 .put("description", "一次查多个任务的 id")
                                 .put("items", JSONObject().put("type", "string")),
+                        )
+                        .put(
+                            "wait_seconds",
+                            JSONObject().put("type", "integer")
+                                .put("description", "可选。同步等到终态或超时（上限 300），省去反复轮询；省略则立即返回当前状态"),
                         ),
                 ),
             ),
