@@ -1,3 +1,65 @@
+# v0.3.0 — MCP 息屏保活（修实测断链）
+
+> 依据：《MCP保活与多账号 实施清单》。按清单硬性要求，**P0 单独发版验证**，
+> 多账号批次（P2-1/2/3）暂不做（见文末）。
+
+## 🔴 P0-1 · McpServerService 补 WakeLock / WifiLock
+
+**实测现象**：息屏挂机出 9 张后，AI 开始报
+`Unable to resolve host "aistudio.baidu.com"`。
+
+注意这个报错的**真实含义**：不是 `Connection refused`（那才是进程死了）——
+**进程还活着，但网络被 Doze 掐了**。
+
+**根因**：`McpServerService` 没持 WakeLock/WifiLock，而 App 自己出图那条链
+（`JobMonitorService`）有——**两条平行路径只给一条上了锁**。
+写法照搬 `JobMonitorService:100-108`（`PARTIAL_WAKE_LOCK` +
+`WIFI_MODE_FULL_HIGH_PERF`，`setReferenceCounted(false)`）；
+`WAKE_LOCK` / `CHANGE_WIFI_STATE` 权限早已在 Manifest，无需改。
+
+**持有时机**：服务真正就绪（绑端口、通知就绪）才 acquire；
+`stopServer` 与 `onDestroy` **都** release——后者覆盖"系统回收服务"路径
+（用户主动关走 stopServer；swipe/低内存走 onDestroy），漏了会一直持有到进程死。
+
+## 🔴 P0-2 · instructions 加「服务死了别重试」
+
+工具调用持续失败（Connection refused / Unable to resolve host）说明手机上的
+MCP 服务已停止或网络被系统掐断——此时反复重试既无效又白烧上下文。
+instructions 里明确：停止重试，告知用户回 App 重新开启。
+
+## P3 · 两处小修
+
+- **sticky 重启守卫**：`START_STICKY` 重建时不检查开关，用户已关闭的 MCP 会被
+  系统拉起来（"关了又自己活了"）。现在 `enabled=false` 时正常停止。
+- **通知标题**加「息屏保活已开启」——从通知栏即可确认锁已持有
+  （用通知而不是新状态管道，不新增平行路径）。
+
+## 多账号（P2-1/2/3）：本批核实结论与不做理由
+
+`McpTerminalHost` 的 buffers/opened/aliases/locks 确实**只按终端名索引、不绑账号**
+（清单属实）。但当前 MCP 侧**没有**切账号工具，该问题**现在无法触发**——
+它是 `list_accounts` / `switch_account` 的前置条件。
+
+等 P0 真机验证后再做，且届时必须按清单 P2-2：切账号时同时清四个缓存 +
+关闭全部 socket，否则旧账号的终端会被静默复用、AI 以为在给新账号跑命令
+（不报错，执行到错误环境——与本项目"平行路径"教训同类）。
+
+## 真机验证清单（下一版联调用）
+
+| # | 测试 | 预期 |
+|---|---|---|
+| 1 | 开 MCP → 息屏 30 分钟 → AiCode 调工具 | ✅ 仍通（验本批 P0-1） |
+| 2 | 息屏挂一批图 | ✅ 不再中途 `Unable to resolve host` |
+| 3 | 手动关 MCP 开关 → 等系统回收 | ✅ 不会被拉起（验 sticky 守卫） |
+| 4 | 杀掉服务后让 AI 继续出图 | ✅ AI 停止重试并告知（验 P0-2） |
+| 5 | 通知栏看标题 | ✅ 显示"息屏保活已开启" |
+
+## 本批 CI
+
+0 次失败（改动集中在 Service 生命周期与 instructions 文案）。
+
+---
+
 # v0.2.99 — 双终端引导 + UI 布局/交互修复
 
 > 依据：《优化计划书 v0.2.99 起》批次 1（双终端引导）与批次 2（UI）。
