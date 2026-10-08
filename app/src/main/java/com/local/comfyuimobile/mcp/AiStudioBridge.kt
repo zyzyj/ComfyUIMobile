@@ -3,6 +3,7 @@ package com.local.comfyuimobile.mcp
 import com.local.comfyuimobile.data.AppLogger
 import com.local.comfyuimobile.data.AppPreferences
 import com.local.comfyuimobile.model.AiStudioAccount
+import com.local.comfyuimobile.model.AiStudioSchedule
 import com.local.comfyuimobile.network.AiStudioClient
 import com.local.comfyuimobile.network.AiStudioException
 import com.local.comfyuimobile.network.AiStudioRiskControl
@@ -170,7 +171,20 @@ internal class AiStudioBridge(
         return buildString {
             appendLine("项目 $pid（${project.displayName()}）：")
             appendLine("- 状态：${AiStudioSchedules.describeState(state)}")
+            // v0.3.4（清单 §1.3）：给 AI 看账单它才有动力省。当前档位的剩余与消耗
+            // 速率都在 schedules 里（平台原生数据），不额外算「已运行时长」——
+            // 没有可靠的运行起始时间，编一个数比不给更糟。
+            val current = schedules.firstOrNull {
+                project.runningGpuLabel.isNotBlank() && it.displayName() == project.runningGpuLabel
+            }
             appendLine("- 当前档位：${project.runningGpuLabel.ifBlank { "未运行或读不到" }}")
+            if (current?.costPerHour != null && current.costPerHour > 0) {
+                appendLine("- 消耗速率：${AiStudioSchedules.trim(current.costPerHour)} 算力卡/小时（开着就在扣）")
+                current.weekRemainingMinutes?.let {
+                    appendLine("- 本周剩余：${AiStudioSchedules.trim(it)} 分钟（约 ${AiStudioSchedules.trim(it / 60)} 小时）")
+                }
+                appendLine("- 若这批图跑完了且不再需要，调 stop_gpu 停止计费")
+            }
             appendLine("- 可选档位（共 ${schedules.size} 个）：")
             if (schedules.isEmpty()) {
                 appendLine("  （读不到档位——可能是登录态失效，或该项目当前不可选档）")
@@ -214,12 +228,22 @@ internal class AiStudioBridge(
             ?: runCatching { preferences.settings.first().lastGpuSchedule }.getOrNull()
                 ?.takeIf { it.isNotBlank() }
         // 精确匹配，因为 startProject 把档位名原样透传给平台：传错不报错，直接按
-        // 默认档启动（用户以为选了 A100，账单却是 V100）。匹配失败要早报而不是猜。
+        // 默认档启动（用户以为选了 V100，账单却是 A100）。匹配失败要早报而不是猜。
+        // 记住的档位可能已不可选（余额/下架）：记下「是否回落」，返回里必须明说——
+        // 否则用户以为还是上次的价，实际扣得更多（清单 §1.1：第 8 次平行路径）。
+        var fellBack = false
         val chosen = runCatching { AiStudioSchedules.choose(schedules, remembered) }
             .getOrElse { error ->
-                // 记住的档位可能已不可选（余额/下架）；用过的名字失效时回落列表首项，
-                // 但要在返回里说清，不能静默换档。
-                if (remembered == null) throw error
+                if (remembered == null) {
+                    // AI 显式传了档位但不可选（清单 §1.2）：算力卡是**按档位独立**的
+                    // （实测 CPU 48h / DCU 56h / V100 47h / A100 仅 4h）。
+                    // 不引导的话，AI 会告诉用户「没算力了」——而其他档位可能还剩几十小时。
+                    throw IllegalStateException(
+                        error.message + "\n" + availabilityHint(schedules),
+                        error,
+                    )
+                }
+                fellBack = true
                 AiStudioSchedules.choose(schedules, null)
             }
             ?: throw IllegalStateException(
@@ -231,12 +255,12 @@ internal class AiStudioBridge(
         // 记下本次档位，供下次不传 schedule 时复用。失败不影响启动。
         runCatching { preferences.setLastGpuSchedule(chosen.scheduleName) }
             .onFailure { AppLogger.warn("记录上次档位失败", it) }
-        val note = when {
-            wanted.isNotEmpty() -> ""
-            remembered != null && remembered == chosen.scheduleName ->
-                "（沿用了上次的档位；可在 App 里更改）"
-            else -> ""
-        }
+        val note = AiStudioSchedules.resumeNote(
+            explicitlyAsked = wanted.isNotEmpty(),
+            remembered = remembered,
+            fellBack = fellBack,
+            chosenName = chosen.displayName(),
+        )
         return buildString {
             appendLine("已提交启动请求：项目 $pid，档位 ${chosen.displayName()}（schedule=${chosen.scheduleName}）。$note")
             // P1-3：真机实测 AI 启动 GPU 后直接调 wait_for_comfy，等了 300 秒超时——
@@ -285,6 +309,23 @@ internal class AiStudioBridge(
      * 8407（风控）与 403（令牌/登录）是最常见的两类，且**含义完全不同**：前者等一会
      * 儿重试就好，后者要用户重新登录。混成一句"请求失败"会让 AI 白重试很多轮。
      */
+    /**
+     * 档位可用性一览（清单 §1.2）。
+     *
+     * 算力卡是**按档位独立**的（用户实测：CPU 48h / DCU 56h / V100 47h / A100 仅 4h）。
+     * 某一档用完不等于没得玩——把全部档位的剩余摆出来，AI 才会去换可用的档位，
+     * 而不是直接告诉用户「没算力了，明天再来」。
+     */
+    internal fun availabilityHint(schedules: List<AiStudioSchedule>): String = buildString {
+        appendLine("算力卡按档位独立计算——这一档用完，其他档位可能仍有余额。当前可选：")
+        if (schedules.isEmpty()) {
+            append("（读不到档位列表）")
+        } else {
+            schedules.forEach { appendLine("  " + AiStudioSchedules.describe(it)) }
+        }
+        append("挑一个可用的档位重传 schedule 即可；档位规格与价格不同，不要盲目选最贵的。")
+    }
+
     private fun describe(action: String, error: Throwable): Throwable {
         if (error is CancellationException) throw error
         val code = (error as? AiStudioException)?.errorCode

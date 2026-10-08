@@ -113,4 +113,26 @@ internal object AiStudioSchedules {
         val rounded = Math.round(value * 10.0) / 10.0
         return if (rounded == rounded.toLong().toDouble()) rounded.toLong().toString() else rounded.toString()
     }
+
+    /** 数值展示（去尾零），供 [com.local.comfyuimobile.mcp.AiStudioBridge] 拼账单行用。 */
+    fun trim(value: Double): String = trimNumber(value)
+
+    /**
+     * start_gpu 返回里关于「档位怎么来的」那句话（v0.3.4，清单 §1.1）。纯函数，可单测。
+     *
+     * 关键：**回落必须明说**。用户上次用便宜的档，余额用完后静默回落到列表首项
+     * 可能是更贵的——不说明就是替用户花钱。
+     *
+     * @param explicitlyAsked AI 这次显式传了 schedule（此时不管 remembered 如何都不解释）
+     * @param remembered 上次记录的档位名；null 表示从没用过
+     * @param fellBack 记住的档位不可选、已回落到列表首项
+     */
+    fun resumeNote(explicitlyAsked: Boolean, remembered: String?, fellBack: Boolean, chosenName: String): String = when {
+        explicitlyAsked -> ""
+        fellBack ->
+            "（⚠️ 上次用的档位「$remembered」当前不可选，已改用「$chosenName」；" +
+                "如要指定档位，用 list_gpu_options 查看可用列表后重传 schedule）"
+        remembered != null -> "（沿用了上次的档位；可在 App 里更改）"
+        else -> ""
+    }
 }
