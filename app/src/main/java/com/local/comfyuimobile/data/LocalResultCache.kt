@@ -1,7 +1,6 @@
 package com.local.comfyuimobile.data
 
 import android.content.Context
-import android.net.Uri
 import com.local.comfyuimobile.model.MediaKind
 import com.local.comfyuimobile.model.ResultKey
 import com.local.comfyuimobile.model.ResultMedia
@@ -58,7 +57,7 @@ class LocalResultCache internal constructor(private val root: File) {
             records += encodeRecord(media, file, key)
             writeIndex(records)
             media.copy(
-                url = Uri.fromFile(file).toString(),
+                url = fileUri(file),
                 source = source,
                 localPath = file.absolutePath,
             )
@@ -184,7 +183,7 @@ class LocalResultCache internal constructor(private val root: File) {
             subfolder = item.optString("subfolder"),
             type = item.optString("type"),
             kind = runCatching { MediaKind.valueOf(item.optString("kind")) }.getOrDefault(MediaKind.IMAGE),
-            url = Uri.fromFile(file).toString(),
+            url = fileUri(file),
             createdAt = item.optLong("createdAt", file.lastModified()),
             taskNumber = item.optLong("taskNumber"),
             workflowPath = item.optString("workflowPath"),
@@ -205,6 +204,16 @@ class LocalResultCache internal constructor(private val root: File) {
     private fun key(media: ResultMedia): String = media.stableKey()
 
     private fun safe(value: String): String = value.replace(Regex("[^A-Za-z0-9._-]"), "_").take(80).ifBlank { "item" }
+
+    /**
+     * 本地文件的 file URI。
+     *
+     * 用手写拼接而不是 [android.net.Uri.fromFile]：后者是 Android framework 方法，
+     * 本地 JVM 单测里"not mocked"直接抛异常——落盘逻辑因此无法脱离 Android 测。
+     * 等价性依据：本缓存的落点路径全部经 [safe]（只留 `[A-Za-z0-9._-]`），
+     * 不含需要 URI 编码的字符，`"file://" + path` 与 `Uri.fromFile` 的输出逐字符一致。
+     */
+    private fun fileUri(file: File): String = "file://" + file.absolutePath
 
     companion object {
         private val mutex = Mutex()
