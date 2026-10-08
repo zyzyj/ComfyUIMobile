@@ -53,13 +53,39 @@ class LocalResultCache internal constructor(private val root: File) {
     ): ResultMedia = withContext(Dispatchers.IO) {
         mutex.withLock {
             val key = key(media)
+            // v0.3.2（P0）：把文件**收进本缓存自己的目录**，不再直接登记调用方的路径。
+            //
+            // 为什么要复制：MCP 出图传进来的是 McpFileStore 的**临时文件**，而临时目录
+            // 会被三种方式清空——停服（manager.stop → files.clear）、重启（新实例
+            // sweepOrphans 把登记表外的全删）、TTL（1 小时 / 64 条 / 128MB）。
+            // 原先只登记路径不复制，结果就是用户实测的「AI 出的图一小时后全变灰块，
+            // 刷新后彻底消失」。
+            //
+            // 为什么放进 add 而不是让调用方自己做：App 出图那条路
+            // （JobMonitorService）下载前就用 destination() 算好落点，传进来的
+            // file **就是**收存点；MCP 那条路传的是临时文件。落盘逻辑只写一份
+            // 在这里，两条路不会再出现「一条复制、一条不复制」。
+            val destination = destination(media)
+            val stored = if (file.absolutePath == destination.absolutePath) {
+                file
+            } else {
+                destination.parentFile?.mkdirs()
+                runCatching {
+                    Files.copy(file.inputStream(), destination, StandardCopyOption.REPLACE_EXISTING)
+                }.onFailure { error ->
+                    AppLogger.error("结果收存失败：${media.filename}", error)
+                }
+                // 复制失败时退回原路径（聊胜于无：至少当前会话内还能看），
+                // 但记录的寿命就随那个临时文件了。
+                if (destination.isFile) destination else file
+            }
             val records = readIndex().filterNot { it.optString("key") == key }.toMutableList()
-            records += encodeRecord(media, file, key)
+            records += encodeRecord(media, stored, key)
             writeIndex(records)
             media.copy(
-                url = fileUri(file),
+                url = fileUri(stored),
                 source = source,
-                localPath = file.absolutePath,
+                localPath = stored.absolutePath,
             )
         }
     }
@@ -167,6 +193,10 @@ class LocalResultCache internal constructor(private val root: File) {
         .put("positivePrompt", media.positivePrompt.orEmpty())
         .put("intrinsicWidth", media.intrinsicWidth ?: -1)
         .put("intrinsicHeight", media.intrinsicHeight ?: -1)
+        // v0.3.2（P0）：source 必须落盘。原先只存内存，App 一重启全部回退成
+        // LOCAL——用户开「仅 AI 生成」筛选时 AI 的图全部消失。
+        // 与其他可缺省字段同一待遇：旧索引没有它也能读。
+        .put("source", source.name)
 
     private fun decodeRecord(item: JSONObject): ResultMedia? {
         val file = File(item.optString("localPath"))
@@ -194,7 +224,8 @@ class LocalResultCache internal constructor(private val root: File) {
             positivePrompt = item.optString("positivePrompt").ifBlank { null },
             intrinsicWidth = optionalInt("intrinsicWidth"),
             intrinsicHeight = optionalInt("intrinsicHeight"),
-            source = ResultSource.LOCAL,
+            source = runCatching { ResultSource.valueOf(item.optString("source")) }
+                .getOrDefault(ResultSource.LOCAL),
             localPath = file.absolutePath,
         )
     }
