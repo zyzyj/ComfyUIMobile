@@ -178,6 +178,15 @@ class McpServerService : Service() {
                 kernel = KernelTerminalBackend(kernel),
                 activeProject = { aiStudioBridge.runningProject() },
             ),
+            // v0.3.7：list_my_jobs 读的是**界面任务跟踪用的同一份存储**（不另建一套）。
+            submittedJobsReader = {
+                runCatching { AppPreferences(this).settings.first().submittedJobRecords }
+                    .getOrDefault(emptyList())
+            },
+            submittedJobFetched = { promptId ->
+                runCatching { AppPreferences(this).markSubmittedJobFetched(promptId) }
+                    .onFailure { AppLogger.warn("标记任务已取图失败：$promptId", it) }
+            },
         )
         this.manager = manager
         val bound = manager.start(
@@ -190,15 +199,6 @@ class McpServerService : Service() {
             requestedPort = McpServerManager.resolvePort(stored?.mcpServerPort ?: 0),
             resultSink = { media, file -> resultCache.add(media, file, ResultSource.MCP) },
             onSubmitted = { promptId -> adoptSubmittedJob(promptId) },
-            // v0.3.7：list_my_jobs 读的是**界面任务跟踪用的同一份存储**（不另建一套）。
-            submittedJobsReader = {
-                runCatching { AppPreferences(this).settings.first().submittedJobRecords }
-                    .getOrDefault(emptyList())
-            },
-            submittedJobFetched = { promptId ->
-                runCatching { AppPreferences(this).markSubmittedJobFetched(promptId) }
-                    .onFailure { AppLogger.warn("标记任务已取图失败：$promptId", it) }
-            },
         )
         markRunning(true)
         AppLogger.info("MCP 前台服务已就绪：127.0.0.1:$bound")
