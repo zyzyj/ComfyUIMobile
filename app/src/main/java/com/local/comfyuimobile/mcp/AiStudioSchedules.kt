@@ -99,8 +99,23 @@ internal object AiStudioSchedules {
             ?.takeIf { it > 0 }
             ?.let { " · 本周剩余 ${trimNumber(it)} 分钟" }
             .orEmpty()
-        val usable = if (schedule.available) "" else " · 当前不可用"
+        val usable = unavailableNote(schedule)
         return "${schedule.displayName()} · schedule=${schedule.scheduleName}$cost$quota$usable"
+    }
+
+    /**
+     * 不可用时的说明（v0.3.7）。**分区 2 与 3**——它们的下一步完全不同。
+     *
+     * - 2（无货/下架）：等也没用，该错峰再试；
+     * - 3（算力不足）：换低档位立刻能跑（别坐等）。
+     *
+     * ⚠️ 码语义源自 `AiStudioProtocol` 注释，**未拿真实返回逐字段核实**。
+     */
+    fun unavailableNote(schedule: AiStudioSchedule): String = when {
+        schedule.available -> ""
+        schedule.availabilityCode == 3 -> " · 当前不可用（算力不足——换低档位立刻能跑）"
+        schedule.availabilityCode == 2 -> " · 当前不可用（无货/下架——等也没用，错峰再试）"
+        else -> " · 当前不可用"
     }
 
     /**

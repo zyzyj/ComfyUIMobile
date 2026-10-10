@@ -102,38 +102,29 @@ internal class McpTerminalHost(
      * @param command 要执行的命令
      * @param terminal 终端名；空 = "default"
      * @param timeoutSeconds 等待上限；到点未完成会返回已有输出 + 提示（交互式命令常见）
+     * @param background true = 用 nohup 挂后台，立即返回句柄，不等待（v0.3.7）
      */
-    suspend fun exec(command: String, terminal: String?, timeoutSeconds: Int?): String {
+    suspend fun exec(
+        command: String,
+        terminal: String?,
+        timeoutSeconds: Int?,
+        background: Boolean = false,
+    ): String {
         val cmd = command.trim()
         if (cmd.isBlank()) throw IllegalArgumentException("命令为空。")
 
-        // 先过灾难判定：这是 MCP 侧唯一会拒绝命令的地方（见类注释）。
-        if (TerminalCommandSafety.isCatastrophic(cmd)) {
-            AppLogger.warn("MCP 终端拒绝灾难性命令：${cmd.take(200)}")
-            throw IllegalStateException(
-                "已拒绝这条命令：被判定为灾难性、不可逆操作（如删除关键路径 / 格式化 / 关机）。\n" +
-                    "如需清理，请改用**可逆的隔离删除**：把目标移到回收目录而不是直接删，例如\n" +
-                    "  mkdir -p ~/.trash && mv <目标> ~/.trash/\n" +
-                    "（mv 不在灾难判定里，因为它是可逆的；确认无误后再自己手动清空 ~/.trash。）",
-            )
-        }
-        // §4.6：递归删模型/工作流目录也拦（那要重下几十 GB，比"某次操作失败"疼得多）。
-        // 单独一层而不是加进 isCatastrophic：那个熔断器挡的是"整个实例没了"，
-        // 而 `rm -rf ~/models/loras` 有明确目标是**有意放行**的（用户自己清理）。
-        if (ValuableDataGuard.isValuableDeletion(cmd)) {
-            AppLogger.warn("MCP 终端拒绝删除高价值目录：${cmd.take(200)}")
-            throw IllegalStateException(
-                "已拒绝：这条命令会递归删除模型 / 工作流等高价值目录，那些文件重新获取代价很大。\n" +
-                    "如需清理，请改用**可逆的隔离删除**：\n" +
-                    "  mkdir -p ~/.trash && mv <目标> ~/.trash/\n" +
-                    "确认真的不需要了再自己清空 ~/.trash。（只删无关紧要的临时目录不受此限。）",
-            )
-        }
+        safetyCheck(cmd)
         // 命令留痕（清单 §八）：AI 完全控制终端后，必须能事后追溯"跑过什么"。
         // 只记命令与终端名，不记输出（输出可能很长，且已在缓冲区里）。
-        AppLogger.info("MCP 终端执行[${terminal?.trim().orEmpty().ifBlank { DEFAULT_TERMINAL }}]：${cmd.take(500)}")
+        AppLogger.info(
+            "MCP 终端执行[${terminal?.trim().orEmpty().ifBlank { DEFAULT_TERMINAL }}]" +
+                "${if (background) "（后台）" else ""}：${cmd.take(500)}",
+        )
 
         val requested = terminal?.trim()?.takeIf { it.isNotBlank() } ?: DEFAULT_TERMINAL
+        // 后台路径：用 nohup 挂起后**立即返回句柄，不等标记**——等就失去意义了。
+        if (background) return execBackground(cmd, requested)
+
         val timeout = (timeoutSeconds ?: TerminalShell.DEFAULT_TIMEOUT_SECONDS).coerceIn(1, 600)
 
         // 锁按**请求名**取：同一个名字的两次调用必须串行（它们会去建同一个会话）。
@@ -205,6 +196,78 @@ internal class McpTerminalHost(
     }
 
     // ===== 内部 =====
+
+    /**
+     * 安全检查（v0.3.7 抽出）。
+     *
+     * 抽出的理由：现在有**两条入口**（同步与后台）。以前只有一条时，判定就写在
+     * exec 体内——多一条入口后若新写一处而漏了这里，后台路径就绕过灾难判定
+     * （本项目已犯十次的平行路径）。
+     */
+    private fun safetyCheck(cmd: String) {
+        // 先过灾难判定：这是 MCP 侧唯一会拒绝命令的地方（见类注释）。
+        if (TerminalCommandSafety.isCatastrophic(cmd)) {
+            AppLogger.warn("MCP 终端拒绝灾难性命令：${cmd.take(200)}")
+            throw IllegalStateException(
+                "已拒绝这条命令：被判定为灾难性、不可逆操作（如删除关键路径 / 格式化 / 关机）。\n" +
+                    "如需清理，请改用**可逆的隔离删除**：把目标移到回收目录而不是直接删，例如\n" +
+                    "  mkdir -p ~/.trash && mv <目标> ~/.trash/\n" +
+                    "（mv 不在灾难判定里，因为它是可逆的；确认无误后再自己手动清空 ~/.trash。）",
+            )
+        }
+        // §4.6：递归删模型/工作流目录也拦（那要重下几十 GB，比"某次操作失败"疼得多）。
+        // 单独一层而不是加进 isCatastrophic：那个熔断器挡的是"整个实例没了"，
+        // 而 `rm -rf ~/models/loras` 有明确目标是**有意放行**的（用户自己清理）。
+        if (ValuableDataGuard.isValuableDeletion(cmd)) {
+            AppLogger.warn("MCP 终端拒绝删除高价值目录：${cmd.take(200)}")
+            throw IllegalStateException(
+                "已拒绝：这条命令会递归删除模型 / 工作流等高价值目录，那些文件重新获取代价很大。\n" +
+                    "如需清理，请改用**可逆的隔离删除**：\n" +
+                    "  mkdir -p ~/.trash && mv <目标> ~/.trash/\n" +
+                    "确认真的不需要了再自己清空 ~/.trash。（只删无关紧要的临时目录不受此限。）",
+            )
+        }
+    }
+
+    /**
+     * 后台执行（v0.3.7，P0-2）：发送后立即返回，**不等标记**。
+     *
+     * 真机实证：一条 34 分钟的命令超时后，AiCode 的 agent 循环直接终止整轮任务，
+     * 剩下 39 个任务全废。后台模式是为了不让这种情况发生。
+     */
+    private suspend fun execBackground(cmd: String, requested: String): String {
+        val lock = locks.getOrPut(requested) { Mutex() }
+        return lock.withLock {
+            val target = ensureSession(requested)
+            val name = target.name
+            val logPath = TerminalBackground.logPathFor(name, System.currentTimeMillis())
+            if (!kernel.sendInput(TerminalBackground.wrap(cmd, logPath), target)) {
+                throw IllegalStateException("终端 $name 的会话已断开，请重试（会自动重连）。")
+            }
+            // 只等到 `echo $!` 的结果出来即可（很快），拿 PID 做凭证。
+            val buffer = buffers.getOrPut(name) { StringBuilder() }
+            val startOffset = synchronized(buffer) { buffer.length }
+            val deadline = System.currentTimeMillis() + BACKGROUND_LAUNCH_TIMEOUT_MILLIS
+            var pid: Long? = null
+            while (System.currentTimeMillis() < deadline) {
+                delay(POLL_MILLIS)
+                val snapshot = synchronized(buffer) { buffer.substring(startOffset.coerceAtMost(buffer.length)) }
+                pid = TerminalBackground.parsePid(snapshot)
+                if (pid != null) break
+            }
+            // 日志文件由包装命令自己 mkdir 出来；不再发第二条命令——那会把
+            // "立即返回"变成"多等一轮"，正是要避免的。
+            buildString {
+                appendLine("终端 $name · 已**后台**启动（不等它结束）：$cmd")
+                appendLine("日志：$logPath（用 terminal_read 或 tail -f 看进度）")
+                if (pid != null) {
+                    append("PID：$pid（结束它用 kill $pid）")
+                } else {
+                    append("已发出启动指令，但没拿到 PID（可能命令启动很慢）；看日志确认是否真的跑起来了。")
+                }
+            }
+        }
+    }
 
     /**
      * 取当前运行中的项目（连同账号）。给 wait_for_comfy 自动接入用。
@@ -375,6 +438,14 @@ internal class McpTerminalHost(
         const val DEFAULT_TERMINAL = "default"
         const val DEFAULT_READ_LINES = 200
         const val POLL_MILLIS = 150L
+
+        /**
+         * 后台启动时最多等多久拿 PID（毫秒）。
+         *
+         * 这个等待与命令本身无关——只等 `echo $!` 的结果，所以给 5 秒很宽松；
+         * 拿不到也照样返回（说清拿不到即可），绝不因此把"立即返回"拖长。
+         */
+        const val BACKGROUND_LAUNCH_TIMEOUT_MILLIS = 5_000L
 
         /** 与界面控制台一致的终端尺寸（避免输出错行）。 */
         const val CONSOLE_COLS = 120

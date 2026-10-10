@@ -33,11 +33,57 @@ val DEFAULT_CONSOLE_QUICK_COMMANDS = listOf(
 /** 终端快捷命令条数上限（避免偏好无限膨胀 + 界面刷不完）。 */
 const val MAX_QUICK_COMMANDS = 30
 
+/**
+ * 已提交任务记录的条数上限（v0.3.7）。
+ *
+ * 比原来的 200 宽松：一条记录占 ~60 字节，1000 条约 60KB——偏好文件完全吃得消，
+ * 而保留得太少会让 `list_my_jobs` 在批量出图后查不到早期任务。
+ */
+const val MAX_SUBMITTED_JOBS = 1000
+
+/**
+ * GPU 会话的开始记录（v0.3.7，P0-3）。
+ *
+ * 与项目、档位绑在一起是因为它们**天然是一体的**：换项目/换档位就该重新记。
+ * 只存时刻的话，切到一个之前跑过的项目会把旧时刻当成"现在还在跑"。
+ */
+data class GpuSessionStart(
+    val startedAt: Long,
+    val projectId: String,
+    val scheduleName: String,
+) {
+    companion object {
+        /** 编码：`时刻|项目id|档位`。 */
+        fun encode(startedAt: Long, projectId: String, scheduleName: String): String =
+            "$startedAt|$projectId|$scheduleName"
+
+        /** 解析；格式不对/为空返回 null（不编造）。 */
+        fun parse(raw: String): GpuSessionStart? {
+            if (raw.isBlank()) return null
+            val parts = raw.split('|')
+            if (parts.size < 3) return null
+            val startedAt = parts[0].toLongOrNull()?.takeIf { it > 0 } ?: return null
+            return GpuSessionStart(
+                startedAt = startedAt,
+                projectId = parts[1],
+                scheduleName = parts.drop(2).joinToString("|"),
+            )
+        }
+    }
+}
+
 data class StoredSettings(
     val profiles: List<ServerProfile> = emptyList(),
     val activeServerUrl: String = "",
     val promptHistory: List<String> = emptyList(),
     val submittedJobs: Set<String> = emptySet(),
+    /**
+     * 与 [submittedJobs] **同一份数据**的结构化视图（v0.3.7）。
+     *
+     * 不是第二份存储：两者从同一个偏好键解出。分开只为让现有界面代码
+     * （用 `Set<String>`）零改动，同时 MCP 侧能拿到「提交时刻 / 是否已取图」。
+     */
+    val submittedJobRecords: List<SubmittedJobRecord> = emptyList(),
     val autoSaveResults: Boolean = true,
     /**
      * 是否保存/恢复本地未保存草稿。
@@ -95,6 +141,8 @@ data class StoredSettings(
      * 不传 schedule 时直接用它。
      */
     val lastGpuSchedule: String = "",
+    /** GPU 会话开始记录（v0.3.7，P0-3）；null = 未知。 */
+    val gpuSessionStart: GpuSessionStart? = null,
     // v0.1.90：AI Studio 平台账号（Cookie 即凭证）。
     val aiStudioAccounts: List<AiStudioAccount> = emptyList(),
     val aiStudioActiveId: String = "",
@@ -128,6 +176,15 @@ class AppPreferences(private val context: Context) {
         val mcpServerRequireAuth = booleanPreferencesKey("mcp_server_require_auth")
         val mcpServerPort = intPreferencesKey("mcp_server_port")
         val lastGpuSchedule = stringPreferencesKey("last_gpu_schedule")
+        /**
+         * GPU 会话开始时刻（v0.3.7，P0-3）。
+         *
+         * 格式 `启动毫秒|项目id|档位名`。空 = 未知。
+         *
+         * 为什么不拆三个 key：它们**天然是一体的**（换项目/换档位就该重新记），
+         * 拆开后很容易出现"只更新了其中两个"这种平行路径。
+         */
+        val gpuSessionStart = stringPreferencesKey("gpu_session_start")
         val aiStudioAccounts = stringPreferencesKey("ai_studio_accounts")
         val aiStudioActiveId = stringPreferencesKey("ai_studio_active_id")
     }
@@ -138,6 +195,7 @@ class AppPreferences(private val context: Context) {
             activeServerUrl = preferences[Keys.activeServerUrl].orEmpty(),
             promptHistory = decodeStrings(preferences[Keys.promptHistory].orEmpty()).take(PromptHistory.MAX_SIZE),
             submittedJobs = decodeStrings(preferences[Keys.submittedJobs].orEmpty()).toSet(),
+            submittedJobRecords = McpSubmittedJobs.decode(preferences[Keys.submittedJobs].orEmpty()),
             autoSaveResults = preferences[Keys.autoSaveResults] ?: true,
             localDraftsEnabled = preferences[Keys.localDraftsEnabled] ?: true,
             autoDailyTasks = preferences[Keys.autoDailyTasks] ?: true,
@@ -163,6 +221,7 @@ class AppPreferences(private val context: Context) {
             mcpServerRequireAuth = preferences[Keys.mcpServerRequireAuth] ?: false,
             mcpServerPort = preferences[Keys.mcpServerPort] ?: 0,
             lastGpuSchedule = preferences[Keys.lastGpuSchedule].orEmpty(),
+            gpuSessionStart = GpuSessionStart.parse(preferences[Keys.gpuSessionStart].orEmpty()),
             aiStudioAccounts = decodeAiStudioAccounts(preferences[Keys.aiStudioAccounts].orEmpty()),
             aiStudioActiveId = preferences[Keys.aiStudioActiveId].orEmpty(),
         )
@@ -189,13 +248,25 @@ class AppPreferences(private val context: Context) {
         context.dataStore.edit { it[Keys.promptHistory] = encodeStrings(history.take(PromptHistory.MAX_SIZE)) }
     }
 
-    /** 整体覆盖已提交任务集合（清理/重建场景用；新增单个 id 请用 [addSubmittedJob]）。 */
+    /**
+     * 整体覆盖已提交任务集合（清理/重建场景用；新增单个 id 请用 [addSubmittedJob]）。
+     *
+     * v0.3.7：覆盖时**继承已有记录**的提交时刻与取图标记。界面提交后走的就是这条
+     * 路径（`submittedJobIds + newId`）——若在这里无条件重建记录，MCP 刚记下的
+     * 提交时刻会被抹成 0，`list_my_jobs` 就答不出「什么时候提交的」。
+     */
     suspend fun saveSubmittedJobs(ids: Set<String>) {
-        context.dataStore.edit { it[Keys.submittedJobs] = encodeStrings(ids.toList().takeLast(200)) }
+        context.dataStore.edit { preferences ->
+            val merged = McpSubmittedJobs.mergeForOverwrite(
+                McpSubmittedJobs.decode(preferences[Keys.submittedJobs].orEmpty()),
+                ids,
+            )
+            preferences[Keys.submittedJobs] = McpSubmittedJobs.encode(merged.takeLast(MAX_SUBMITTED_JOBS))
+        }
     }
 
     /**
-     * 登记一个已提交的任务 id（v0.3.5，P1-2）。
+     * 登记一个已提交的任务 id（v0.3.5，P1-2；v0.3.7 加提交时刻）。
      *
      * **读写必须原子**：先 `settings.first()` 读、再 `saveSubmittedJobs` 写两步之间，
      * 若另有一次提交，后写的集合会覆盖先写的 → **任务 id 丢失** → 该任务不进界面
@@ -203,17 +274,33 @@ class AppPreferences(private val context: Context) {
      *
      * @return true 表示这次真的新增了（false = 已存在，重复登记）。
      */
-    suspend fun addSubmittedJob(promptId: String): Boolean {
+    suspend fun addSubmittedJob(promptId: String, submittedAt: Long = System.currentTimeMillis()): Boolean {
         if (promptId.isBlank()) return false
         var added = false
         context.dataStore.edit { preferences ->
-            val current = decodeStrings(preferences[Keys.submittedJobs].orEmpty()).toSet()
-            if (promptId in current) return@edit
-            preferences[Keys.submittedJobs] =
-                encodeStrings((current + promptId).toList().takeLast(200))
+            val current = McpSubmittedJobs.decode(preferences[Keys.submittedJobs].orEmpty())
+            if (current.any { it.jobId == promptId }) return@edit
+            val next = current + SubmittedJobRecord(jobId = promptId, submittedAt = submittedAt)
+            preferences[Keys.submittedJobs] = McpSubmittedJobs.encode(next.takeLast(MAX_SUBMITTED_JOBS))
             added = true
         }
         return added
+    }
+
+    /**
+     * 把某个已提交任务标为「已取图」（v0.3.7）。
+     *
+     * `list_my_jobs` 靠它回答「哪些图还没取」——那是 AI 最需要知道的：没取的
+     * 图看得到状态、已取的就不必再查。只改标记，不动时刻。
+     */
+    suspend fun markSubmittedJobFetched(promptId: String) {
+        if (promptId.isBlank()) return
+        context.dataStore.edit { preferences ->
+            val current = McpSubmittedJobs.decode(preferences[Keys.submittedJobs].orEmpty())
+            if (current.none { it.jobId == promptId && !it.fetched }) return@edit
+            val next = current.map { if (it.jobId == promptId) it.copy(fetched = true) else it }
+            preferences[Keys.submittedJobs] = McpSubmittedJobs.encode(next)
+        }
     }
 
     suspend fun setAutoSaveResults(enabled: Boolean) {
@@ -361,6 +448,22 @@ class AppPreferences(private val context: Context) {
     /** 记下上次启动 GPU 用的档位（v0.2.98）。 */
     suspend fun setLastGpuSchedule(scheduleName: String) {
         context.dataStore.edit { it[Keys.lastGpuSchedule] = scheduleName }
+    }
+
+    /**
+     * 记下一次 GPU 会话的开始（v0.3.7，P0-3）。
+     *
+     * 只在 `startGpu` **成功返回后**调用——那是唯一能确定"真的开始计费"的时刻。
+     * 拿 `updatedAt` 之类的字段推算是不行的（它不是起始时间）。
+     */
+    suspend fun setGpuSessionStart(projectId: String, scheduleName: String, startedAt: Long) {
+        val encoded = GpuSessionStart.encode(startedAt, projectId, scheduleName)
+        context.dataStore.edit { it[Keys.gpuSessionStart] = encoded }
+    }
+
+    /** 清除本次会话记录（停止 GPU 时）。 */
+    suspend fun clearGpuSessionStart() {
+        context.dataStore.edit { it[Keys.gpuSessionStart] = "" }
     }
 
     /** 持久化"是否启用 Bearer 鉴权"（v0.2.97，F1）。 */

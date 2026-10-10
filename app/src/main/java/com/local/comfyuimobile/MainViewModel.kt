@@ -2135,34 +2135,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * 带风控退避的重试包装（v0.2.94）。
+     * 带风控退避的重试包装（v0.2.94；v0.3.7 改为转调 [AiStudioRetry]）。
      *
-     * 只对 8407/8307 这类**可恢复**错误退避重试（见 [AiStudioRiskControl]）；
-     * 参数错误、登录失效等立即抛出——重试它们没意义，只会加刷风控。
-     *
-     * @param onWaiting 每次退避前回调（用于把"N 秒后自动重试"写进界面）
+     * 抽到 `network` 包是因为 MCP 侧要**用同一套**退避：以前 MCP 的 startGpu
+     * 一次都不重试（第 4 条平行路径）。两处各写一套，迟早只改一处。
      */
     private suspend fun <T> withRiskRetry(
         action: String,
         onWaiting: (String) -> Unit = {},
         block: suspend () -> T,
-    ): T {
-        var attempt = 0
-        while (true) {
-            val outcome = runCatching { block() }
-            val error = outcome.exceptionOrNull()
-            if (error == null) return outcome.getOrThrow()
-            if (error is CancellationException) throw error
-            val code = (error as? AiStudioException)?.errorCode
-            val delayMs = AiStudioRiskControl.delayForAttempt(attempt)
-            if (!AiStudioRiskControl.isRetryable(code) || delayMs == null) throw error
-            val message = AiStudioRiskControl.messageFor(code, delayMs)
-            AppLogger.warn("$action 被平台风控拦下（码 $code），${delayMs / 1000} 秒后重试")
-            onWaiting(message)
-            kotlinx.coroutines.delay(delayMs)
-            attempt++
-        }
-    }
+    ): T = AiStudioRetry.withRiskRetry(action, onWaiting, block)
 
     /** 启动项目环境。scheduleName 为空时用平台默认调度。 */
     fun aiStudioStartProject(projectId: String, scheduleName: String) {
@@ -2186,6 +2168,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
                 .onSuccess {
                     AppLogger.info("AI Studio 启动请求已提交：项目=$projectId，算力=${scheduleName.ifBlank { "默认" }}")
+                    // v0.3.7（P0-3）：界面启动也要记会话时刻，否则用户在 App 里开的 GPU
+                    // 在 gpu_status 里查不到"已运行多久"——而 MCP 启动的能查到。
+                    // 同一件事两条路径记录不一致，就是第 11 次平行路径。
+                    viewModelScope.launch {
+                        runCatching { preferences.setGpuSessionStart(projectId, scheduleName, System.currentTimeMillis()) }
+                            .onFailure { AppLogger.warn("记录 GPU 会话开始时刻失败", it) }
+                    }
                     _state.update {
                         it.copy(
                             aiStudio = it.aiStudio.copy(
@@ -2217,6 +2206,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { aiStudio.stopProject(account, projectId) }
                 .onSuccess {
                     AppLogger.info("AI Studio 停止请求已提交：项目=$projectId")
+                    // v0.3.7（P0-3）：清会话记录（只清本项目那条，用户可能同时开着别的）。
+                    viewModelScope.launch {
+                        runCatching {
+                            val current = preferences.settings.first().gpuSessionStart
+                            if (current?.projectId == projectId) preferences.clearGpuSessionStart()
+                        }.onFailure { AppLogger.warn("清除 GPU 会话记录失败", it) }
+                    }
                     // v0.2.46：机器回收后旧的 ide-proxy 就失效了，但它的名字还在
                     // CookieJar 里，`hasProjectCookies()` 仍返回 true——下次启动 GPU
                     // 会跳过预热、带着失效的身份去连 api_serving。停掉就清掉。

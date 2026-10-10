@@ -67,6 +67,9 @@ class AiStudioRiskControlTest {
     fun messageForExhaustedSaysWhatToDo() {
         val exhausted = AiStudioRiskControl.messageFor(8407, null)
         assertTrue("应给出可操作指引", exhausted.contains("人机验证"))
-        assertTrue("不应再提自动重试", !exhausted.contains("自动重试"))
+        // v0.3.7：文案改为"**自动重试多次后仍未通过**"（现在真的会重试，见
+        // AiStudioRetry）。原断言用的是"不含自动重试"，那样会把准确描述当成回归。
+        // 真正要防的是"暗示还会继续等"——等待中的文案才带"N 秒后"。
+        assertTrue("不应暗示还会继续等：$exhausted", !exhausted.contains("秒后"))
     }
 }

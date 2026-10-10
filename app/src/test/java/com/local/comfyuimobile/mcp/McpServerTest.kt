@@ -97,10 +97,17 @@ class McpServerTest {
 
         // 终端（v0.2.97）：同样只满足接口。
         override suspend fun terminalList(): String = "- default（已连）"
-        override suspend fun terminalExec(command: String, terminal: String?, timeoutSeconds: Int?): String =
+        override suspend fun terminalExec(
+            command: String,
+            terminal: String?,
+            timeoutSeconds: Int?,
+            background: Boolean,
+        ): String =
             "终端 ${terminal ?: "default"} · 命令：$command\n退出码 0（成功）"
         override suspend fun terminalRead(terminal: String?, maxLines: Int?): String = "暂无输出"
         override suspend fun terminalInterrupt(terminal: String?): String = "已发送 Ctrl+C"
+
+        override suspend fun listMyJobs(state: String?, limit: Int?): String = "没有已提交的任务记录。"
 
         override suspend fun jobStatus(jobId: String, waitSeconds: Int): GenerateOutcome = GenerateOutcome.Done(
             jobId,

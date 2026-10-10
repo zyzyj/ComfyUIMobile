@@ -43,6 +43,9 @@ class McpTerminalHostTest {
         /** 记录每条**用户命令**发到了哪个终端名（不含 onOpen 的 locale 修正）。 */
         val sentTo = mutableListOf<String>()
 
+        /** 最后一条实际发送的命令原文（含包装）。 */
+        var lastCommand: String = ""
+
         /** 记录 openTerminal 是否要求成为"界面当前终端"。 */
         val asUiCurrentFlags = mutableListOf<Boolean>()
         var createdCount = 0
@@ -96,10 +99,16 @@ class McpTerminalHostTest {
             val target = session ?: return false
             // onOpen 会先发一条 locale 修正（不是用户命令），不计入 sentTo。
             if (!command.contains("LANG=C.UTF-8")) sentTo += target.name
+            lastCommand = command
             val emit = outputs[target.name] ?: return true
             // 真实 PTY 会先回显整行命令，然后才是命令输出。
             emit(command + "\r\n")
             emit("hello\r\n")
+            // 后台包装（nohup … & echo $!）模拟 `echo $!` 那行输出。
+            if (command.contains("nohup")) {
+                emit("4242\r\n")
+                return true
+            }
             // command 形如 `echo hi; echo "__CM_<token>:$?"`，取出标记回一个结果行。
             val mark = command.substringAfter("\"").substringBefore(":")
             emit("$mark:0\r\n")
@@ -159,6 +168,20 @@ class McpTerminalHostTest {
         assertFalse("不该提示改名：$text", text.contains("不存在"))
         assertEquals(0, backend.createdCount)
         assertTrue(text, text.contains("hello"))
+    }
+
+    @Test
+    fun backgroundExecReturnsImmediatelyWithoutWaitingForMarker() = runBlocking {
+        // P0-2 核心：后台模式**不能**等结束标记（等就失去意义了），而且必须告诉 AI
+        // 日志去哪看、PID 多少。
+        val backend = FakeBackend()
+        val text = withTimeout(10_000) {
+            host(backend).exec("python train.py", terminal = "work", timeoutSeconds = 600, background = true)
+        }
+        assertTrue("应说明是后台：$text", text.contains("后台"))
+        assertTrue("应给出日志路径：$text", text.contains(TerminalBackground.LOG_DIR))
+        assertTrue("应给出 PID：$text", text.contains("4242"))
+        assertTrue("必须用 nohup 包装：$text", backend.lastCommand.contains("nohup"))
     }
 
     @Test

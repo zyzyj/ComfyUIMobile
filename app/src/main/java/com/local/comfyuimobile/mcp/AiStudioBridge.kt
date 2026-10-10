@@ -6,6 +6,7 @@ import com.local.comfyuimobile.model.AiStudioAccount
 import com.local.comfyuimobile.network.AiStudioClient
 import com.local.comfyuimobile.network.AiStudioException
 import com.local.comfyuimobile.network.AiStudioRiskControl
+import com.local.comfyuimobile.network.AiStudioRetry
 import com.local.comfyuimobile.network.AiStudioTokenRefresher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
@@ -177,6 +178,24 @@ internal class AiStudioBridge(
                 project.runningGpuLabel.isNotBlank() && it.displayName() == project.runningGpuLabel
             }
             appendLine("- 当前档位：${project.runningGpuLabel.ifBlank { "未运行或读不到" }}")
+            // v0.3.7（P0-3）：真实运行时长。它来自 startGpu 成功时记下的时刻（落盘），
+            // **不是**拿 updatedAt 推算的——那不是起始时间，算出来必然错（见 McpSessionClock）。
+            // 估不出来就不给这一行：编一个账单比不给更糟。
+            val session = runCatching { preferences.settings.first().gpuSessionStart }.getOrNull()
+            // 只要求**项目一致**：同一项目换档位通常意味着重新启动（startGpu 会重写
+            // 记录）；而强行要求档位名一致的话，一旦平台显示名与枚举名对不上，
+            // 时长就永远不显示（宁可显示得保守，也不要静默失效）。
+            val scheduleMatches = session != null && session.projectId == pid
+            val minutes = McpSessionClock.runningMinutes(
+                startedAt = session?.startedAt,
+                scheduleMatches = scheduleMatches,
+                now = System.currentTimeMillis(),
+            )
+            if (McpSessionClock.shouldReport(running, minutes)) {
+                val cost = McpSessionClock.estimateCost(minutes, current?.costPerHour)
+                val costText = cost?.let { "，已消耗约 ${AiStudioSchedules.trim(it)} 算力卡" }.orEmpty()
+                appendLine("- ⏱ 已运行：**$minutes 分钟**${costText}（从 start_gpu 成功那一刻起算）")
+            }
             if (current?.costPerHour != null && current.costPerHour > 0) {
                 appendLine("- 消耗速率：${AiStudioSchedules.trim(current.costPerHour)} 算力卡/小时（开着就在扣）")
                 current.weekRemainingMinutes?.let {
@@ -219,8 +238,12 @@ internal class AiStudioBridge(
         val account = requireAccount()
         val pid = requireProjectId(projectId)
         val wanted = scheduleName?.trim().orEmpty()
-        val schedules = runCatching { client.listSchedules(account, pid) }
-            .getOrElse { error -> throw describe("读取算力档位", error) }
+        // v0.3.7（文档 §3.5）：套用与界面**同一套**风力退避。以前 MCP 侧一次都不
+        // 重试（第 4 条平行路径），而 8407 是可恢复的短暂状态——一次失败就放弃
+        // 会把"等几秒就好"变成"告诉你没算力了"。
+        val schedules = runCatching {
+            AiStudioRetry.withRiskRetry("读取算力档位") { client.listSchedules(account, pid) }
+        }.getOrElse { error -> throw describe("读取算力档位", error) }
         // §4.1：没传档位时用**上次用过的那个**（持久化在偏好里），
         // 而不是直接拿列表第一项——AI 说的"已记住默认档位"只是它的会话记忆。
         val remembered = wanted.takeIf { it.isNotEmpty() }
@@ -249,11 +272,19 @@ internal class AiStudioBridge(
                 "读不到项目 $pid 的可选档位，无法启动（可能是登录态失效或该项目当前不可选档）。" +
                     "请先用 list_gpu_options 确认。",
             )
-        val result = runCatching { client.startProject(account, pid, chosen.scheduleName) }
-            .getOrElse { error -> throw describe("启动项目", error) }
+        val result = runCatching {
+            AiStudioRetry.withRiskRetry("启动环境") {
+                client.startProject(account, pid, chosen.scheduleName)
+            }
+        }.getOrElse { error -> throw describe("启动项目", error) }
         // 记下本次档位，供下次不传 schedule 时复用。失败不影响启动。
         runCatching { preferences.setLastGpuSchedule(chosen.scheduleName) }
             .onFailure { AppLogger.warn("记录上次档位失败", it) }
+        // v0.3.7（P0-3）：记下**真实启动时刻**——gpu_status 靠它算「已运行多久」。
+        // 只在启动成功后写（这里已在 startProject 返回之后）；失败不影响启动。
+        runCatching {
+            preferences.setGpuSessionStart(pid, chosen.scheduleName, System.currentTimeMillis())
+        }.onFailure { AppLogger.warn("记录 GPU 会话开始时刻失败", it) }
         val note = AiStudioSchedules.resumeNote(
             explicitlyAsked = wanted.isNotEmpty(),
             remembered = remembered,
@@ -289,6 +320,12 @@ internal class AiStudioBridge(
         val pid = requireProjectId(projectId)
         val result = runCatching { client.stopProject(account, pid) }
             .getOrElse { error -> throw describe("停止项目", error) }
+        // v0.3.7（P0-3）：停止后清掉会话记录，否则下次查其他项目时会把旧时刻当
+        // "还在跑"。只清本项目的那条——用户可能同时开着别的项目。
+        runCatching {
+            val current = preferences.settings.first().gpuSessionStart
+            if (current.projectId == pid) preferences.clearGpuSessionStart()
+        }.onFailure { AppLogger.warn("清除 GPU 会话记录失败", it) }
         return "已提交停止请求：项目 $pid。$result"
     }
 
@@ -307,13 +344,6 @@ internal class AiStudioBridge(
      *
      * 8407（风控）与 403（令牌/登录）是最常见的两类，且**含义完全不同**：前者等一会
      * 儿重试就好，后者要用户重新登录。混成一句"请求失败"会让 AI 白重试很多轮。
-     */
-    /**
-     * 档位可用性一览（清单 §1.2）。
-     *
-     * 算力卡是**按档位独立**的（用户实测：CPU 48h / DCU 56h / V100 47h / A100 仅 4h）。
-     * 某一档用完不等于没得玩——把全部档位的剩余摆出来，AI 才会去换可用的档位，
-     * 而不是直接告诉用户「没算力了，明天再来」。
      */
     private fun describe(action: String, error: Throwable): Throwable {
         if (error is CancellationException) throw error
