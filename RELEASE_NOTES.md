@@ -1,3 +1,97 @@
+# v0.3.6 — MCP 三个「不做就白烧算力卡」的修复 + start_gpu 退避重试
+
+> 依据《MCP优化_完整方案_v0.3.7》。文档基于 v0.3.1 快照，本地已是 v0.3.5，
+> 所以先逐条核实基线（文档自己也这么要求）——**核实出 5 项早已做掉**：
+> MCP 开关自锁（v0.3.5）、终端抢占（v0.2.98）、结果页缩略图（v0.3.1）、
+> `terminal_read` 是否存在（存在）、MCP 与 App 是否共用 client（共用）。
+>
+> 版本号：文档称 v0.3.7；按本项目「每次 +0.1」的硬规则发为 **v0.3.6**。
+
+## P0-1 · 新增 `list_my_jobs`（丢了 job_id 别再重提）
+
+以前偏好只存一批**裸 job_id**，MCP 侧完全没有找回任务的能力：AI 一旦丢了
+job_id（上下文压缩 / 会话中断 / App 重启）只能重新提交 —— **多出一张图、双倍算力卡**。
+
+- `submitted_jobs` 升级为结构化记录（id / 提交时刻 / 是否已取图），
+  **仍认旧的裸 id 数组**（解析不出来＝把老用户已提交的列表清空，正是要修的病）。
+- 整体覆盖时**继承旧记录的时间与取图标记**——界面提交走的正是这条路径。
+- 保留 `submittedJobs: Set<String>` 视图，界面代码零改动（同一份数据，非第二份存储）。
+- 输出**必须**带「不要用 generate 重新提交」，用单测钉住（那是这个工具存在的意义）。
+
+## P0-2 · `terminal_exec` 支持后台（否则超时会废掉整轮任务）
+
+真机实证：一条 34 分钟的命令超时后，AiCode 的 agent 循环**直接终止整轮任务**，
+剩下 39 个任务一个都没跑。
+
+- 加 `background` 参数：`nohup setsid bash -c '<cmd>' > 日志 2>&1 & echo $!`，
+  立即返回 PID 与日志路径，不等结束标记。
+- 单引号转义是**安全边界**（命令来自模型，不转义会让内层 `$`/反引号被外层 shell 展开）。
+- 安全检查抽成 `safetyCheck` 供两条入口共用——否则后台路径会绕过灾难判定。
+
+## P0-3 · 真实运行时长（烧钱保护）
+
+上一轮拒绝用 `updatedAt` 推算时长（那不是起始时间），理由保留：
+**编一个账单比不给更糟**。所以改成真记时刻：
+
+- `startGpu` 成功后落盘「时刻 + 项目 + 档位」；`gpu_status` 给「已运行 N 分钟 +
+  按费率估算消耗」；**估不出来就不给这一行**（未知返回 null，不编）。
+- 时钟回拨保护、向下取整到分钟。
+- **界面启动路径也记**（`aiStudioStartProject`）：只记 MCP 那条就是第 11 次平行路径 ——
+  用户在 App 里开的 GPU 反而查不到时长。
+
+## §3.5 · MCP 侧 start_gpu 补退避重试 + 状态码 2/3
+
+- `AiStudioRetry`：把 `withRiskRetry` 从 `MainViewModel` 抽到 network 包，界面与
+  MCP 共用同一套退避。以前 MCP `startGpu` 一次都不重试（第 4 条平行路径），
+  而 8407 是可恢复的短暂状态。
+- 状态码 2/3 不再压成同一个 false：区分「算力不足 → 换低档立刻能跑」与
+  「无货/下架 → 等也没用」。⚠️ 语义取自源码注释，**未拿真实接口返回逐字段核实**。
+- 修文案：`messageFor(8407, null)` 原本说「已重试多次仍未通过」而实际一次没试；
+  现在真的会重试，改为「**自动重试多次后仍未通过**」。
+
+## 引导层（§3.6 第 5~8 条）
+
+出图别轮询 / 丢了 job_id 先 `list_my_jobs` / work 目录挂载慢禁止重装 ComfyUI /
+超过 60 秒的命令用 `background` / 算力卡按档位独立、费率不同。
+
+## 测试 +27（新增 6 个测试类）
+
+`McpSubmittedJobsTest`、`McpJobListFormatterTest`、`McpSessionClockTest`、
+`GpuSessionStartTest`、`TerminalBackgroundTest`、`AiStudioRetryTest`，
+并补 `McpTerminalHostTest`（后台路径）、`AiStudioSchedulesTest`（状态码 2/3）、
+`McpServerTest`（新接口方法）、`AiStudioRiskControlTest`（文案）。
+
+## CI 失败 2 次（都是我自己）
+
+1. **6 类编译错误**：漏 import；`internal` 数据类暴露在 public 字段上；
+   MCP 侧参数名改了没同步；nullable 漏 `?.`；**最关键**——我把
+   `submittedJobsReader` / `submittedJobFetched` 加成了 `McpServerManager.start()`
+   的参数，而它们该在 `McpServerManager` 的**构造**上。参数不存在导致 lambda
+   被当普通 lambda，里面的挂起调用报 Suspension functions can only be called
+   within coroutine body（两条报错同源）。
+2. **1 条测试失败**（`backgroundExecReturnsImmediatelyWithoutWaitingForMarker`）：
+   `execBackground` **先 sendInput、后取快照起点**，于是起点落在「回显与 PID 已写入」
+   之后，跳过它们 → 拿不到 PID。同步路径一直是反过来的顺序。这条是**新测试抓出的
+   真 bug**，不是测试写错。
+
+## 未做（如实说明）
+
+- §4.1 UNKNOWN 白等 300 秒早退：本批未做（下批）。
+- §4.2 ComfyUI 崩溃检测：文档自己标「纯推测，勿照做」，不做。
+- §5.3 batch.json：纯引导，未做。
+- **真机未验证**：`list_my_jobs` 找回、后台执行、运行时长、退避重试、状态码 2/3
+  文案——全部只在单测层与编译层验证，需真机走一遍。
+
+## 真机验收建议
+
+1. 让 AI 出一张图后**故意不给 job_id**，它应调 `list_my_jobs` 找回，不重新提交。
+2. 让 AI 跑一个 10 分钟的下载（`background=true`），应立刻返回并继续做别的。
+3. 开 GPU 息屏 1 小时 → 打开 App → `gpu_status` 应显示准确运行时长（误差 < 1 分钟）。
+4. `start_gpu` 撞 8407 → 日志里应看到多次退避尝试。
+5. 某档不可用时，返回里应能区分「算力不足」与「无货」。
+
+---
+
 # v0.3.5 — 修 MCP 开关自锁（打开就关上 + 空转耗电）
 
 > 有真机日志实证：服务启动 4.6 秒后自停，随后 30 秒内 24 次
