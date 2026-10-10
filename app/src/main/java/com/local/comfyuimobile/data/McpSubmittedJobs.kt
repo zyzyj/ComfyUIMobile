@@ -14,8 +14,10 @@ import org.json.JSONObject
  *
  * 补上提交时刻与「是否已取图」后，才能回答「我提交过什么、哪些还没取」——
  * 这正是 `list_my_jobs` 存在的意义。
+ *
+ * 公开（非 internal）是因为它出现在 public 的 `StoredSettings` 字段上。
  */
-internal data class SubmittedJobRecord(
+data class SubmittedJobRecord(
     val jobId: String,
     /** 提交时刻（毫秒）。**0 表示未知**（旧版本写入的数据，或界面提交的）。 */
     val submittedAt: Long = 0L,

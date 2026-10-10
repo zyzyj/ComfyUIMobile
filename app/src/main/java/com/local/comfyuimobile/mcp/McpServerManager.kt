@@ -33,6 +33,13 @@ internal class McpServerManager(
     private val aiStudio: AiStudioBridge? = null,
     /** 终端能力（v0.2.97）。null = 不启用。 */
     private val terminal: McpTerminalHost? = null,
+    /**
+     * 读「已提交任务记录」（v0.3.7）。与 [onSubmitted] 写的是同一份存储。
+     * null = list_my_jobs 不可用（相关调用会返回明确提示）。
+     */
+    private val submittedJobsReader: (suspend () -> List<com.local.comfyuimobile.data.SubmittedJobRecord>)? = null,
+    /** 把任务标为「已取图」（v0.3.7）。null = 不标记。 */
+    private val submittedJobFetched: (suspend (String) -> Unit)? = null,
 ) {
 
     private var server: McpServer? = null
@@ -76,6 +83,8 @@ internal class McpServerManager(
                 onSubmitted = onSubmitted,
                 aiStudio = aiStudio,
                 terminal = terminal,
+                submittedJobsReader = submittedJobsReader,
+                submittedJobFetched = submittedJobFetched,
             ),
             files = store,
         ) { "http://127.0.0.1:$port/files/" }

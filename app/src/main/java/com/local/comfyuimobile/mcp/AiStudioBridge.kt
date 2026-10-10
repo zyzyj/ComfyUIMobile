@@ -185,10 +185,10 @@ internal class AiStudioBridge(
             // 只要求**项目一致**：同一项目换档位通常意味着重新启动（startGpu 会重写
             // 记录）；而强行要求档位名一致的话，一旦平台显示名与枚举名对不上，
             // 时长就永远不显示（宁可显示得保守，也不要静默失效）。
-            val scheduleMatches = session != null && session.projectId == pid
+            val sameTarget = session != null && session.projectId == pid
             val minutes = McpSessionClock.runningMinutes(
                 startedAt = session?.startedAt,
-                scheduleMatches = scheduleMatches,
+                sameTarget = sameTarget,
                 now = System.currentTimeMillis(),
             )
             if (McpSessionClock.shouldReport(running, minutes)) {
@@ -324,7 +324,7 @@ internal class AiStudioBridge(
         // "还在跑"。只清本项目的那条——用户可能同时开着别的项目。
         runCatching {
             val current = preferences.settings.first().gpuSessionStart
-            if (current.projectId == pid) preferences.clearGpuSessionStart()
+            if (current?.projectId == pid) preferences.clearGpuSessionStart()
         }.onFailure { AppLogger.warn("清除 GPU 会话记录失败", it) }
         return "已提交停止请求：项目 $pid。$result"
     }
