@@ -240,13 +240,15 @@ internal class McpTerminalHost(
         return lock.withLock {
             val target = ensureSession(requested)
             val name = target.name
+            // 起点必须在 sendInput **之前**取：输出可能在 sendInput 期间就已写入
+            // （真实 PTY 异步、测试里的假后端是同步），后取会把回显与 PID 一起跳过。
+            // 同步路径也是这个顺序，两处必须一致。
+            val buffer = buffers.getOrPut(name) { StringBuilder() }
+            val startOffset = synchronized(buffer) { buffer.length }
             val logPath = TerminalBackground.logPathFor(name, System.currentTimeMillis())
             if (!kernel.sendInput(TerminalBackground.wrap(cmd, logPath), target)) {
                 throw IllegalStateException("终端 $name 的会话已断开，请重试（会自动重连）。")
             }
-            // 只等到 `echo $!` 的结果出来即可（很快），拿 PID 做凭证。
-            val buffer = buffers.getOrPut(name) { StringBuilder() }
-            val startOffset = synchronized(buffer) { buffer.length }
             val deadline = System.currentTimeMillis() + BACKGROUND_LAUNCH_TIMEOUT_MILLIS
             var pid: Long? = null
             while (System.currentTimeMillis() < deadline) {
