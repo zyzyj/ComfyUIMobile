@@ -18,6 +18,13 @@ class AiStudioSchedulesTest {
     private fun schedule(name: String, label: String = "", available: Boolean = true) =
         AiStudioSchedule(scheduleName = name, label = label, available = available)
 
+    private fun coded(name: String, code: Int) = AiStudioSchedule(
+        scheduleName = name,
+        label = name,
+        available = code == 1,
+        availabilityCode = code,
+    )
+
     private val options = listOf(
         schedule("V100", "V100 16GB"),
         schedule("A100", "A100 40GB"),
@@ -144,5 +151,36 @@ class AiStudioSchedulesTest {
             val text = AiStudioSchedules.describeState(state)
             assertTrue("$state 的文案太短：$text", text.length > 10)
         }
+    }
+
+    // ===== v0.3.7（文档 §3.5）：区分状态码 2 与 3 =====
+
+    @Test
+    fun code3MeansOutOfQuotaAndSuggestsLowerTier() {
+        // 余额用完 → 换便宜的档位立刻能跑。这里必须给出这个动作。
+        val note = AiStudioSchedules.unavailableNote(coded("A100", 3))
+        assertTrue("应提到算力不足：$note", note.contains("算力不足"))
+        assertTrue("应建议换低档位：$note", note.contains("低档"))
+    }
+
+    @Test
+    fun code2MeansUnavailableAndSaysWaitingIsUseless() {
+        // 无货/下架 → 等也没用。若与 3 混成一句，AI 会一直重试一个永远不会好的档。
+        val note = AiStudioSchedules.unavailableNote(coded("V100", 2))
+        assertTrue("应提到无货：$note", note.contains("无货"))
+        assertTrue("应说等也没用：$note", note.contains("等也没用"))
+    }
+
+    @Test
+    fun availableScheduleHasNoNote() {
+        assertEquals("", AiStudioSchedules.unavailableNote(coded("V100", 1)))
+    }
+
+    @Test
+    fun unknownCodeStillSaysUnavailable() {
+        // 拿不到原码也要说"不可用"，只是不细分原因（不编）。
+        val note = AiStudioSchedules.unavailableNote(schedule("X", available = false))
+        assertTrue(note.contains("不可用"))
+        assertTrue("不该编造原因：$note", !note.contains("算力不足") && !note.contains("无货"))
     }
 }

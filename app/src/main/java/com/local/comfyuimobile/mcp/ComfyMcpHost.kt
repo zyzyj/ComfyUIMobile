@@ -65,6 +65,15 @@ internal class ComfyMcpHost(
      * 与依赖（WebSocket 长连、每终端一把锁）自成一块，混在一起更难测。
      */
     private val terminal: McpTerminalHost? = null,
+    /**
+     * 读「已提交任务记录」（v0.3.7）。
+     *
+     * 与 [onSubmitted] 写的是**同一份存储**（界面任务跟踪也在用）——分成两份
+     * 必然出现「界面里有、AI 查不到」的平行路径。null = 不提供（单测）。
+     */
+    private val submittedJobsReader: (suspend () -> List<com.local.comfyuimobile.data.SubmittedJobRecord>)? = null,
+    /** 把任务标为「已取图」（v0.3.7）。null = 不提供（单测）。 */
+    private val submittedJobFetched: (suspend (String) -> Unit)? = null,
 ) : McpToolHost {
 
     override suspend fun listModels(type: String?): String {
@@ -477,8 +486,12 @@ internal class ComfyMcpHost(
 
     override suspend fun terminalList(): String = requireTerminal().list()
 
-    override suspend fun terminalExec(command: String, terminal: String?, timeoutSeconds: Int?): String =
-        requireTerminal().exec(command, terminal, timeoutSeconds)
+    override suspend fun terminalExec(
+        command: String,
+        terminal: String?,
+        timeoutSeconds: Int?,
+        background: Boolean,
+    ): String = requireTerminal().exec(command, terminal, timeoutSeconds, background)
 
     override suspend fun terminalRead(terminal: String?, maxLines: Int?): String =
         requireTerminal().read(terminal, maxLines)
@@ -499,6 +512,40 @@ internal class ComfyMcpHost(
             awaitMillis = waitSeconds.coerceIn(0, MAX_WAIT_SECONDS).toLong() * 1000,
             startedAt = System.currentTimeMillis(),
         )
+    }
+
+    /**
+     * 列出本会话提交过的任务（v0.3.7）。
+     *
+     * 状态**实时查**而不是落盘：落盘的状态一过期就是错的，而 AI 拿错状态比拿不到
+     * 状态更糟（它会据此决定不重提）。代价是每条要一次请求——记录不多，且只有
+     * AI 主动调时才发生。
+     */
+    override suspend fun listMyJobs(state: String?, limit: Int?): String {
+        requireConnected()
+        val reader = submittedJobsReader
+            ?: throw IllegalStateException("任务记录未启用（当前运行环境不支持）。")
+        val records = runCatching { reader() }.getOrElse { error ->
+            throw IllegalStateException("读取已提交任务失败：${error.message}", error)
+        }
+        // 全量拉记录后按时间倒序（新的在前），再查状态、再过筛选。
+        val ordered = records.sortedByDescending { it.submittedAt }
+        val wanted = state?.trim()?.lowercase()?.takeIf { it.isNotBlank() && it != "all" }
+        val max = (limit ?: DEFAULT_JOB_LIST_LIMIT).coerceIn(1, McpJobListFormatter.MAX_SHOWN)
+
+        val queue = runCatching { client.queue() }.getOrNull()
+        val entries = mutableListOf<McpJobListFormatter.Entry>()
+        for (record in ordered) {
+            if (entries.size >= max) break
+            val history = runCatching { client.history(record.jobId) }.getOrNull()
+            val hasOutputs = history?.optJSONObject(record.jobId)
+                ?.optJSONObject("outputs")?.keys()?.hasNext() == true
+            val verdict = McpJobState.resolve(record.jobId, queue, history, hasOutputs)
+            val label = verdict.phase.label
+            if (wanted != null && !label.equals(wanted, ignoreCase = true)) continue
+            entries += McpJobListFormatter.Entry(record = record, stateLabel = label, hasImages = hasOutputs)
+        }
+        return McpJobListFormatter.render(entries, totalShown = entries.size)
     }
 
     /**
@@ -649,6 +696,14 @@ internal class ComfyMcpHost(
                 file = target,
             )
         }
+        // v0.3.7：真取到图才标「已取图」——list_my_jobs 靠它把"还没取的"挑出来。
+        // 放在这里而不是调用点：collectMedia 是**所有**取图路径的唯一出口。
+        if (result.isNotEmpty()) {
+            submittedJobFetched?.let { mark ->
+                runCatching { mark(promptId) }
+                    .onFailure { AppLogger.warn("标记任务已取图失败：$promptId", it) }
+            }
+        }
         return result
     }
 
@@ -690,6 +745,9 @@ internal class ComfyMcpHost(
 
         /** describe_workflow 一次最多列多少字段（太长会挤爆模型上下文）。 */
         const val MAX_DESCRIBE_FIELDS = 40
+
+        /** list_my_jobs 的默认返回条数（上限见 McpJobListFormatter.MAX_SHOWN）。 */
+        const val DEFAULT_JOB_LIST_LIMIT = 20
 
         /** 本 App 的 MCP 通道提交任务时写到 extra_data 的来源标记。 */
         const val ORIGIN_MCP = "mcp"

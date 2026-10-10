@@ -260,6 +260,7 @@ object AiStudioProtocol {
                         costPerHour = (item.opt("costPerHour") as? Number)?.toDouble(),
                         weekQuotaType = firstString(item, listOf("weekQuotaType")),
                         available = parseScheduleAvailable(item),
+                        availabilityCode = parseScheduleAvailableCode(item),
                     ),
                 )
             }
@@ -281,19 +282,27 @@ object AiStudioProtocol {
         "resourceDevGpuSchedule" to "二次开发 V100 版",
     )
 
-    /** available 字段：1=可、2=不可、3=算力不足。 */
-    private fun parseScheduleAvailable(item: JSONObject): Boolean {
+    /** available 字段：1=可、2=不可、3=算力不足（v0.3.7 保留原码）。 */
+    private fun parseScheduleAvailableCode(item: JSONObject): Int? {
         listOf("available", "enable", "enabled", "canUse").forEach { key ->
             if (item.has(key)) {
                 val value = item.opt(key)
-                if (value is Boolean) return value
-                if (value is Number) return value.toInt() == 1
-                if (value is String) return value == "1" || value.equals("true", true)
+                if (value is Boolean) return if (value) 1 else 2
+                if (value is Number) return value.toInt()
+                if (value is String) {
+                    value.toIntOrNull()?.let { return it }
+                    if (value.equals("true", true)) return 1
+                    if (value.equals("false", true)) return 2
+                }
             }
         }
         // 没有可用性字段时不要禁用——宁可让用户点了收到服务器报错。
-        return true
+        return null
     }
+
+    private fun parseScheduleAvailable(item: JSONObject): Boolean =
+        // 未知（null）视为可用；只有明确非 1 才算不可用。
+        parseScheduleAvailableCode(item)?.let { it == 1 } ?: true
 
     /** 启动环境的表单体。tk/ds 来自通行码流程，免费环境可为空。 */
     fun runProjectBody(

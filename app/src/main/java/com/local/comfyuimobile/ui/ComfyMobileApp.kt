@@ -4339,6 +4339,7 @@ private fun McpScreen(
                     "validate_workflow" -> "提交前预检工作流，错误在本地拦下（省算力卡）"
                     "generate" -> "用工作流出图（结果同时存入结果页，标为 AI 生成）"
                     "job_status" -> "查询任务进度（queued/running/done/failed，可一次查多个）"
+                    "list_my_jobs" -> "列出已提交过的任务（丢 job_id 时用它找回，别重新提交）"
                     "wait_for_comfy" -> "等 ComfyUI 就绪，并自动接上它的地址与登录态"
                     "cancel_jobs" -> "紧急刹车：中止任务或清空队列"
                     "list_projects" -> "列出 AI Studio 项目（拿到 projectId）"

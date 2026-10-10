@@ -44,6 +44,17 @@ internal interface McpToolHost {
     /** 批量查询多个任务的状态（v0.2.90）：返回给模型的文本，不走 GenerateOutcome。 */
     suspend fun jobStatusBatch(ids: List<String>, waitSeconds: Int = 0): String
 
+    /**
+     * 列出本会话近期提交过的任务（v0.3.7）。
+     *
+     * 存在的唯一理由：AI 丢了 job_id 时**不要重新提交**（那会多出一张图、双倍
+     * 烧算力卡）。所以这条必须从**界面任务跟踪用的同一份存储**读，不另建一套。
+     *
+     * @param state 过滤：all / running / done / failed
+     * @param limit 最多返回多少条
+     */
+    suspend fun listMyJobs(state: String?, limit: Int?): String
+
     /** 列出一个工作流里可调的参数（v0.2.91）：返回给模型的文本清单。 */
     suspend fun describeWorkflow(workflow: String?, workflowJson: String?): String
 
@@ -82,8 +93,13 @@ internal interface McpToolHost {
     /** 列出现有终端。 */
     suspend fun terminalList(): String
 
-    /** 执行一条命令并等它结束（超时返回已有输出 + 提示，不永久挂）。 */
-    suspend fun terminalExec(command: String, terminal: String?, timeoutSeconds: Int?): String
+    /** 执行一条命令并等它结束（超时返回已有输出 + 提示，不永久挂）。background=true 时不等（v0.3.7）。 */
+    suspend fun terminalExec(
+        command: String,
+        terminal: String?,
+        timeoutSeconds: Int?,
+        background: Boolean = false,
+    ): String
 
     /** 读某终端当前累积的输出（不清空，用于 tail 日志）。 */
     suspend fun terminalRead(terminal: String?, maxLines: Int?): String
@@ -258,6 +274,12 @@ internal class McpToolRegistry(
         TOOL_WAIT_FOR_COMFY -> ToolResult(
             host.waitForComfy(args.optInt("timeout_seconds", 120).coerceIn(5, 900)),
         )
+        TOOL_LIST_MY_JOBS -> ToolResult(
+            host.listMyJobs(
+                args.optString("state").trim().takeIf { it.isNotBlank() },
+                args.opt("limit")?.let { args.optInt("limit") },
+            ),
+        )
         TOOL_CANCEL -> ToolResult(
             host.cancelJobs(
                 args.optString("job_id").trim().takeIf { it.isNotBlank() },
@@ -280,6 +302,7 @@ internal class McpToolRegistry(
                 command = args.optString("command"),
                 terminal = args.optString("terminal").trim().takeIf { it.isNotBlank() },
                 timeoutSeconds = args.opt("timeout")?.let { args.optInt("timeout") },
+                background = args.optBoolean("background", false),
             ),
         )
         TOOL_TERMINAL_READ -> ToolResult(
@@ -501,6 +524,22 @@ internal class McpToolRegistry(
         )
         put(
             McpProtocol.toolDescriptor(
+                TOOL_LIST_MY_JOBS,
+                "列出本 MCP 会话近期提交过的出图任务（含提交时间、当前状态、是否已取图）。" +
+                    "**丢了 job_id、或不确定某批任务跑到哪时，先调这个——不要重新提交**：" +
+                    "重新 generate 会再出一张图、再烧一次算力卡。" +
+                    "状态是实时查的，不用再自己拼 job_status 逐个查。",
+                schema(
+                    JSONObject()
+                        .put("state", JSONObject().put("type", "string")
+                            .put("enum", JSONArray().put("all").put("running").put("done").put("failed"))
+                            .put("description", "按状态筛选，默认 all"))
+                        .put("limit", JSONObject().put("type", "integer").put("description", "最多返回多少条，默认 20，最大 50")),
+                ),
+            ),
+        )
+        put(
+            McpProtocol.toolDescriptor(
                 TOOL_WAIT_FOR_COMFY,
                 "等待 ComfyUI 就绪（轮询探测 8188）。启动云端环境/跑完启动脚本后调用，" +
                     "别用重复调 list_models 来试探。超时会返回明确的结论。",
@@ -582,15 +621,23 @@ internal class McpToolRegistry(
         put(
             McpProtocol.toolDescriptor(
                 TOOL_TERMINAL_EXEC,
-                "在云端终端执行一条命令，等它跑完并返回输出 + 退出码（服务端用唯一标记判定“跑完”）。" +
-                    "超时不会永久挂：会返回已有输出并提示可能是交互式命令。" +
+                "在云端终端执行一条命令。默认**同步**：等它跑完并返回输出 + 退出码" +
+                    "（服务端用唯一标记判定“跑完”），上限 600 秒。" +
+                    "**预计超过 60 秒的命令，一定传 background=true**：它会用 nohup 挂到后台、" +
+                    "立即返回 PID 与日志路径，你用 terminal_read 看进度。" +
+                    "原因很重要：同步调用超时会让你自己那轮任务被中断，你之前提交的批量任务都不会再执行。" +
                     "找启动脚本不要硬编码路径，先自己探查（如 ls / find）。" +
                     "安全：只有灾难性、不可逆操作会被拒绝（删关键路径 / 格式化 / 关机）。",
                 schema(
                     JSONObject()
                         .put("command", JSONObject().put("type", "string").put("description", "要执行的命令"))
                         .put("terminal", JSONObject().put("type", "string").put("description", "终端名，默认 default。长时间跑的服务（如 ComfyUI）建议单独用一个终端"))
-                        .put("timeout", JSONObject().put("type", "integer").put("description", "等待上限秒数，默认 30（1-600）")),
+                        .put("timeout", JSONObject().put("type", "integer").put("description", "同步等待上限秒数，默认 30（1-600）；background=true 时忽略"))
+                        .put(
+                            "background",
+                            JSONObject().put("type", "boolean")
+                                .put("description", "true = 用 nohup 挂后台，立即返回 PID 与日志路径，不等待。超过 60 秒的命令必传"),
+                        ),
                     required = JSONArray().put("command"),
                 ),
             ),
@@ -636,6 +683,7 @@ internal class McpToolRegistry(
         const val TOOL_LIST_WORKFLOWS = "list_workflows"
         const val TOOL_GENERATE = "generate"
         const val TOOL_JOB_STATUS = "job_status"
+        const val TOOL_LIST_MY_JOBS = "list_my_jobs"
         const val TOOL_WAIT_FOR_COMFY = "wait_for_comfy"
         const val TOOL_CANCEL = "cancel_jobs"
         const val TOOL_DESCRIBE_WORKFLOW = "describe_workflow"
@@ -686,7 +734,26 @@ internal class McpToolRegistry(
                 // 实测报错形态是 Connection refused（进程死了）或 Unable to resolve host
                 // （Doze 掐网）。此时反复重试只会白烧上下文——要停手并告知用户。
                 "如果工具调用持续失败（Connection refused / Unable to resolve host 等），" +
-                "说明手机上的 MCP 服务已停止或网络被系统掐断：请停止重试，告知用户回到 App 重新开启 MCP 服务。"
+                "说明手机上的 MCP 服务已停止或网络被系统掐断：请停止重试，告知用户回到 App 重新开启 MCP 服务。\n" +
+                // v0.3.7（文档 §3.6 第 5 条）：引导要盖住"丢了 job_id 怎么办"。
+                "出图流程：提交后用 job_status(wait_seconds=150) 一次等到终态，不要短间隔反复查；" +
+                "若仍 running 就再等一次，不要退回轮询。**丢了 job_id 先调 list_my_jobs**，不要重新提交" +
+                "（重提会再出一张图、再烧一次算力卡）。\n" +
+                // v0.3.7（文档 §3.6 第 6 条 + 一）：34.7GB 项目挂载要十分钟级，
+                // 而 AI 看到"目录空"的本能是重装 ComfyUI——那要重下几个 GB 模型。
+                "work 目录挂载需要时间（大项目可能 10-30 分钟）。ls 看不到文件不等于丢了，" +
+                "**禁止**因此重装 ComfyUI（会白烧算力卡）；先跑 du -sh 确认（占用大=还在挂载，占用≈0=真丢了）。" +
+                "挂载/同步未完成前不要停止项目。\n" +
+                // v0.3.7（文档 §3.6 第 7 条）：真机实证，一次 terminal_exec 超时会
+                // 让 AiCode 直接终止整轮任务，剩下 39 个任务一个都没跑。
+                "预计超过 60 秒的命令用 terminal_exec(background=true) 挂后台，再用 terminal_read 看进度；" +
+                "不要用带 sleep 轮询的长脚本——同步调用超时会让你自己那轮任务被中断，" +
+                "你之前提交的批量任务都不会再执行。\n" +
+                // v0.3.7（文档 §3.6 第 8 条）：V100 16G 与 32G 共用同一个周配额池，
+                // 一直用 32G 等于两倍速度烧池子——这就是用户"32G 开不了"的根源。
+                "算力卡是按档位独立的池，各档费率不同（高配档贵得多）。某档显示不可用时，" +
+                "先看 list_gpu_options 里其他档位——很可能是这档费率太高把池子烧完了，" +
+                "换低档立刻能跑；list_my_jobs / gpu_status 也能告诉你哪些事还在跑。"
 
         /** 所有工具名（供启动期自检命名约束）。 */
         val TOOL_NAMES = listOf(
@@ -696,6 +763,7 @@ internal class McpToolRegistry(
             TOOL_VALIDATE_WORKFLOW,
             TOOL_GENERATE,
             TOOL_JOB_STATUS,
+            TOOL_LIST_MY_JOBS,
             TOOL_WAIT_FOR_COMFY,
             TOOL_CANCEL,
             TOOL_LIST_PROJECTS,

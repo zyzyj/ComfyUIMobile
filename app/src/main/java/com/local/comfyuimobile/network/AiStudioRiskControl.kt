@@ -48,7 +48,7 @@ object AiStudioRiskControl {
             "平台判定账号需安全验证（错误码 8407），${nextDelayMillis / 1000} 秒后自动重试；" +
                 "若一直失败，请到浏览器打开 AI Studio 完成一次人机验证"
         errorCode == CODE_RISK ->
-            "平台判定账号需安全验证（错误码 8407），已重试多次仍未通过。" +
+            "平台判定账号需安全验证（错误码 8407），**自动重试多次后仍未通过**。" +
                 "请到浏览器打开 AI Studio 完成一次人机验证后，点「重试读取档位」"
         errorCode == CODE_CAPTCHA && nextDelayMillis != null ->
             "平台要求图形验证码，${nextDelayMillis / 1000} 秒后自动重试"

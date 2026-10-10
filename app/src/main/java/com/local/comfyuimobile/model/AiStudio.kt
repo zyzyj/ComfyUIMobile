@@ -83,6 +83,18 @@ data class AiStudioSchedule(
     val weekRemainingMinutes: Double? = null,
     /** 该档是否可用/有余额。未知为 true，不要因为解析不到就禁用。 */
     val available: Boolean = true,
+    /**
+     * 平台给的原始可用性码（v0.3.7）。**1=可、2=不可用/无货、3=算力不足**。
+     *
+     * 为什么要留原值：把 2 与 3 都压成 `available=false`，AI 只看到"当前不可用"，
+     * **分不清是余额用完还是下架**——而两者的下一步完全不同：
+     * 余额用完 → 换便宜的档位立刻能跑（DCU 只有 V100 32G 的三成价）；
+     * 下架/无货 → 等也没用，该错峰再试。
+     *
+     * ⚠️ 语义来自源码注释（`AiStudioProtocol.parseScheduleAvailable`），
+     * **未拿到真实接口返回逐字段核实**（真机验证需账号与有效项目）。
+     */
+    val availabilityCode: Int? = null,
 ) {
     fun displayName(): String = label.ifBlank { gpuType.ifBlank { scheduleName } }
 }
