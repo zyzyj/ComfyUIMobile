@@ -2,7 +2,10 @@
 
 ComfyUI Mobile 是一个连接自有 ComfyUI 服务器的原生 Android 客户端。它把 ComfyUI 工作流转换成手机友好的纵向参数表单，不在主界面显示节点画布。
 
-> 当前版本：v0.1.86。首要兼容 ComfyUI 0.30.1、ComfyUI Frontend 1.47.12。
+> 当前版本：v0.3.6。首要兼容 ComfyUI 0.30.1、ComfyUI Frontend 1.47.12。
+>
+> ⚠️ **这是开发中的项目，不是成熟产品的正式发布。**版本号（每版 +0.1）推进快，
+> 功能未经充分真机验证，接口与行为都可能随时变动；Release 里的包请勿当作稳定版对待。
 >
 > 本仓库是 [7116-byte/ComfyUIMobile](https://github.com/7116-byte/ComfyUIMobile) 的 fork，在上游基础上额外做了云端反向代理平台（百度 AI Studio、CloudStudio 等）的适配。完整版本记录见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
 
