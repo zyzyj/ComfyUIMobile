@@ -73,6 +73,7 @@ class ThumbnailerTest {
             subfolder = "",
             type = "output",
             kind = com.local.comfyuimobile.model.MediaKind.IMAGE,
+            url = "http://x/a.png",
         )
         val original = cache.destination(media)
         val thumb = cache.thumbnailDestination(media)
