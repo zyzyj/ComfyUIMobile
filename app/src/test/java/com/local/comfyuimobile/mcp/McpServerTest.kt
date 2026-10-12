@@ -572,6 +572,8 @@ class McpServerTest {
         // 以下不是本服务工具，但确实会出现在引导/返回里：
         // 返回字段名 / 参数名 / ComfyUI 自己的 API 端点（引用它是合法的）。
         "elapsed_sec", "max_lines", "project_id", "object_info",
+        // v0.3.8：switch_account 的参数名（与 project_id 同性质）。
+        "account_id",
     )
 
     private fun toolNameTokens(text: String): List<String> =
