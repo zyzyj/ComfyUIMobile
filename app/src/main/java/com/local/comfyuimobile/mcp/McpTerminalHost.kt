@@ -168,6 +168,23 @@ internal class McpTerminalHost(
         }
     }
 
+    /**
+     * 切账号时清理本地终端状态（v0.3.8，P0-3）。
+     *
+     * **不只是关会话**：`aliases`（请求名→实际名）与 `opened` 还记着旧账号那批
+     * 终端名。不一起清，下次调用会通过别名"复用"回旧会话——正是第 11 条平行路径
+     * （终端只按名字索引、不绑账号）的表现：看着连上了，实际连到旧账号的项目。
+     *
+     * 缓冲区也清：里面装的是旧账号的输出，留给用户看只会混淆。
+     */
+    fun onAccountSwitched() {
+        runCatching { kernel.closeAllTerminals() }
+            .onFailure { AppLogger.warn("切账号时关闭终端会话失败", it) }
+        aliases.clear()
+        opened.clear()
+        buffers.clear()
+    }
+
     /** 读某终端**当前累积的输出**（不清空，用于 tail 日志）。 */
     suspend fun read(terminal: String?, maxLines: Int?): String {
         val name = terminal?.trim()?.takeIf { it.isNotBlank() } ?: DEFAULT_TERMINAL

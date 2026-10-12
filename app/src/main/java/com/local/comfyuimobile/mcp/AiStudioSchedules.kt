@@ -88,16 +88,21 @@ internal object AiStudioSchedules {
         ProjectState.COOKIE_EXPIRED -> "cookie_expired（登录态已失效）——请在 App 的「账号」页重新登录"
     }
 
-    /** 单档的展示行。scheduleName 是接口真正要传的值，必须原样带出。 */
-    fun describe(schedule: AiStudioSchedule): String {
+    /**
+     * 单档的展示行。scheduleName 是接口真正要传的值，必须原样带出。
+     *
+     * @param pools 本周各配额池剩余（`weekQuota`）。给了就带上**这一档自己**的
+     *   周剩余（v0.3.8）。以前读的是 `schedule.weekRemainingMinutes`——那个字段
+     *   全项目零赋值，所以「本周剩余」从未真正显示过（死字段）。
+     */
+    fun describe(schedule: AiStudioSchedule, pools: Map<String, Double> = emptyMap()): String {
         // 消耗与配额都可能是 0 / 未知，0 时不展示（与界面同一处理：不显示"0 算力卡/小时"）。
         val cost = schedule.costPerHour
             ?.takeIf { it > 0 }
             ?.let { " · ${trimNumber(it / 100.0)} 算力卡/小时" }
             .orEmpty()
-        val quota = schedule.weekRemainingMinutes
-            ?.takeIf { it > 0 }
-            ?.let { " · 本周剩余 ${trimNumber(it)} 分钟" }
+        val quota = AiStudioQuota.poolFor(schedule, pools)
+            ?.let { " · 本周剩余 ${trimNumber(it.remainingMinutes)} 分钟" }
             .orEmpty()
         val usable = unavailableNote(schedule)
         return "${schedule.displayName()} · schedule=${schedule.scheduleName}$cost$quota$usable"
@@ -139,12 +144,12 @@ internal object AiStudioSchedules {
      * 某一档用完不等于没得玩——把全部档位的剩余摆出来，AI 才会去换可用的档位，
      * 而不是直接告诉用户「没算力了，明天再来」。
      */
-    fun availabilityHint(schedules: List<AiStudioSchedule>): String = buildString {
+    fun availabilityHint(schedules: List<AiStudioSchedule>, pools: Map<String, Double> = emptyMap()): String = buildString {
         appendLine("算力卡按档位独立计算——这一档用完，其他档位可能仍有余额。当前可选：")
         if (schedules.isEmpty()) {
             append("（读不到档位列表）")
         } else {
-            schedules.forEach { appendLine("  " + describe(it)) }
+            schedules.forEach { appendLine("  " + describe(it, pools)) }
         }
         append("挑一个可用的档位重传 schedule 即可；档位规格与价格不同，不要盲目选最贵的。")
     }

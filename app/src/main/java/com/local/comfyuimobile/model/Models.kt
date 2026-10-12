@@ -157,6 +157,13 @@ data class ResultMedia(
     val positivePrompt: String? = null,
     val source: ResultSource = ResultSource.CLOUD,
     val localPath: String? = null,
+    /**
+     * 列表缩略图路径（v0.3.8，P2-1）。null = 没有（旧记录或视频），列表降级读 [localPath]。
+     *
+     * 为什么要它：列表以前直接读原图，`.size(256)` 只省最终 Bitmap，
+     * **读盘与解压仍按原图全长做**（1.4MB PNG → 几十个格子就上百 MB），滚动必卡。
+     */
+    val thumbPath: String? = null,
     // v0.1.67：图片查看页要直接显示分辨率并支持复制种子。ComfyUI /history
     // 不返回 width/height，所以留空、由 UI 在第一次解码成功后回填。
     val intrinsicWidth: Int? = null,

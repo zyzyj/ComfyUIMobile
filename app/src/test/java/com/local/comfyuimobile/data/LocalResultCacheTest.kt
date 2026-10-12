@@ -38,6 +38,79 @@ class LocalResultCacheTest {
 
     private fun cacheIn(dir: File) = LocalResultCache(File(dir, "result_cache"))
 
+    /** 可注入缩略图生成器（v0.3.8，P2-1）：真实现要用 BitmapFactory（JVM 单测 not mocked）。 */
+    private fun cacheWithThumb(dir: File, thumbnailer: Thumbnailer?) =
+        LocalResultCache(File(dir, "result_cache"), thumbnailer)
+
+    @Test
+    fun addGeneratesAndRecordsThumbnail() = runBlocking {
+        // 注入一个假生成器：只写几个字节，不真解码。
+        val calls = mutableListOf<Pair<File, File>>()
+        val thumbnailer = Thumbnailer { source, target, _ ->
+            calls += source to target
+            target.parentFile?.mkdirs()
+            target.writeBytes(byteArrayOf(9, 9))
+            true
+        }
+        val cache = cacheWithThumb(temporaryFolder.newFolder("base"), thumbnailer)
+        val temp = temporaryFolder.newFile("orig.png").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+
+        val stored = cache.add(media(), temp, ResultSource.LOCAL)
+
+        assertEquals(1, calls.size)
+        // 缩略图必须与原图同目录、名字带后缀（否则清理时成孤儿）。
+        assertEquals(calls[0].first.parentFile, calls[0].second.parentFile)
+        assertTrue(calls[0].second.name.endsWith(LocalResultCache.THUMB_SUFFIX))
+        assertTrue("应记下 thumbPath", stored.thumbPath != null)
+        assertTrue(File(stored.thumbPath!!).isFile)
+        // 重新加载后 thumbPath 仍应读回来（落盘了，不只是内存）。
+        assertEquals(stored.thumbPath, cache.load().first().thumbPath)
+    }
+
+    @Test
+    fun failedThumbnailIsNotRecorded() = runBlocking {
+        // 生成失败 → thumbPath 记 null（UI 降级读原图），**不能**把整条记录当无效。
+        val cache = cacheWithThumb(temporaryFolder.newFolder("base"), Thumbnailer { _, _, _ -> false })
+        val temp = temporaryFolder.newFile("orig.png").apply { writeBytes(byteArrayOf(1)) }
+        val stored = cache.add(media(), temp)
+        assertTrue("应退回 null", stored.thumbPath == null)
+        assertEquals(1, cache.load().size)
+    }
+
+    @Test
+    fun missingThumbnailFallsBackToNullOnLoad() = runBlocking {
+        // 缩略图文件被删（磁盘清理等）→ 读回 null，但记录仍有效（原图才是主体）。
+        val cache = cacheWithThumb(temporaryFolder.newFolder("base"), Thumbnailer { _, target, _ ->
+            target.parentFile?.mkdirs()
+            target.writeBytes(byteArrayOf(7))
+            true
+        })
+        val temp = temporaryFolder.newFile("orig.png").apply { writeBytes(byteArrayOf(1)) }
+        val stored = cache.add(media(), temp)
+        File(stored.thumbPath!!).delete()
+
+        val reloaded = cache.load().first()
+        assertTrue("缩略图没了应降级为 null", reloaded.thumbPath == null)
+        assertTrue("原图仍应在", File(reloaded.localPath!!).isFile)
+    }
+
+    @Test
+    fun removingResultAlsoDeletesThumbnail() = runBlocking {
+        // 缩略图不跟着删会变成永久占空间的孤儿。
+        val cache = cacheWithThumb(temporaryFolder.newFolder("base"), Thumbnailer { _, target, _ ->
+            target.parentFile?.mkdirs()
+            target.writeBytes(byteArrayOf(7))
+            true
+        })
+        val temp = temporaryFolder.newFile("orig.png").apply { writeBytes(byteArrayOf(1)) }
+        val stored = cache.add(media(), temp)
+        val thumb = File(stored.thumbPath!!)
+        assertTrue(thumb.isFile)
+
+        cache.remove(listOf(stored))
+        assertTrue("缩略图应一并删除", !thumb.isFile)
+    }
+
     @Test
     fun addCopiesFileIntoCacheDirectory() = runBlocking {
         val cache = cacheIn(temporaryFolder.newFolder("base"))

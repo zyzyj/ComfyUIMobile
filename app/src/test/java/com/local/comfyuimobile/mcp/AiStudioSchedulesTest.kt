@@ -76,8 +76,9 @@ class AiStudioSchedulesTest {
                 scheduleName = "V100",
                 label = "V100 16GB",
                 costPerHour = 380.0,
-                weekRemainingMinutes = 120.0,
+                weekQuotaType = "V100",
             ),
+            pools = mapOf("V100" to 120.0),
         )
         assertTrue(text, text.contains("schedule=V100"))
         assertTrue(text, text.contains("3.8 算力卡/小时"))

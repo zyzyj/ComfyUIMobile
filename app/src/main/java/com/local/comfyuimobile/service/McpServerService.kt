@@ -154,6 +154,13 @@ class McpServerService : Service() {
         // AI Studio 通道与终端共用一套实例：账号从偏好读，令牌刷新后回写偏好。
         val aiStudioBridge = AiStudioBridge(AppPreferences(this))
         val kernel = AiStudioKernelClient().also { aiStudioBridge.bindKernel(it) }
+        // v0.3.8（P0-3）：切账号时清理终端状态。终端注册表只按名字索引、不绑账号
+        // （第 11 条平行路径）——不清理就会静默连到旧账号的项目。
+        val terminalHost = McpTerminalHost(
+            kernel = KernelTerminalBackend(kernel),
+            activeProject = { aiStudioBridge.runningProject() },
+        )
+        aiStudioBridge.onAccountSwitched = { terminalHost.onAccountSwitched() }
 
         val manager = McpServerManager(
             client = created,
@@ -174,10 +181,7 @@ class McpServerService : Service() {
             aiStudio = aiStudioBridge,
             // 终端与 AI Studio 通道共用同一个 kernel client 与令牌刷新器：
             // 两套刷新器会各自拿到"更新后"的令牌、互相覆盖（与 ViewModel 同一约定）。
-            terminal = McpTerminalHost(
-                kernel = KernelTerminalBackend(kernel),
-                activeProject = { aiStudioBridge.runningProject() },
-            ),
+            terminal = terminalHost,
             // v0.3.7：list_my_jobs 读的是**界面任务跟踪用的同一份存储**（不另建一套）。
             submittedJobsReader = {
                 runCatching { AppPreferences(this).settings.first().submittedJobRecords }

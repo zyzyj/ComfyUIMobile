@@ -23,8 +23,16 @@ import java.nio.file.StandardCopyOption
  * 主构造 internal（app 单模块内没有外部调用方；private 会与 Context 构造形成
  * File 参数的重载二义性——Kotlin 重载解析不区分参数来源类型）。
  */
-class LocalResultCache internal constructor(private val root: File) {
-    constructor(context: Context) : this(File(context.filesDir, "result_cache"))
+class LocalResultCache internal constructor(
+    private val root: File,
+    /**
+     * 缩略图生成器（v0.3.8，P2-1）。null = 不生成（单测与无 Android 环境）。
+     *
+     * 做成可注入是因为实现要用 `BitmapFactory`，在本地 JVM 单测里是 "not mocked"。
+     */
+    private val thumbnailer: Thumbnailer? = null,
+) {
+    constructor(context: Context) : this(File(context.filesDir, "result_cache"), BitmapThumbnailer)
 
     private val indexFile = File(root, "index.json")
 
@@ -43,6 +51,12 @@ class LocalResultCache internal constructor(private val root: File) {
         val extension = media.filename.substringAfterLast('.', "bin").take(12)
         val folder = File(root, safe(media.jobId))
         return File(folder, "${safe(media.nodeId)}-${key(media).hashCode().toUInt()}.$extension")
+    }
+
+    /** 缩略图落点（v0.3.8，P2-1）：与原图同目录，名字加 `.thumb` 后缀。 */
+    fun thumbnailDestination(media: ResultMedia): File {
+        val original = destination(media)
+        return File(original.parentFile, original.name + THUMB_SUFFIX)
     }
 
     suspend fun add(
@@ -82,12 +96,30 @@ class LocalResultCache internal constructor(private val root: File) {
                 if (destination.isFile) destination else file
             }
             val records = readIndex().filterNot { it.optString("key") == key }.toMutableList()
-            records += encodeRecord(media, stored, key, source)
+            // v0.3.8（P2-1）：在这里生成缩略图——只有这里同时拿得到原图与落点，
+            // 放到别处就会形成第二套生成逻辑（平行路径）。
+            // 非图片（视频）不生成。生成失败就记 null，列表降级读原图。
+            val thumb = if (media.kind == MediaKind.IMAGE && thumbnailer != null) {
+                val target = thumbnailDestination(media)
+                val ok = runCatching { thumbnailer.create(stored, target, BitmapThumbnailer.MAX_PX) }
+                    .onFailure { AppLogger.warn("生成缩略图失败：${media.filename}", it) }
+                    .getOrDefault(false)
+                if (ok && target.isFile && target.length() > 0L) {
+                    target.absolutePath
+                } else {
+                    runCatching { target.delete() }
+                    null
+                }
+            } else {
+                null
+            }
+            records += encodeRecord(media, stored, key, source, thumb)
             writeIndex(records)
             media.copy(
                 url = fileUri(stored),
                 source = source,
                 localPath = stored.absolutePath,
+                thumbPath = thumb,
             )
         }
     }
@@ -104,7 +136,11 @@ class LocalResultCache internal constructor(private val root: File) {
             if (keys.isEmpty()) return@withLock 0
             val records = readIndex()
             val removed = records.filter { it.optString("key") in keys }
-            removed.forEach { File(it.optString("localPath")).delete() }
+            removed.forEach { record ->
+                File(record.optString("localPath")).delete()
+                // v0.3.8（P2-1）：缩略图一起删——不然它会变成永久占空间的孤儿文件。
+                record.optString("thumbPath").takeIf { it.isNotBlank() }?.let { File(it).delete() }
+            }
             writeIndex(records.filterNot { it.optString("key") in keys })
             removed.size
         }
@@ -177,6 +213,8 @@ class LocalResultCache internal constructor(private val root: File) {
         key: String,
         /** 随索引落盘（v0.3.2）：否则重启后全部回退 LOCAL，「仅 AI 生成」筛选失效。 */
         source: ResultSource,
+        /** 缩略图路径（v0.3.8，P2-1）；null = 没生成。 */
+        thumbPath: String? = null,
     ) = JSONObject()
         .put("key", key)
         .put("kv", ResultKey.VERSION)
@@ -205,6 +243,8 @@ class LocalResultCache internal constructor(private val root: File) {
         // LOCAL——用户开「仅 AI 生成」筛选时 AI 的图全部消失。
         // 与其他可缺省字段同一待遇：旧索引没有它也能读。
         .put("source", source.name)
+        // v0.3.8（P2-1）：缩略图路径。旧索引没这个字段 → 读回 null → 列表降级读原图。
+        .put("thumbPath", thumbPath.orEmpty())
 
     private fun decodeRecord(item: JSONObject): ResultMedia? {
         val file = File(item.optString("localPath"))
@@ -235,6 +275,9 @@ class LocalResultCache internal constructor(private val root: File) {
             source = runCatching { ResultSource.valueOf(item.optString("source")) }
                 .getOrDefault(ResultSource.LOCAL),
             localPath = file.absolutePath,
+            // v0.3.8（P2-1）：缩略图丢失（被删/被清）时返回 null，UI 会降级读原图——
+            // 不能因为缩略图没了就把整条记录当成无效（原图才是主体）。
+            thumbPath = item.optString("thumbPath").takeIf { it.isNotBlank() && File(it).isFile },
         )
     }
 
@@ -256,5 +299,8 @@ class LocalResultCache internal constructor(private val root: File) {
 
     companion object {
         private val mutex = Mutex()
+
+        /** 缩略图文件名后缀（v0.3.8，P2-1）。 */
+        const val THUMB_SUFFIX = ".thumb.jpg"
     }
 }

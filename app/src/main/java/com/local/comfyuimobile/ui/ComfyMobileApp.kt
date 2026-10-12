@@ -91,6 +91,7 @@ import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.runtime.derivedStateOf
+import com.local.comfyuimobile.mcp.AiStudioQuota
 import com.local.comfyuimobile.mcp.McpCallLog
 import com.local.comfyuimobile.mcp.McpServerManager
 import com.local.comfyuimobile.mcp.McpToolRegistry
@@ -2417,9 +2418,11 @@ private fun MediaCover(media: ResultMedia, modifier: Modifier = Modifier, sample
         // 同时补：① 占位色块（此前解码前格子是空的，滚动时"闪一下"）；
         // ② crossfade 过渡（Coil 默认没有，加载完成会硬切）。
         val context = LocalContext.current
-        val request = remember(media.url, media.localPath, sampleSize) {
+        // v0.3.8（P2-1）：**列表优先读缩略图**。以前退到原图，读盘与解压按全长做。
+        val data = listImageSource(media)
+        val request = remember(data, sampleSize) {
             ImageRequest.Builder(context)
-                .data(previewUrl(media))
+                .data(data)
                 .size(sampleSize)
                 .crossfade(true)
                 .build()
@@ -4343,6 +4346,8 @@ private fun McpScreen(
                     "wait_for_comfy" -> "等 ComfyUI 就绪，并自动接上它的地址与登录态"
                     "cancel_jobs" -> "紧急刹车：中止任务或清空队列"
                     "list_projects" -> "列出 AI Studio 项目（拿到 projectId）"
+                    "list_accounts" -> "列出已登录的 AI Studio 账号（额度按账号分开算，可换号）"
+                    "switch_account" -> "在 MCP 会话内切换账号（不改 App 界面显示的账号）"
                     "gpu_status" -> "查项目状态与 GPU 档位（区分未运行/分配中/运行中/登录失效）"
                     "list_gpu_options" -> "列出可选 GPU 档位（含消耗与本周剩余）"
                     "start_gpu" -> "启动云端项目（占一张 GPU，开始计费）"
@@ -5232,6 +5237,33 @@ private fun quotaTypeLabel(type: String): String = when (type.uppercase()) {
     else -> type
 }
 
+/**
+ * 「本周算力剩余」里的一行（v0.3.8）。
+ *
+ * 保留小时显示——分钟数不直观，而这是用户做决策要看的数。
+ * [note] 用来标明这行归哪个配额池，避免以前「每档都印同一个数」的误导：
+ * 数字是平台给的，但**它属于哪一档**现在写清楚了。
+ */
+@Composable
+private fun QuotaRow(label: String, minutes: Double, note: String? = null) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+            note?.takeIf { it.isNotBlank() && it != label }?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Text(
+            "${trimNumber(minutes / 60.0)} 小时",
+            style = MaterialTheme.typography.labelMedium,
+        )
+    }
+}
+
 private fun previewUrl(media: ResultMedia): String =
     if (media.kind == MediaKind.IMAGE && media.source == ResultSource.CLOUD) {
         // v0.2.51：以前写死用 `&` 追加，URL 本身没查询参数时会拼出 `.../view&preview=...`
@@ -5240,6 +5272,20 @@ private fun previewUrl(media: ResultMedia): String =
     } else {
         media.url
     }
+
+/**
+ * 列表（网格/封面）的图片数据源（v0.3.8，P2-1）。
+ *
+ * 优先本地缩略图——它已经把读盘与解压都降到 256px 量级；
+ * 没有（旧记录 / 生成失败 / 视频）就退回原行为，**降级而不是不显示**。
+ *
+ * 详情页不走这里：那里要看原图的细节，用原图。
+ */
+private fun listImageSource(media: ResultMedia): String =
+    media.thumbPath
+        ?.takeIf { it.isNotBlank() }
+        ?.let { "file://" + it }
+        ?: previewUrl(media)
 
 // ===================== v0.1.90：账号页 =====================
 
@@ -5392,21 +5438,34 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                 item {
                     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            panel.weekQuota.forEach { (type, minutes) ->
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        quotaTypeLabel(type),
-                                        modifier = Modifier.weight(1f),
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
-                                    Text(
-                                        "${trimNumber(minutes / 60.0)} 小时",
-                                        style = MaterialTheme.typography.labelMedium,
-                                    )
+                            // v0.3.8：按**档位**列，每行标明它归哪个配额池。
+                            //
+                            // 以前直接遍历 weekQuota 打印「X 小时」，每档印同一个数：
+                            // 真机实测 CPU / DCU / V100 全显示 20.2 小时，而紧挨着的
+                            // 提示语写着"换成不同显卡能跑的小时数不一样"——数字与提示
+                            // 自相矛盾，用户据此误判成"V100 还剩 20 小时"。
+                            val matched = panel.schedules.mapNotNull { schedule ->
+                                AiStudioQuota.poolFor(schedule, panel.weekQuota)
+                                    ?.let { Triple(schedule.displayName(), it, schedule) }
+                            }
+                            if (matched.isEmpty()) {
+                                // 拿不到 weekQuotaType（平台改版等）→ 退回只罗列配额池，
+                                // 不给任何档位贴错标签。
+                                panel.weekQuota.forEach { (type, minutes) ->
+                                    QuotaRow(label = quotaTypeLabel(type), minutes = minutes)
+                                }
+                            } else {
+                                matched.forEach { (name, pool, _) ->
+                                    QuotaRow(label = name, minutes = pool.remainingMinutes, note = quotaTypeLabel(pool.type))
+                                }
+                                // 没有任何档位引用的池也列出来，免得信息凭空消失。
+                                AiStudioQuota.unmatchedPools(panel.schedules, panel.weekQuota).forEach { pool ->
+                                    QuotaRow(label = quotaTypeLabel(pool.type), minutes = pool.remainingMinutes)
                                 }
                             }
                             Text(
-                                "同一份算力卡换成不同显卡，能跑的小时数不一样",
+                                "各档位按自己的配额池计算；换成更高级的显卡单位时间消耗更大，" +
+                                    "同样的余额能跑的时间更短。",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -5728,7 +5787,12 @@ private fun ProjectCard(project: AiStudioProject, panel: AiStudioState, viewMode
                                 ?.takeIf { it > 0 }
                                 ?.let { " · ${trimNumber(it / 100.0)} 算力卡/小时" }
                                 .orEmpty()
-                            Text(schedule.displayName() + cost)
+                            // v0.3.8：带上**这一档自己**的周剩余。选档时就能看到
+                            // "这档还剩多少"，不用退回去对照上面的卡片。
+                            val quota = AiStudioQuota.poolFor(schedule, panel.weekQuota)
+                                ?.let { " · 本周剩 ${trimNumber(it.remainingMinutes / 60.0)} 小时" }
+                                .orEmpty()
+                            Text(schedule.displayName() + cost + quota)
                         }
                     }
                 }
