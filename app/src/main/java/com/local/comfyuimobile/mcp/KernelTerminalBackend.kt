@@ -58,5 +58,7 @@ internal class KernelTerminalBackend(
         endpoint: AiStudioKernelClient.KernelEndpoint,
     ) = kernel.warmUpProjectCookies(account, endpoint)
 
+    override fun closeAllTerminals() = kernel.closeAllTerminals()
+
     override fun exportCookies(): String = kernel.exportCookies()
 }
