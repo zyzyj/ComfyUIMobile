@@ -125,6 +125,15 @@ class McpTerminalHostTest {
             endpoint: AiStudioKernelClient.KernelEndpoint,
         ) = Unit
 
+        override fun closeAllTerminals() {
+            closedAllCount++
+            sessions.values.forEach { it.closed = true }
+            sessions.clear()
+        }
+
+        /** 切账号时是否被要求关掉全部会话（v0.3.8，P0-3）。 */
+        var closedAllCount = 0
+
         override fun exportCookies(): String = ""
     }
 
@@ -182,6 +191,24 @@ class McpTerminalHostTest {
         assertTrue("应给出日志路径：$text", text.contains(TerminalBackground.LOG_DIR))
         assertTrue("应给出 PID：$text", text.contains("4242"))
         assertTrue("必须用 nohup 包装：$text", backend.lastCommand.contains("nohup"))
+    }
+
+    @Test
+    fun accountSwitchClosesTerminalsAndClearsAliases() = runBlocking {
+        // P0-3 / 第 11 条平行路径：终端只按名字索引、不绑账号——
+        // 切完账号不清，下一次同名调用会静默连到旧账号的项目上。
+        val backend = FakeBackend()
+        val h = host(backend)
+        withTimeout(10_000) { h.exec("echo one", terminal = "probe", timeoutSeconds = 5) }
+        assertEquals(1, backend.createdCount)
+
+        h.onAccountSwitched()
+
+        assertEquals("应关掉全部会话", 1, backend.closedAllCount)
+        // 别名与"已连"记录也要清掉：否则下次会通过别名"复用"回旧会话。
+        // 清理后再调一次，必须重新建（说明没有偷偷复用）。
+        withTimeout(10_000) { h.exec("echo two", terminal = "probe", timeoutSeconds = 5) }
+        assertEquals("切账号后应重新建会话", 2, backend.createdCount)
     }
 
     @Test

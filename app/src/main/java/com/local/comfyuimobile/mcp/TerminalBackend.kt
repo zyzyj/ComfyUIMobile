@@ -47,5 +47,13 @@ internal interface TerminalBackend {
 
     suspend fun warmUpProjectCookies(account: AiStudioAccount, endpoint: AiStudioKernelClient.KernelEndpoint)
 
+    /**
+     * 关掉全部终端会话（v0.3.8，P0-3）。切账号时用。
+     *
+     * 终端会话**不绑账号**（只按名字索引），切完账号不关，下一次同名调用会静默
+     * 连到旧账号的项目上——第 11 条平行路径。
+     */
+    fun closeAllTerminals()
+
     fun exportCookies(): String
 }

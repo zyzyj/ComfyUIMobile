@@ -315,7 +315,7 @@ internal class AiStudioBridge(
                 }
                 appendLine("- 若这批图跑完了且不再需要，调 stop_gpu 停止计费")
             }
-            appendLine("- 可选档位（共 ${schedules.size} 个）："))
+            appendLine("- 可选档位（共 ${schedules.size} 个）：")
             if (schedules.isEmpty()) {
                 appendLine("  （读不到档位——可能是登录态失效，或该项目当前不可选档）")
             } else {
