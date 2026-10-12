@@ -76,6 +76,27 @@ internal object McpJobState {
     }
 
     /**
+     * 两个信号源是否都读不到（v0.3.8，P1-2）。
+     *
+     * 为什么要单拎出来：
+     * - 不能用 `resolve(...) == UNKNOWN` 代替——刚提交时任务还没进队列、history
+     *   里也没它，resolve 同样返回 UNKNOWN，但那是**正常**的；
+     * - 真环境不可达的判据是**两个请求都失败**（都为 null）。
+     *
+     * 抽成纯函数才能单测，而不再依赖"构造一个网络失败场景"。
+     */
+    fun bothSourcesMissing(queue: List<JobSummary>?, history: JSONObject?): Boolean =
+        queue == null && history == null
+
+    /**
+     * 连续读不到的计数（v0.3.8，P1-2）。
+     *
+     * @return 新的连续次数：本次读不到则累加，否则**清零**。
+     */
+    fun nextUnreachableStreak(previous: Int, queue: List<JobSummary>?, history: JSONObject?): Int =
+        if (bothSourcesMissing(queue, history)) previous + 1 else 0
+
+    /**
      * 从队列里选出"允许被取消"的任务（v0.2.93）。
      *
      * **这是安全边界，不是普通筛选**：队列里可能有用户自己在 App 界面提交的图、

@@ -109,6 +109,9 @@ class McpServerTest {
 
         override suspend fun listMyJobs(state: String?, limit: Int?): String = "没有已提交的任务记录。"
 
+        override suspend fun listAccounts(): String = "App 里已登录 1 个 AI Studio 账号：\n- id=a1  tester"
+        override suspend fun switchAccount(accountId: String): String = "MCP 会话内已切到 id=$accountId。"
+
         override suspend fun jobStatus(jobId: String, waitSeconds: Int): GenerateOutcome = GenerateOutcome.Done(
             jobId,
             listOf(

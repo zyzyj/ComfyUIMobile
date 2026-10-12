@@ -114,4 +114,33 @@ class McpJobStateTest {
         assertEquals("done", McpJobState.Phase.DONE.label)
         assertEquals("failed", McpJobState.Phase.FAILED.label)
     }
+
+    // ===== v0.3.8（P1-2）：连续读不到就早退 =====
+
+    @Test
+    fun bothSourcesMissingOnlyWhenBothFail() {
+        // 判据必须严格是"两个都失败"：只有一个失败时不能当成环境不可达。
+        assertTrue(McpJobState.bothSourcesMissing(null, null))
+        assertTrue(!McpJobState.bothSourcesMissing(emptyList(), null))
+        assertTrue(!McpJobState.bothSourcesMissing(null, JSONObject()))
+        assertTrue(!McpJobState.bothSourcesMissing(emptyList(), JSONObject()))
+    }
+
+    @Test
+    fun streakAccumulatesOnlyWhileBothMissing() {
+        var streak = 0
+        streak = McpJobState.nextUnreachableStreak(streak, null, null)
+        streak = McpJobState.nextUnreachableStreak(streak, null, null)
+        assertEquals(2, streak)
+        // 一旦读到任何一个（哪怕队列是空的），必须**清零**——
+        // 否则抖动会累积到阈值，把正常任务误判成环境不可达。
+        streak = McpJobState.nextUnreachableStreak(streak, emptyList(), null)
+        assertEquals(0, streak)
+    }
+
+    @Test
+    fun emptyQueueIsNotUnreachable() {
+        // 空队列是合法响应（任务已跑完/没排队），不是"读不到"。
+        assertEquals(0, McpJobState.nextUnreachableStreak(2, emptyList(), JSONObject()))
+    }
 }

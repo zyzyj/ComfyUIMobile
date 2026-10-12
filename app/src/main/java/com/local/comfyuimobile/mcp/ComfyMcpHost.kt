@@ -471,6 +471,11 @@ internal class ComfyMcpHost(
 
     override suspend fun listAiStudioProjects(): String = requireAiStudio().listProjects()
 
+    override suspend fun listAccounts(): String = requireAiStudio().listAccounts()
+
+    override suspend fun switchAccount(accountId: String): String =
+        requireAiStudio().switchAccount(accountId)
+
     override suspend fun gpuStatus(projectId: String): String = requireAiStudio().gpuStatus(projectId)
 
     override suspend fun listGpuOptions(projectId: String): String =
@@ -560,9 +565,18 @@ internal class ComfyMcpHost(
         // 批量等待的结束条件是「全部到终态或超时」——逐个等会放大耗时。
         if (waitSeconds > 0) {
             val deadline = System.currentTimeMillis() + waitSeconds.coerceIn(0, MAX_WAIT_SECONDS) * 1000L
+            // v0.3.8（P1-2）：与 finishOrRunning 同一套早退——连续读不到就别干等。
+            var unreachableStreak = 0
             while (System.currentTimeMillis() < deadline) {
                 delay(WAIT_POLL_MILLIS)
                 val queue = runCatching { client.queue() }.getOrNull()
+                val anyHistory = ids.take(MAX_BATCH_IDS).filter { it.isNotBlank() }
+                    .any { runCatching { client.history(it) }.getOrNull() != null }
+                unreachableStreak = if (queue == null && !anyHistory) unreachableStreak + 1 else 0
+                if (unreachableStreak >= UNREACHABLE_TOLERANCE) {
+                    return "读不到任何任务状态（连续 $unreachableStreak 次队列与历史都请求失败）：" +
+                        "大概率是 ComfyUI 未启动或网络断了。先用 wait_for_comfy 确认环境再重试。"
+                }
                 val allSettled = ids.take(MAX_BATCH_IDS).filter { it.isNotBlank() }.all { id ->
                     val history = runCatching { client.history(id) }.getOrNull()
                     val hasOutputs = history?.optJSONObject(id)
@@ -629,11 +643,27 @@ internal class ComfyMcpHost(
         startedAt: Long,
     ): GenerateOutcome {
         val deadline = startedAt + awaitMillis
+        // v0.3.8（P1-2）：连续读不到状态的次数。
+        //
+        // 为什么用「两个信号源都为 null」而不是 phase==UNKNOWN：刚提交时任务
+        // 还没进队列、history 里也没它，resolve 同样返回 UNKNOWN——那是**正常**的。
+        // 真正的"环境没了"是 queue() 与 history() **两个请求都失败**。
+        var unreachableStreak = 0
         while (true) {
             // 统一判据：先队列后历史，两处信号源必须走同一个 resolve，
             // 否则"排队中"会被 history 缺失误判成运行中/失败。
             val queue = runCatching { client.queue() }.getOrNull()
             val history = runCatching { client.history(promptId) }.getOrNull()
+            // 两个都读不到：ComfyUI 未启动 / 网络断了 / 反代挂了。
+            // 原设计"读不到不能直接判失败"是对的（可能是抖动），所以只累计、不立即返回。
+            unreachableStreak = McpJobState.nextUnreachableStreak(unreachableStreak, queue, history)
+            if (unreachableStreak >= UNREACHABLE_TOLERANCE) {
+                return GenerateOutcome.Unreachable(
+                    promptId,
+                    (System.currentTimeMillis() - startedAt) / 1000,
+                    "连续 $unreachableStreak 次读不到任务状态（队列与历史都请求失败）",
+                )
+            }
             val entry = history?.optJSONObject(promptId)
             val hasOutputs = entry?.optJSONObject("outputs")?.keys()?.hasNext() == true
             val verdict = McpJobState.resolve(promptId, queue, history, hasOutputs)
@@ -748,6 +778,14 @@ internal class ComfyMcpHost(
 
         /** list_my_jobs 的默认返回条数（上限见 McpJobListFormatter.MAX_SHOWN）。 */
         const val DEFAULT_JOB_LIST_LIMIT = 20
+
+        /**
+         * 连续多少次「队列与历史都读不到」就早退（v0.3.8，P1-2）。
+         *
+         * 3 次 ≈ 轮询间隔 × 3。要略大于单次网络抖动的持续时间，又不能大到
+         * 白等很久——这是个折中，不是精确值。
+         */
+        const val UNREACHABLE_TOLERANCE = 3
 
         /** 本 App 的 MCP 通道提交任务时写到 extra_data 的来源标记。 */
         const val ORIGIN_MCP = "mcp"

@@ -74,6 +74,12 @@ internal interface McpToolHost {
     /** 列出当前账号下的项目（AI 据此拿 projectId 再调其他 GPU 工具）。 */
     suspend fun listAiStudioProjects(): String
 
+    /** 列出 App 里已登录的全部 AI Studio 账号（v0.3.8）。不含凭据。 */
+    suspend fun listAccounts(): String
+
+    /** 在本 MCP 会话内切换当前账号（v0.3.8）；不写回全局偏好。 */
+    suspend fun switchAccount(accountId: String): String
+
     /** 读某项目的 GPU 运行状态与可选档位。 */
     suspend fun gpuStatus(projectId: String): String
 
@@ -172,6 +178,22 @@ internal sealed interface GenerateOutcome {
         val jobId: String,
         val elapsedSec: Long,
         val position: Int?,
+        val message: String,
+    ) : GenerateOutcome
+
+    /**
+     * 读不到任务状态（v0.3.8，P1-2）：队列与历史两个请求**连续多次都失败**。
+     *
+     * 为什么单分一类而不是直接 `Failed`：设计意图"读不到不能判失败"是对的
+     * （可能是网络抖动，误杀正常任务很糟）。但真机日志里出现过四次干等满
+     * 300 秒（`300567ms`/`280265ms`/`240337ms`/`188380ms`）——等完什么都没有。
+     *
+     * 所以既不能判失败，也不能一直等：早退并**说清是读不到**，让 AI 能区分
+     * "还在跑"与"环境没了"，自己去调 `wait_for_comfy` 确认。
+     */
+    data class Unreachable(
+        val jobId: String,
+        val elapsedSec: Long,
         val message: String,
     ) : GenerateOutcome
 
@@ -287,6 +309,8 @@ internal class McpToolRegistry(
             ),
         )
         TOOL_LIST_PROJECTS -> ToolResult(host.listAiStudioProjects())
+        TOOL_LIST_ACCOUNTS -> ToolResult(host.listAccounts())
+        TOOL_SWITCH_ACCOUNT -> ToolResult(host.switchAccount(args.optString("account_id")))
         TOOL_GPU_STATUS -> ToolResult(host.gpuStatus(args.optString("project_id")))
         TOOL_LIST_GPU_OPTIONS -> ToolResult(host.listGpuOptions(args.optString("project_id")))
         TOOL_START_GPU -> ToolResult(
@@ -373,6 +397,21 @@ internal class McpToolRegistry(
     /** 把结果渲染成给模型看的文本。图片只给 URL——AiCode 不渲染 image content block。 */
     private fun renderGenerate(outcome: GenerateOutcome): ToolResult = when (outcome) {
         is GenerateOutcome.Failed -> ToolResult("生成失败：${outcome.message}", isError = true)
+        is GenerateOutcome.Unreachable -> ToolResult(
+            JSONObject()
+                .put("status", "unreachable")
+                .put("job_id", outcome.jobId)
+                .put("elapsed_sec", outcome.elapsedSec)
+                .put("message", outcome.message)
+                .put(
+                    "hint",
+                    "**读不到任务状态**（不是任务失败）：大概率是 ComfyUI 未启动或网络断了。" +
+                        "先用 wait_for_comfy 确认环境，不要在这里反复重试；" +
+                        "任务本身可能仍在跑，任务 id 保留着，环境恢复后用 job_status 再查。",
+                )
+                .toString(),
+            isError = true,
+        )
         is GenerateOutcome.Queued -> ToolResult(
             JSONObject()
                 .put("status", "queued")
@@ -575,6 +614,30 @@ internal class McpToolRegistry(
         )
         put(
             McpProtocol.toolDescriptor(
+                TOOL_LIST_ACCOUNTS,
+                "列出 App 里已登录的全部 AI Studio 账号（id + 昵称，不含任何凭据）。" +
+                    "额度按账号与档位分开算——**多账号就是多个额度池**：某个账号的档位开不了时，" +
+                    "先看这里有没有别的账号，而不是直接告诉用户「没额度了」。",
+                schema(JSONObject()),
+            ),
+        )
+        put(
+            McpProtocol.toolDescriptor(
+                TOOL_SWITCH_ACCOUNT,
+                "在本 MCP 会话内切换当前账号（只影响 MCP 的后续调用，**不改 App 界面显示的账号**）。" +
+                    "account_id 取自 list_accounts。切换后会关闭全部终端会话（终端不绑账号，" +
+                    "不关会静默连到旧账号的项目），下次终端调用会自动重连。",
+                schema(
+                    JSONObject().put(
+                        "account_id",
+                        JSONObject().put("type", "string").put("description", "账号 id，取自 list_accounts"),
+                    ),
+                    required = JSONArray().put("account_id"),
+                ),
+            ),
+        )
+        put(
+            McpProtocol.toolDescriptor(
                 TOOL_GPU_STATUS,
                 "查某个项目的 GPU 状态：当前档位 + 可选的档位列表。",
                 schema(projectIdSchema(), required = JSONArray().put("project_id")),
@@ -691,6 +754,8 @@ internal class McpToolRegistry(
 
         // AI Studio 通道（v0.2.97）：让 AI 自己启动 GPU、查档位、停环境。
         const val TOOL_LIST_PROJECTS = "list_projects"
+        const val TOOL_LIST_ACCOUNTS = "list_accounts"
+        const val TOOL_SWITCH_ACCOUNT = "switch_account"
         const val TOOL_GPU_STATUS = "gpu_status"
         const val TOOL_LIST_GPU_OPTIONS = "list_gpu_options"
         const val TOOL_START_GPU = "start_gpu"
@@ -767,6 +832,8 @@ internal class McpToolRegistry(
             TOOL_WAIT_FOR_COMFY,
             TOOL_CANCEL,
             TOOL_LIST_PROJECTS,
+            TOOL_LIST_ACCOUNTS,
+            TOOL_SWITCH_ACCOUNT,
             TOOL_GPU_STATUS,
             TOOL_LIST_GPU_OPTIONS,
             TOOL_START_GPU,

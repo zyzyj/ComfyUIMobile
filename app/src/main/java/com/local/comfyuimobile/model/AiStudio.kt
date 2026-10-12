@@ -77,10 +77,15 @@ data class AiStudioSchedule(
     val gpuType: String = "",
     /** 每小时消耗的算力卡（分）。null = 未知。 */
     val costPerHour: Double? = null,
-    /** 该档归属的配额类型（如 V100 / A100），用于显示本周剩余。 */
+    /**
+     * 该档归属的配额池类型（V100 / A100 / DCU / DEV），用于关联本周剩余。
+     *
+     * v0.3.8：以前还有一个 `weekRemainingMinutes` 字段，但它**全项目零赋值**
+     * （解析器只填 weekQuotaType），所以界面上的「本周剩余」从未真正显示过；
+     * 而两个单测给它传值再断言显示，于是长期「假通过」。那个字段已删除，
+     * 剩余的取值统一走 [com.local.comfyuimobile.mcp.AiStudioQuota]。
+     */
     val weekQuotaType: String = "",
-    /** 该档本周剩余可用（分钟）。null = 未知。 */
-    val weekRemainingMinutes: Double? = null,
     /** 该档是否可用/有余额。未知为 true，不要因为解析不到就禁用。 */
     val available: Boolean = true,
     /**

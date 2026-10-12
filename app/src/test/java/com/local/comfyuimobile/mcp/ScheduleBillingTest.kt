@@ -64,11 +64,13 @@ class ScheduleBillingTest {
 
     @Test
     fun availabilityHintListsAllSchedules() {
+        // v0.3.8：剩余不再来自 schedule.weekRemainingMinutes（那个字段全项目零赋值，
+        // 从未真正显示过），而是用 weekQuotaType 关联到配额池。
         val schedules = listOf(
-            AiStudioSchedule(scheduleName = "V100", label = "V100 16GB", available = false),
-            AiStudioSchedule(scheduleName = "DCU", label = "DCU", available = true, weekRemainingMinutes = 3360.0),
+            AiStudioSchedule(scheduleName = "V100", label = "V100 16GB", available = false, weekQuotaType = "V100"),
+            AiStudioSchedule(scheduleName = "DCU", label = "DCU", available = true, weekQuotaType = "DCU"),
         )
-        val hint = AiStudioSchedules.availabilityHint(schedules)
+        val hint = AiStudioSchedules.availabilityHint(schedules, pools = mapOf("DCU" to 3360.0))
         assertTrue("应说明按档位独立：$hint", hint.contains("独立"))
         assertTrue("应列出 DCU 的剩余：$hint", hint.contains("3360"))
         assertTrue("应给出行动：$hint", hint.contains("schedule"))

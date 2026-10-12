@@ -48,6 +48,35 @@ internal class AiStudioBridge(
             persistRefreshed(updated)
             updated
         }
+        this.boundKernel = kernel
+    }
+
+    /**
+     * 终端客户端（由 [bindKernel] 注入）。用于切账号时清理会话。
+     *
+     * 为什么需要：终端注册表只按名字索引、不绑账号（第 11 条平行路径）——
+     * 切完账号不清理，同名终端会静默连到旧账号的项目上。
+     */
+    @Volatile private var boundKernel: com.local.comfyuimobile.network.AiStudioKernelClient? = null
+
+    /**
+     * 切账号时额外要做的清理（v0.3.8）。由组装方接上 [McpTerminalHost.onAccountSwitched]。
+     *
+     * 用回调用而不是让本类直接依赖终端层：两者在 [com.local.comfyuimobile.service.McpServerService]
+     * 里是分开构造的，直接依赖会把两个本可独立的模块绑死（也会让单测难建）。
+     */
+    @Volatile var onAccountSwitched: (suspend () -> Unit)? = null
+
+    private suspend fun closeTerminalsForAccountSwitch() {
+        // 先让终端层清自己的状态（aliases / opened / buffers）——它内部也会关会话。
+        val hook = onAccountSwitched
+        if (hook != null) {
+            runCatching { hook() }.onFailure { AppLogger.warn("切账号清理终端状态失败", it) }
+            return
+        }
+        // 没有钩子时至少把会话关掉（单测/旧组装路径）。
+        runCatching { boundKernel?.closeAllTerminals() }
+            .onFailure { AppLogger.warn("切账号时关闭终端会话失败", it) }
     }
 
     init {
@@ -61,11 +90,90 @@ internal class AiStudioBridge(
     }
 
     /** 取当前生效的账号（`aiStudioActiveId` 指的那个；为空时取第一个）。 */
+    /**
+     * 本 MCP 会话内临时指定的账号（v0.3.8，P0-3）。**不写回偏好**。
+     *
+     * 用户拍板：MCP 切账号只在会话内覆盖。理由：界面与 MCP 各存一份"当前账号"
+     * 必然又变成一条平行路径（本项目已犯 11 次），而写回偏好会让 AI 的一个动作
+     * 改掉用户看到的界面状态。
+     *
+     * 代价：界面仍显示旧账号。用 [switchAccount] 的返回值把这件事说清楚。
+     */
+    @Volatile private var overrideAccountId: String? = null
+
     private suspend fun activeAccount(): AiStudioAccount? {
         val stored = runCatching { preferences.settings.first() }.getOrNull() ?: return null
         val accounts = stored.aiStudioAccounts
         if (accounts.isEmpty()) return null
+        // 本会话指定过就优先它——但**账号可能被用户在 App 里删了**，那就回落。
+        overrideAccountId?.let { wanted ->
+            accounts.firstOrNull { it.id == wanted }?.let { return it }
+            overrideAccountId = null
+        }
         return accounts.firstOrNull { it.id == stored.aiStudioActiveId } ?: accounts.first()
+    }
+
+    /**
+     * 列出 App 里已登录的全部 AI Studio 账号（v0.3.8，P0-3）。
+     *
+     * 为什么需要：额度按档位分开记账，**多账号就是多个额度池**。AI 不能自己切的话，
+     * 遇到"这个号没额度了"只会回一句"明天再来"。
+     *
+     * 凭据边界：只返回 id 与显示名，**不含** Cookie / bdToken。
+     */
+    suspend fun listAccounts(): String {
+        val stored = runCatching { preferences.settings.first() }.getOrNull()
+            ?: return "读取账号失败（偏好不可用）。"
+        val accounts = stored.aiStudioAccounts
+        if (accounts.isEmpty()) return "App 里还没有已登录的 AI Studio 账号，请先在 App 的「账号」页登录。"
+        val effectiveId = (overrideAccountId?.takeIf { id -> accounts.any { it.id == id } }
+            ?: stored.aiStudioActiveId.ifBlank { null })
+            ?: accounts.first().id
+        return buildString {
+            appendLine("App 里已登录 ${accounts.size} 个 AI Studio 账号：")
+            accounts.forEach { account ->
+                val mark = if (account.id == effectiveId) " ← MCP 当前用这个" else ""
+                appendLine("- id=${account.id}  ${account.displayName()}$mark")
+            }
+            if (overrideAccountId != null) {
+                appendLine("（MCP 会话内已切到 id=$overrideAccountId；App 界面显示的仍是它自己的当前账号。）")
+            }
+            append("用 switch_account 的 account_id 参数切换；额度按账号与档位分开算，换账号能绕开「这个号没额度了」。")
+        }
+    }
+
+    /**
+     * 在本 MCP 会话内切换当前账号（v0.3.8，P0-3）。
+     *
+     * **不写回偏好**（用户拍板）：只影响 MCP 这一侧的后续调用，界面不动。
+     *
+     * 同时**关掉全部终端会话**：终端注册表只按名字索引、**不绑账号**（第 11 条
+     * 平行路径）——切完账号若不清理，下一次同名终端会静默连到旧账号的项目上，
+     * 用户完全无感。宁可重连一次，也不要"看着连上了实际连错人"。
+     */
+    suspend fun switchAccount(accountId: String): String {
+        val wanted = accountId.trim()
+        if (wanted.isBlank()) throw IllegalArgumentException("缺少 accountId。先调 list_accounts 查。")
+        val stored = runCatching { preferences.settings.first() }.getOrNull()
+            ?: throw IllegalStateException("读取账号失败（偏好不可用）。")
+        val account = stored.aiStudioAccounts.firstOrNull { it.id == wanted }
+            ?: throw IllegalArgumentException(
+                "找不到 id=$wanted 的账号。现有账号：「" +
+                    stored.aiStudioAccounts.joinToString("、") { "${it.id}（${it.displayName()}）" } +
+                    "」。先用 list_accounts 确认。",
+            )
+        val previous = overrideAccountId
+        overrideAccountId = account.id
+        closeTerminalsForAccountSwitch()
+        return buildString {
+            append("MCP 会话内已切到「${account.displayName()}」（id=${account.id}）。")
+            append("后续工具调用都用这个账号；**App 界面显示的仍是它自己的当前账号**（未改全局设置）。")
+            if (previous == null) {
+                append("终端会话已全部关闭（终端不绑账号，避免静默连到旧项目）——下次调用会自动重连。")
+            } else {
+                append("终端会话已全部关闭——下次调用会自动重连。")
+            }
+        }
     }
 
     private suspend fun requireAccount(): AiStudioAccount = activeAccount()
@@ -168,6 +276,8 @@ internal class AiStudioBridge(
 
         val schedules = runCatching { client.listSchedules(account, pid) }
             .getOrElse { error -> throw describe("读取算力档位", error) }
+        // v0.3.8：本周各配额池剩余（一次读，下面多处用）。读不到就是空 map。
+        val pools = quotaPools(account)
         return buildString {
             appendLine("项目 $pid（${project.displayName()}）：")
             appendLine("- 状态：${AiStudioSchedules.describeState(state)}")
@@ -198,16 +308,18 @@ internal class AiStudioBridge(
             }
             if (current?.costPerHour != null && current.costPerHour > 0) {
                 appendLine("- 消耗速率：${AiStudioSchedules.trim(current.costPerHour)} 算力卡/小时（开着就在扣）")
-                current.weekRemainingMinutes?.let {
-                    appendLine("- 本周剩余：${AiStudioSchedules.trim(it)} 分钟（约 ${AiStudioSchedules.trim(it / 60)} 小时）")
+                // v0.3.8：改从**配额池**取（以前读 schedule.weekRemainingMinutes，
+                // 那个字段全项目零赋值 → 这一行从未输出过）。
+                AiStudioQuota.poolFor(current, pools)?.let { pool ->
+                    appendLine("- 本周剩余：${AiStudioSchedules.trim(pool.remainingMinutes)} 分钟（约 ${AiStudioSchedules.trim(pool.remainingMinutes / 60)} 小时，${pool.type} 配额池）")
                 }
                 appendLine("- 若这批图跑完了且不再需要，调 stop_gpu 停止计费")
             }
-            appendLine("- 可选档位（共 ${schedules.size} 个）：")
+            appendLine("- 可选档位（共 ${schedules.size} 个）："))
             if (schedules.isEmpty()) {
                 appendLine("  （读不到档位——可能是登录态失效，或该项目当前不可选档）")
             } else {
-                schedules.forEach { schedule -> appendLine("  " + AiStudioSchedules.describe(schedule)) }
+                schedules.forEach { schedule -> appendLine("  " + AiStudioSchedules.describe(schedule, pools)) }
             }
             append("启动用 start_gpu，schedule 取上面各项的 schedule= 值。")
         }
@@ -220,12 +332,27 @@ internal class AiStudioBridge(
         val schedules = runCatching { client.listSchedules(account, pid) }
             .getOrElse { error -> throw describe("读取算力档位", error) }
         if (schedules.isEmpty()) return "读不到项目 $pid 的可选档位（可能登录态失效或该项目不可选档）。"
+        // v0.3.8：带上**每档自己的**本周剩余（以前这里是死字段，从未显示过）。
+        // 读不到就不带——不阻断主流程（档位列表本身仍然有用）。
+        val pools = quotaPools(account)
         return buildString {
             appendLine("项目 $pid 可选档位：")
-            schedules.forEach { appendLine("- " + AiStudioSchedules.describe(it)) }
+            schedules.forEach { appendLine("- " + AiStudioSchedules.describe(it, pools)) }
+            if (pools.isNotEmpty()) {
+                appendLine("（各档的「本周剩余」是该档自己配额池的数；换到更高级档位消耗更快，能跑的时间更短。）")
+            }
             append("start_gpu 的 schedule 参数取上面各项的 schedule= 值。")
         }
     }
+
+    /**
+     * 本周各档配额池剩余（v0.3.8）。读不到就返回空 map——**不当成错误**：
+     * 它只是锦上添花的信息，档位列表本身仍然可用。
+     */
+    private suspend fun quotaPools(account: AiStudioAccount): Map<String, Double> =
+        runCatching { client.fetchResources(account).weekQuota }
+            .onFailure { AppLogger.warn("读取本周配额失败（不影响档位列表）", it) }
+            .getOrDefault(emptyMap())
 
     /**
      * 启动项目环境（占一张 GPU）。
