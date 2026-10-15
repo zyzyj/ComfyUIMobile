@@ -80,6 +80,7 @@ import com.local.comfyuimobile.network.ActiveJobRecovery
 import com.local.comfyuimobile.network.ComfyClient
 import com.local.comfyuimobile.network.AiStudioClient
 import com.local.comfyuimobile.network.AiStudioKernelClient
+import com.local.comfyuimobile.network.TerminalOwnership
 import com.local.comfyuimobile.network.AiStudioTokenRefresher
 import com.local.comfyuimobile.network.AiStudioException
 import com.local.comfyuimobile.network.AiStudioProtocol
@@ -88,6 +89,7 @@ import com.local.comfyuimobile.network.AiStudioRetry
 import com.local.comfyuimobile.network.ExecutionNodeResolver
 import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.network.LanScanner
+import com.local.comfyuimobile.mcp.AiStudioSchedules
 import com.local.comfyuimobile.mcp.McpServerManager
 import com.local.comfyuimobile.network.NodeAvailability
 import com.local.comfyuimobile.network.ResultParser
@@ -744,6 +746,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 磁盘上的旧账号把内存盖回去（见 init 里的 settings.collect）。
         pendingAccountId = accountId
         _state.update { it.copy(aiStudio = clearedAccountPanel(panel, accounts, accountId)) }
+        // v0.3.8（P0-2，第 12 条平行路径）：**切账号路径也要主动刷新**。
+        //
+        // 登录路径一直有（"不能只指望 LaunchedEffect"那条注释就是它的理由），
+        // 而切账号恰恰只靠 effect，于是真机现象是：切完账号积分/算力卡/A币空白，
+        // 得等一会儿才出来；若切完立刻离开账号页，effect 根本不跑，就永远空着。
+        //
+        // 必须放在 _state.update **之后**：刷新读的是 activeAccount()，
+        // 而刚被切成新账号。也必须在 releaseAiStudioIdentity() 之后——
+        // 它会 invalidateAiStudioRefresh() 取消刷新 job 并递增代次。
+        aiStudioRefreshAccount()
+        aiStudioLoadProjects()
     }
 
     fun removeAiStudioAccount(accountId: String) {
@@ -766,6 +779,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 panel.copy(accounts = remaining)
             }
             it.copy(aiStudio = updated)
+        }
+        // v0.3.8（P0-2）：删掉正在用的账号等价于切账号（见上面的注释），
+        // 同样要主动刷新——否则新账号的余额也是空白。
+        if (removedActive) {
+            aiStudioRefreshAccount()
+            aiStudioLoadProjects()
         }
     }
 
@@ -1092,6 +1111,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 3. 清掉项目级 Cookie（ide-proxy / user-*），它们绑定在具体实例上。
      */
     private fun releaseAiStudioIdentity() {
+        // v0.3.8（P0-3）：切账号后 UI 那条终端属于旧账号的项目，归属表必须清——
+        // 否则新账号下会拿旧名字去复用，而它指向的是旧账号的项目（第 11 条平行路径）。
+        TerminalOwnership.clearUi()
         aiStudioActionJob?.cancel()
         aiStudioProjectJob?.cancel()
         aiStudioStartPollJob?.cancel()
@@ -1151,24 +1173,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // 免得用户撞上 403（虽然也有失败驱动刷新兜底，但那是先失败一次才修）。
             // 失败不阻断：本轮照旧用旧令牌，请求 403 时还有重试。
             val effective = refreshTokenIfStale(account)
-            val (points, signedTodayFromApi) = runCatching { aiStudio.fetchPointsInfo(effective) }
-                .onFailure { error ->
-                    if (error is CancellationException) throw error
-                    AppLogger.warn("读取 AI Studio 积分失败", error)
+            // v0.3.8（P0-2）：三个请求**并发**。
+            //
+            // 它们互不依赖（积分 / 算力卡 / A币 是三个不同接口），串行发等于把
+            // 三次往返叠起来；而请求越密集越容易撞上 8407 风控——并发既快又降低
+            // 风控概率。真机反馈的"切完账号要等一会儿"，一半来自这个串行。
+            //
+            // 每个请求都套 withRiskRetry：以前失败就永远空着，没有重试
+            // （用户看到的是空白，而不是"在重试"）。
+            val pointsDeferred = async {
+                runCatching {
+                    withRiskRetry("读取积分") { aiStudio.fetchPointsInfo(effective) }
                 }
-                .getOrDefault(null to null)
-            val snapshot = runCatching { aiStudio.fetchResources(effective) }
-                .onFailure { error ->
-                    if (error is CancellationException) throw error
-                    AppLogger.warn("读取 AI Studio 算力卡失败", error)
+                    .onFailure { error ->
+                        if (error is CancellationException) throw error
+                        AppLogger.warn("读取 AI Studio 积分失败", error)
+                    }
+                    .getOrDefault(null to null)
+            }
+            val resourcesDeferred = async {
+                runCatching {
+                    withRiskRetry("读取算力卡") { aiStudio.fetchResources(effective) }
                 }
-                .getOrDefault(AiStudioClient.ResourceSnapshot(null, null, emptyMap()))
-            val aCoin = runCatching { aiStudio.fetchACoin(effective) }
-                .onFailure { error ->
-                    if (error is CancellationException) throw error
-                    AppLogger.warn("读取 AI Studio A币失败", error)
+                    .onFailure { error ->
+                        if (error is CancellationException) throw error
+                        AppLogger.warn("读取 AI Studio 算力卡失败", error)
+                    }
+                    .getOrDefault(AiStudioClient.ResourceSnapshot(null, null, emptyMap()))
+            }
+            val aCoinDeferred = async {
+                runCatching {
+                    withRiskRetry("读取 A币") { aiStudio.fetchACoin(effective) }
                 }
-                .getOrNull()
+                    .onFailure { error ->
+                        if (error is CancellationException) throw error
+                        AppLogger.warn("读取 AI Studio A币失败", error)
+                    }
+                    .getOrNull()
+            }
+            val (points, signedTodayFromApi) = pointsDeferred.await()
+            val snapshot = resourcesDeferred.await()
+            val aCoin = aCoinDeferred.await()
             // v0.2.46：请求发出去之后用户可能已经切了账号。
             // v0.2.51：再加上代次校验——“切到 B 再切回 A”时 accountId 又会相等，
             // 只比账号 ID 拦不住旧请求，必须确认自己仍是最新一次刷新。
@@ -1235,6 +1280,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
+     * 拉一次云端项目的终端清单，并标出哪些是 AI 在用的（v0.3.8，P0-3）。
+     *
+     * 为什么要手动拉而不是自动同步：AI 什么时候开终端是**异步**发生的
+     * （MCP 侧在服务里），UI 没有事件可听。让用户点一下看，比做一套跨线程
+     * 通知简单得多，也不会引入新的状态同步问题。
+     */
+    fun aiStudioListTerminals() {
+        val account = _state.value.aiStudio.activeAccount() ?: return
+        val project = _state.value.aiStudio.projects.firstOrNull { it.running }
+            ?: _state.value.aiStudio.projects.firstOrNull()
+        if (project == null) {
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(error = "先在「账号」页启动一个项目")) }
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                val endpoint = kernelClient.fetchEndpoint(account, project.projectId, "")
+                kernelClient.listTerminals(account, endpoint)
+            }
+                .onSuccess { names ->
+                    // 归属表是进程内单例：MCP 侧开的终端会在那里登记。
+                    val aiNames = TerminalOwnership.mcpSnapshot()
+                    _state.update {
+                        it.copy(
+                            aiStudio = it.aiStudio.copy(
+                                terminalNames = names,
+                                aiTerminalNames = names.filter { name -> name in aiNames }.toSet(),
+                                error = null,
+                            ),
+                        )
+                    }
+                }
+                .onFailure { error -> failAiStudio("读取终端列表失败", error) }
+        }
+    }
+
+    /**
+     * 选出 UI 自己要用的终端（v0.3.8，P0-3）。
+     *
+     * **三处调用点共用这一个实现**（连接 / 重连 / 补 Cookie）——
+     * 以前三处一字不差地写了三遍 `listTerminals().firstOrNull() ?: createTerminal()`，
+     * 那是第 12 条平行路径（改一处等于没改）。
+     *
+     * 核心：**绝不复用不知归属的终端**。平台只给 name、没有归属字段，
+     * 而 AI 先建的那条多半排第一——复用它就等于"UI 接管了 AI 的终端"：
+     * 你会在控制台看到 ComfyUI 日志刷屏，敲的命令也进了 AI 的 shell。
+     * 所以只信自己登记过的那条；不在列表里就**新建**。
+     */
+    private suspend fun resolveUiTerminal(
+        account: AiStudioAccount,
+        endpoint: AiStudioKernelClient.KernelEndpoint,
+    ): String {
+        val remote = kernelClient.listTerminals(account, endpoint)
+        val mine = TerminalOwnership.ui()
+        if (mine != null && mine in remote) return mine
+        // 名字没了（项目重启等）→ 新建自己的那条。
+        val created = kernelClient.createTerminal(account, endpoint)
+        TerminalOwnership.ownUi(created)
+        return created
+    }
+
+    /**
      * 控制台：连上已运行项目的云端终端（Jupyter terminal）。
      *
      * 链路：running_status_check 拿 {baseUrl,token} → 有现成终端就复用，
@@ -1264,8 +1371,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         aiStudioActionJob = viewModelScope.launch {
             runCatching {
                 val endpoint = kernelClient.fetchEndpoint(account, project.projectId, "")
-                val existing = kernelClient.listTerminals(account, endpoint)
-                val name = existing.firstOrNull() ?: kernelClient.createTerminal(account, endpoint)
+                // v0.3.8（P0-3）：只复用**自己登记的**那条，否则新建。
+                val name = resolveUiTerminal(account, endpoint)
                 endpoint to name
             }
                 .onSuccess { (endpoint, name) ->
@@ -1371,7 +1478,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 在镜像里并未生成（只有 C / C.UTF-8 / POSIX），于是 ls 等工具按非
                 // UTF-8 处理，把中文文件名转义成 $'\345\220\257...' 这种八进制串，
                 // 根本没法看。实测改成 C.UTF-8 后中文立即正常。连接后静默设一次。
-                kernelClient.sendInput(TERMINAL_LOCALE_FIX)
+                kernelClient.sendInput(TERMINAL_LOCALE_FIX, kernelClient.session(name))
                 // 终端连上意味着刚刚做过一次真实项目请求，CookieJar 里的项目级 Cookie
                 // （ide-proxy、user-{uid}-{pid}）已是最新。项目级 Cookie 会轮换，而
                 // ComfyUI 客户端里那份只在连接那一刻设过——跟新一下，减少网关 403 的窗口。
@@ -1431,10 +1538,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (_state.value.aiStudio.activeAccountId != account.id) return@launch
                 _state.update { it.copy(aiStudio = it.aiStudio.copy(message = "终端重连中…")) }
                 // 终端名可能因项目重启而失效，重连前重新确认一次。
-                val listed = runCatching {
-                    kernelClient.listTerminals(account, endpoint).firstOrNull()
-                        ?: kernelClient.createTerminal(account, endpoint)
-                }
+                // v0.3.8（P0-3）：同样只复用自己登记的那条（见 resolveUiTerminal）。
+                val listed = runCatching { resolveUiTerminal(account, endpoint) }
                 val fresh = listed.getOrNull()
                 if (fresh != null) {
                     // 等待期间可能又断开/切账号，开新 socket 前再校一次代次。
@@ -1469,6 +1574,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * 把命令发给云端终端。
      */
+    /**
+     * UI 当前在用的终端会话（v0.3.8，P0-3）。
+     *
+     * 为什么要显式取而不是让 `sendInput` 落到"当前会话"：
+     * 不带 session 时平台侧用"当前会话"，而那个"当前"是**谁最后建的**——
+     * UI 连错终端时，用户点「中断」发出的 Ctrl+C 会**直接打死 AI 正在跑的 ComfyUI**。
+     * 这不是体验问题，是安全问题。
+     */
+    private fun uiSession(): AiStudioKernelClient.TerminalSession? =
+        TerminalOwnership.ui()?.let { name -> kernelClient.session(name) }
+
     fun aiStudioSendCommand(command: String) {
         if (!_state.value.aiStudio.consoleConnected) {
             _state.update { it.copy(aiStudio = it.aiStudio.copy(error = "先点「连接终端」")) }
@@ -1478,7 +1594,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 命令留痕（清单 §八）：终端完全控制后必须能事后追溯。
         AppLogger.info("控制台终端执行：${command.take(500)}")
         appendTerminal("$ $command\n")
-        if (!kernelClient.sendInput(command)) {
+        // v0.3.8（P0-3）：显式指定自己的会话，不落到"当前会话"。
+        if (!kernelClient.sendInput(command, uiSession())) {
             _state.update { it.copy(aiStudio = it.aiStudio.copy(error = "命令发送失败：终端未就绪")) }
         } else {
             _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleDraft = "")) }
@@ -1493,7 +1610,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun aiStudioInterruptConsole() {
         if (!_state.value.aiStudio.consoleConnected) return
-        kernelClient.sendRawInput("\u0003")
+        // v0.3.8（P0-3）：**必须带自己的 session**。不带就落到"当前会话"，
+        // 而 UI 连错终端时这一下 Ctrl+C 会打死 AI 正在跑的 ComfyUI。
+        kernelClient.sendRawInput("\u0003", uiSession())
     }
 
     /**
@@ -1504,7 +1623,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun aiStudioSendKey(raw: String) {
         if (!_state.value.aiStudio.consoleConnected) return
-        kernelClient.sendRawInput(raw)
+        kernelClient.sendRawInput(raw, uiSession())
     }
 
     /** 控制台：把常用命令快速填到输入框（不直接执行，由用户确认）。 */
@@ -1558,7 +1677,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * "看着乱"的来源之一（`resize()` 一直存在但全项目无人调用）。
      */
     fun aiStudioResizeConsole(cols: Int) {
-        kernelClient.resize(cols, CONSOLE_ROWS)
+        kernelClient.resize(cols, CONSOLE_ROWS, uiSession())
     }
 
     /**
@@ -1614,11 +1733,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             val resolved = endpoint?.takeIf { it.isUsable() }
                 ?: throw AiStudioException("补取项目级 Cookie 失败：平台未返回环境地址")
-            val existing = kernelClient.listTerminals(account!!, resolved)
-            val name = existing.firstOrNull() ?: kernelClient.createTerminal(account!!, resolved)
             kernelEndpoint = resolved
+            // v0.3.8（P0-3）：**不再建终端**。
+            //
+            // 以前这里建/复用一条 PTY，只为让网关下发项目级 Cookie——
+            // 而 warmUpProjectCookies 本身就是**纯 HTTP GET**（不需要终端），
+            // 所以那条 PTY 是纯浪费；更糟的是它的 firstOrNull() 会认领 AI 的终端。
             kernelClient.warmUpProjectCookies(account!!, resolved)
-            AppLogger.info("ComfyUI 连接前已补取项目级 Cookie（终端 $name）：[${kernelClient.cookieNames().joinToString()}]")
+            AppLogger.info("ComfyUI 连接前已补取项目级 Cookie：[${kernelClient.cookieNames().joinToString()}]")
             kernelClient.hasProjectCookies()
         }.onFailure { error ->
             AppLogger.warn("补取项目级 Cookie 失败（ComfyUI 可能被登录墙拒绝）", error)
@@ -1721,6 +1843,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 作废连接代次：旧 socket 的迟到回调会被丢弃（见 openTerminalSocket）。
         terminalConnectGeneration += 1
         kernelClient.closeTerminal()
+        // v0.3.8（P0-3）：归属表也清——否则下次连接会以为"我记的那条还在"，
+        // 而它已经被关掉了（resolveUiTerminal 会白等一次失败）。
+        TerminalOwnership.clearUi()
         kernelEndpoint = null
         terminalKeepAlive = false
         autoConnectAttempted = false
@@ -2023,7 +2148,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 startingProjectId = null,
                                 // 文案别说“机器已分配”：running=true 只是平台受理，
                                 // 真机里 baseinfo 长时间回 null 时机器其实还没分下来。
-                                message = "平台正在分配机器…（已等 ${waitedSeconds} 秒）",
+                                message = AiStudioSchedules.allocatingMessage(waitedSeconds),
                                 // 环境未确认可用前，不把它标成 ready，项目卡
                                 // 就会显示"正在启动环境…"而不是误导性的"运行中"。
                                 environmentReadyProjectId = null,
@@ -2081,7 +2206,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // 轮询超时也要清掉，否则卡片会一直转圈。
                     startingProjectId = null,
                     stoppingProjectId = null,
-                    message = "状态未变化，可点「刷新」查看",
+                    message = AiStudioSchedules.startupTimeoutMessage(sawRunning, waitedSeconds),
                 ),
             )
         }
