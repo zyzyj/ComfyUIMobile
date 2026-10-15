@@ -1480,9 +1480,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 根本没法看。实测改成 C.UTF-8 后中文立即正常。连接后静默设一次。
                 // 必须判空：kernel 在 session 为 null 时会落回"当前会话"，
                 // 可能把 locale 修正发给 AI 的终端（无害但脏）。
+                // 不在这里 resize：宽度应由界面按实际尺寸通过 aiStudioResizeConsole 告知，
+                // 硬编码一个列数反而会在窄屏上错行。
                 kernelClient.session(name)?.let { session ->
                     kernelClient.sendInput(TERMINAL_LOCALE_FIX, session)
-                    kernelClient.resize(CONSOLE_COLS, CONSOLE_ROWS, session)
                 }
                 // 终端连上意味着刚刚做过一次真实项目请求，CookieJar 里的项目级 Cookie
                 // （ide-proxy、user-{uid}-{pid}）已是最新。项目级 Cookie 会轮换，而
@@ -1697,9 +1698,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * "看着乱"的来源之一（`resize()` 一直存在但全项目无人调用）。
      */
     fun aiStudioResizeConsole(cols: Int) {
-        // resize 不判空无害（kernel 里 null 只是 return，不会误发给别人），
-        // 但同样带上自己的会话更准确。
-        kernelClient.resize(cols, CONSOLE_ROWS, uiSession())
+        // 同「中断」：判空——kernel 在 session 为 null 时会落回"当前会话"，
+        // 把尺寸发给 AI 的终端会让它的输出按错列宽换行。
+        val session = uiSession() ?: return
+        kernelClient.resize(cols, CONSOLE_ROWS, session)
     }
 
     /**
