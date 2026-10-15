@@ -201,19 +201,28 @@ class AiStudioKernelClient {
             }
             AppLogger.warn("envs/baseinfo 连续未返回有效 baseUrl，改用 running_status_check 兜底")
             val fallback = fetchRunningStatusCheck(account, projectId, scheduleName)
-            // v0.3.9（真机反馈）：兜底接口回 `running:false` 是**明确信号**——环境已被平台回收，
-            // 而不是"没拿到地址"。
+            // v0.3.9（真机反馈）：拿不到地址必须**说清是哪种拿不到**。
             //
-            // 真机日志（19:20:52 点连接终端）：baseinfo 连 4 次全为 `...null`，
-            // 兜底回 `{"running":false,"baseUrl":""}` → 旧代码拿空 baseUrl 去 userBase()
-            // 抛"平台没有返回环境地址"——用户完全不知道项目已经停了（54 秒后列表刷新
-            // 才发现"已从运行变为停止"）。判据必须说出来。
-            if (AiStudioProtocol.environmentGone(fallback)) {
-                throw AiStudioEnvironmentGoneException(
-                    "项目环境已被平台回收（项目已停止）：无法建立终端。请先重新启动项目环境。",
-                )
-            }
-            fallback
+            // 真机日志（19:20:52 点连接终端）分两段：
+            //   19:20:58 `{"running":true, "baseUrl":""}` → 报"平台没有返回环境地址"
+            //   19:21:15 `{"running":true, "baseUrl":""}` → 同样失败
+            //   19:21:26 列表刷新才发现项目已从运行变为停止
+            //
+            // 注意：**连接失败那一瞬 running 是 true**——所以不能只看 running:false
+            // 才报错。两种情形都抛本异常，用 [AiStudioEnvironmentGoneException.recycled]
+            // 区分，文案与后续动作不同：
+            //   已停 → "必须重新启动项目"（重试无意义）；
+            //   仍说在跑 → "很可能正在被回收，先刷新确认项目状态"（别抱期望重试）。
+            val gone = AiStudioProtocol.environmentGone(fallback)
+            throw AiStudioEnvironmentGoneException(
+                if (gone) {
+                    "项目环境已被平台回收（项目已停止）：无法建立终端。请先重新启动项目环境。"
+                } else {
+                    "平台没能给出终端地址（项目仍显示运行中，很可能正在被回收）。" +
+                        "请刷新确认项目状态；若已停止，重新启动后再连终端。"
+                },
+                recycled = gone,
+            )
         }
         val baseUrl = validBaseUrl(result.optString("baseUrl"))
         AppLogger.info("终端通道：baseUrl=$baseUrl")
@@ -665,7 +674,12 @@ class AiStudioKernelClient {
      */
     private fun userBase(endpoint: KernelEndpoint): String {
         val raw = endpoint.baseUrl.ifBlank { endpoint.hubBaseUrl.ifBlank { endpoint.basePath } }
-        if (raw.isBlank()) throw AiStudioException("终端通道失败：平台没有返回环境地址")
+        // v0.3.9：这里是**内部不变量**（正常不可达）。
+        //
+        // 拿不到地址的情况现在在 fetchEndpoint 里就拦下了，并招出
+        // [AiStudioEnvironmentGoneException] 带清楚原因与下一步；
+        // 所以走到这里还为空，说明是代码路径出错（如有人用手工构造的 endpoint）。
+        if (raw.isBlank()) throw AiStudioException("终端通道内部错误：endpoint 没有任何地址")
         val absolute = if (raw.startsWith("http")) raw else AiStudioProtocol.BASE_URL + "/" + raw.trim('/')
         // 平台只接受 https；baseinfo 给的地址是 http，这里强制升级。
         val secured = when {

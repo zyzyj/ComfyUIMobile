@@ -143,8 +143,9 @@ class AiStudioProtocolTest {
 
     @Test
     fun stillRunningIsNotGoneSoRetryIsMeaningful() {
-        // running=true 只是这次没给地址（环境正在分配）——可以重试，
-        // 绝不能报"已被回收"（那会叫用户把一个还活着的项目重新启动，白扣卡）。
+        // running=true 但没地址：**不能报"已被回收"**——真机上点连接终端那一瞬
+        // 就是这种（`{"running":true,"baseUrl":""}`）。此时项目可能正在被回收，
+        // 但还没定论；报成"已回收"会叫用户把一个还活着的项目重新启动（白扣卡）。
         assertFalse(
             AiStudioProtocol.environmentGone(JSONObject("""{"running":true,"baseUrl":"","token":""}""")),
         )

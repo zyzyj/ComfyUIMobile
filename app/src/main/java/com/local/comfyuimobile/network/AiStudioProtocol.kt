@@ -733,13 +733,34 @@ open class AiStudioException(
 ) : IllegalStateException(message)
 
 /**
- * 项目环境已被平台回收（v0.3.9）。
+ * 环境不可用：拿不到终端地址（v0.3.9）。
  *
- * 为什么单独一个类型：以前这种情况与"没拿到地址"共用同一条错误，而二者的**下一步
- * 完全不同**——“没拿到地址”是等一等/重试就可能好（环境正在分配），而环境已被回收
- * 必须**重新启动项目**。真机上用户正是因为看不出这个区别，反复点连接终端。
+ * ## 为什么要单独立一个类型
  *
- * 调用方（[com.local.comfyuimobile.MainViewModel.aiStudioConnectConsole]）靠它
- * 决定要不要回查项目列表并清掉"环境已就绪"标记。
+ * 它取代了原来的"平台没有返回环境地址"——那句话技术上不错，但**不告诉用户怎么办**。
+ * 真机上用户因此反复点"连接终端"（19:20:58 与 19:21:15 两次），而真实原因是
+ * 环境正在被回收，重试没有任何意义（54 秒后项目就自己变成已停止了）。
+ *
+ * ## 两种情形必须分开（[recycled]）
+ *
+ * 真机日志 19:20:58（点连接终端那一瞬）：
+ * ```
+ * 运行状态响应：{"running":true,"baseUrl":"","token":""}   ← running 是 true！
+ * ```
+ * 也就是说"环境没了"并不总是以 `running:false` 出现：机器被回收的过程中，
+ * 平台仍会说项目在跑，却已经不给地址。这两种的下一步不同：
+ *
+ * - `recycled = true`（确认已停）：**必须重新启动项目**；
+ * - `recycled = false`（仍说在跑但没地址）：可能是回收中或分配未完成，
+ *   先去确认项目状态，别抱期望重试。
+ *
+ * 两种情况调用方都要回查项目列表——用户需要知道的是"项目到底还在不在"。
+ *
+ * 注意：本异常的 errorCode 为 null，而 `AiStudioRiskControl.isRetryable(null)` 为 false——
+ * 所以它**不会**被 `withRiskRetry` 无意义地重试。
  */
-class AiStudioEnvironmentGoneException(message: String) : AiStudioException(message)
+class AiStudioEnvironmentGoneException(
+    message: String,
+    /** true = 平台确认项目已停；false = 平台仍说在跑但拿不到地址。 */
+    val recycled: Boolean,
+) : AiStudioException(message)
