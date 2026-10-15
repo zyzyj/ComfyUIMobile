@@ -46,6 +46,23 @@ class AiStudioQuotaRunnableTest {
     }
 
     @Test
+    fun zeroPoolIsARealValueAndWins() {
+        // 与 null 相反：**0 是真值**（该档配额已用尽），必须参与取小。
+        // 否则会报出"还能跑 N 小时"，而实际上该档一点都开不了——
+        // 正是本工具要消除的那种误导。
+        assertEquals(0.0, AiStudioQuota.runnableMinutes(balance480, 200.0, 0.0)!!, 0.001)
+        assertEquals("该档配额已用尽", AiStudioQuota.runnableLabel(balance480, 200.0, 0.0))
+    }
+
+    @Test
+    fun labelSaysExhaustedInsteadOfZeroHours() {
+        // 不能显示"约 0 小时"——那句话看着像四舍五入的噪声，
+        // 而实际含义是"这档现在开不了"。
+        val label = AiStudioQuota.runnableLabel(balance480, 200.0, 0.0)
+        assertTrue("不该出现 0 小时：$label", !label!!.contains("0 小时"))
+    }
+
+    @Test
     fun returnsNullWhenInputsUnusable() {
         // 任一类键输入不可信就返回 null（**不编数字**）——这是本项目的硬规矩。
         assertNull(AiStudioQuota.runnableMinutes(null, 200.0, null))

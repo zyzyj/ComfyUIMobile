@@ -112,8 +112,12 @@ internal object AiStudioQuota {
         val pointsPerHour = costPerHour / 100.0
         if (pointsPerHour <= 0.0) return null
         val byBalance = points / pointsPerHour * 60.0
-        // 周配额未知时不参与取小（不能拿 null 当 0，那会把可跑时长算成 0）。
-        val pool = poolMinutes?.takeIf { it > 0.0 } ?: return byBalance
+        // 周配额**未知**（null）时不参与取小——不能拿 null 当 0，那会把可跑时长
+        // 算成 0、让用户以为一点都跑不了。
+        //
+        // 但 **0 是真值**（该档配额已用尽），必须参与取小——否则会报出"还能跑 N 小时"，
+        // 而实际上该档一点都开不了（正是本工具要消除的那种误导）。
+        val pool = poolMinutes ?: return byBalance
         return minOf(byBalance, pool)
     }
 
@@ -126,8 +130,10 @@ internal object AiStudioQuota {
     fun runnableLabel(balanceMinutes: Double?, costPerHour: Double?, poolMinutes: Double?): String? {
         val total = runnableMinutes(balanceMinutes, costPerHour, poolMinutes) ?: return null
         val byBalance = runnableMinutes(balanceMinutes, costPerHour, null)
-        val limitedByPool = byBalance != null && poolMinutes != null && poolMinutes > 0 && poolMinutes < byBalance
+        val limitedByPool = byBalance != null && poolMinutes != null && poolMinutes < byBalance
         val reason = if (limitedByPool) "受该档周配额限制" else "受算力卡余额限制"
+        // 0 分钟是合法结果（该档配额已用尽）——如实说"已用尽"，不要报"约 0 小时"。
+        if (total <= 0.0) return "该档配额已用尽"
         return "约 ${AiStudioSchedules.trim(total / 60.0)} 小时（$reason）"
     }
 }

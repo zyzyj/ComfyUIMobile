@@ -1478,7 +1478,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 在镜像里并未生成（只有 C / C.UTF-8 / POSIX），于是 ls 等工具按非
                 // UTF-8 处理，把中文文件名转义成 $'\345\220\257...' 这种八进制串，
                 // 根本没法看。实测改成 C.UTF-8 后中文立即正常。连接后静默设一次。
-                kernelClient.sendInput(TERMINAL_LOCALE_FIX, kernelClient.session(name))
+                // 必须判空：kernel 在 session 为 null 时会落回"当前会话"，
+                // 可能把 locale 修正发给 AI 的终端（无害但脏）。
+                kernelClient.session(name)?.let { session ->
+                    kernelClient.sendInput(TERMINAL_LOCALE_FIX, session)
+                    kernelClient.resize(CONSOLE_COLS, CONSOLE_ROWS, session)
+                }
                 // 终端连上意味着刚刚做过一次真实项目请求，CookieJar 里的项目级 Cookie
                 // （ide-proxy、user-{uid}-{pid}）已是最新。项目级 Cookie 会轮换，而
                 // ComfyUI 客户端里那份只在连接那一刻设过——跟新一下，减少网关 403 的窗口。
@@ -1581,6 +1586,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 不带 session 时平台侧用"当前会话"，而那个"当前"是**谁最后建的**——
      * UI 连错终端时，用户点「中断」发出的 Ctrl+C 会**直接打死 AI 正在跑的 ComfyUI**。
      * 这不是体验问题，是安全问题。
+     *
+     * ⚠️ 注意：`AiStudioKernelClient` 的 `session ?: currentSession()` 意味着**传 null
+     * 仍会落回"当前会话"**。所以调用方**必须先判空**（见下面的发送方法），
+     * 不能把 null 当成"安全默认值"直接传下去。
      */
     private fun uiSession(): AiStudioKernelClient.TerminalSession? =
         TerminalOwnership.ui()?.let { name -> kernelClient.session(name) }
@@ -1594,8 +1603,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 命令留痕（清单 §八）：终端完全控制后必须能事后追溯。
         AppLogger.info("控制台终端执行：${command.take(500)}")
         appendTerminal("$ $command\n")
-        // v0.3.8（P0-3）：显式指定自己的会话，不落到"当前会话"。
-        if (!kernelClient.sendInput(command, uiSession())) {
+        // v0.3.8（P0-3）：显式指定自己的会话。
+        // **必须判空**：kernel 的 `session ?: currentSession()` 会在 null 时落回
+        // "当前会话"，而那可能就是 AI 的——宁可报错也不发错人。
+        val session = uiSession()
+        if (session == null) {
+            _state.update { it.copy(aiStudio = it.aiStudio.copy(error = "终端会话已失效，请重新点「连接终端」")) }
+            return
+        }
+        if (!kernelClient.sendInput(command, session)) {
             _state.update { it.copy(aiStudio = it.aiStudio.copy(error = "命令发送失败：终端未就绪")) }
         } else {
             _state.update { it.copy(aiStudio = it.aiStudio.copy(consoleDraft = "")) }
@@ -1610,9 +1626,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun aiStudioInterruptConsole() {
         if (!_state.value.aiStudio.consoleConnected) return
-        // v0.3.8（P0-3）：**必须带自己的 session**。不带就落到"当前会话"，
-        // 而 UI 连错终端时这一下 Ctrl+C 会打死 AI 正在跑的 ComfyUI。
-        kernelClient.sendRawInput("\u0003", uiSession())
+        // v0.3.8（P0-3）：**必须带自己的 session**，且**必须判空**——
+        // kernel 在 session 为 null 时会落回"当前会话"，而那可能就是 AI 的；
+        // 那样这一下 Ctrl+C 会打死 AI 正在跑的 ComfyUI。
+        val session = uiSession() ?: return
+        kernelClient.sendRawInput("\u0003", session)
     }
 
     /**
@@ -1623,7 +1641,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun aiStudioSendKey(raw: String) {
         if (!_state.value.aiStudio.consoleConnected) return
-        kernelClient.sendRawInput(raw, uiSession())
+        // 同「中断」：判空，不把 null 传下去（kernel 会落回"当前会话"）。
+        val session = uiSession() ?: return
+        kernelClient.sendRawInput(raw, session)
     }
 
     /** 控制台：把常用命令快速填到输入框（不直接执行，由用户确认）。 */
@@ -1677,6 +1697,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * "看着乱"的来源之一（`resize()` 一直存在但全项目无人调用）。
      */
     fun aiStudioResizeConsole(cols: Int) {
+        // resize 不判空无害（kernel 里 null 只是 return，不会误发给别人），
+        // 但同样带上自己的会话更准确。
         kernelClient.resize(cols, CONSOLE_ROWS, uiSession())
     }
 
