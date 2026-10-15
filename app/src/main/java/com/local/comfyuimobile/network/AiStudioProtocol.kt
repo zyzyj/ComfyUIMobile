@@ -721,7 +721,7 @@ object AiStudioProtocol {
 }
 
 /** AI Studio 接口调用失败。message 一律是可以直接展示给用户的中文。 */
-class AiStudioException(
+open class AiStudioException(
     message: String,
     /**
      * 平台业务层的 errorCode（如 403）。HTTP 层面的失败为 null。
