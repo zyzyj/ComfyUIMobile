@@ -200,7 +200,20 @@ class AiStudioKernelClient {
                 }
             }
             AppLogger.warn("envs/baseinfo 连续未返回有效 baseUrl，改用 running_status_check 兜底")
-            fetchRunningStatusCheck(account, projectId, scheduleName)
+            val fallback = fetchRunningStatusCheck(account, projectId, scheduleName)
+            // v0.3.9（真机反馈）：兜底接口回 `running:false` 是**明确信号**——环境已被平台回收，
+            // 而不是"没拿到地址"。
+            //
+            // 真机日志（19:20:52 点连接终端）：baseinfo 连 4 次全为 `...null`，
+            // 兜底回 `{"running":false,"baseUrl":""}` → 旧代码拿空 baseUrl 去 userBase()
+            // 抛"平台没有返回环境地址"——用户完全不知道项目已经停了（54 秒后列表刷新
+            // 才发现"已从运行变为停止"）。判据必须说出来。
+            if (AiStudioProtocol.environmentGone(fallback)) {
+                throw AiStudioEnvironmentGoneException(
+                    "项目环境已被平台回收（项目已停止）：无法建立终端。请先重新启动项目环境。",
+                )
+            }
+            fallback
         }
         val baseUrl = validBaseUrl(result.optString("baseUrl"))
         AppLogger.info("终端通道：baseUrl=$baseUrl")

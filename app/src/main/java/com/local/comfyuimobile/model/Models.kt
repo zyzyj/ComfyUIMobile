@@ -315,7 +315,20 @@ data class AppUiState(
      * 默认关——开启等于对外提供一个可操作 ComfyUI 的接口，必须由用户主动打开。
      */
     val mcpServerEnabled: Boolean = false,
-    /** MCP server 实际监听端口（开启后才有意义；0 表示未启动）。 */
+    /**
+     * MCP 服务**真实**是否在跑（v0.3.9）。
+     *
+     * 与 [mcpServerEnabled]（用户意图）严格分开：意图为真但服务可能没起来
+     * （通知权限、端口占用、自停竞态），那时只能说"启动失败"，不能显示"监听中"。
+     * 由 `McpServiceState.status` 推送——不做乐观假设。
+     */
+    val mcpServiceRunning: Boolean = false,
+    /**
+     * MCP server 实际监听端口，**由服务上报**（v0.3.9）。
+     *
+     * 以前这里是界面根据配置算出来的乐观值，于是服务没真启动时也显示端口，
+     * 状态文案（要求 port > 0）就卡在"正在启动…"上永不退出。现在 0 = 确实没监听。
+     */
     val mcpServerPort: Int = 0,
     /**
      * 用户配置的 MCP 端口（v0.2.88）。0 表示未设置（用 [com.local.comfyuimobile.mcp.McpServerManager.DEFAULT_PORT]）。
