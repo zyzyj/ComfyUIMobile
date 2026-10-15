@@ -83,6 +83,7 @@ import com.local.comfyuimobile.network.AiStudioKernelClient
 import com.local.comfyuimobile.network.TerminalOwnership
 import com.local.comfyuimobile.network.AiStudioTokenRefresher
 import com.local.comfyuimobile.network.AiStudioException
+import com.local.comfyuimobile.network.AiStudioEnvironmentGoneException
 import com.local.comfyuimobile.network.AiStudioProtocol
 import com.local.comfyuimobile.network.AiStudioRiskControl
 import com.local.comfyuimobile.network.AiStudioRetry
