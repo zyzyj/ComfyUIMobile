@@ -149,6 +149,15 @@ data class AiStudioState(
     /** 控制台是否已连上云端终端。 */
     val consoleConnected: Boolean = false,
     /**
+     * 云端项目里的终端清单（v0.3.8，P0-3）。空 = 没查过。
+     *
+     * 平台返回的终端**不分谁开的**，所以这里同时给出归属（见 [aiTerminalNames]），
+     * 让用户能一眼看出"AI 在用哪条"，而不是把 AI 的日志当成自己的。
+     */
+    val terminalNames: List<String> = emptyList(),
+    /** [terminalNames] 里哪些是 MCP（AI）在用的（进程内归属表快照）。 */
+    val aiTerminalNames: Set<String> = emptySet(),
+    /**
      * 控制台命令输入框的内容。
      *
      * 放在状态里而不是 Composable 的 remember，是为了让「快捷命令」芯片能把命令

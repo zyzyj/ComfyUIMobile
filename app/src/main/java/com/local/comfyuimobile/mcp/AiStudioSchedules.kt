@@ -94,18 +94,29 @@ internal object AiStudioSchedules {
      * @param pools 本周各配额池剩余（`weekQuota`）。给了就带上**这一档自己**的
      *   周剩余（v0.3.8）。以前读的是 `schedule.weekRemainingMinutes`——那个字段
      *   全项目零赋值，所以「本周剩余」从未真正显示过（死字段）。
+     * @param balanceMinutes 算力卡余额（分钟，v0.3.8 P0-4）。给了就算出**该档实际
+     *   能跑多久**（余额与周配额取小）——两者是不同限制，必须并列说清。
      */
-    fun describe(schedule: AiStudioSchedule, pools: Map<String, Double> = emptyMap()): String {
+    fun describe(
+        schedule: AiStudioSchedule,
+        pools: Map<String, Double> = emptyMap(),
+        balanceMinutes: Double? = null,
+    ): String {
         // 消耗与配额都可能是 0 / 未知，0 时不展示（与界面同一处理：不显示"0 算力卡/小时"）。
         val cost = schedule.costPerHour
             ?.takeIf { it > 0 }
             ?.let { " · ${trimNumber(it / 100.0)} 算力卡/小时" }
             .orEmpty()
-        val quota = AiStudioQuota.poolFor(schedule, pools)
+        val pool = AiStudioQuota.poolFor(schedule, pools)
+        val quota = pool
             ?.let { " · 本周剩余 ${trimNumber(it.remainingMinutes)} 分钟" }
             .orEmpty()
+        // 实际可跑时长：min(余额÷费率, 该档周配额)。算不出来就不说（不编）。
+        val runnable = AiStudioQuota.runnableLabel(balanceMinutes, schedule.costPerHour, pool?.remainingMinutes)
+            ?.let { " · 实际可跑 $it" }
+            .orEmpty()
         val usable = unavailableNote(schedule)
-        return "${schedule.displayName()} · schedule=${schedule.scheduleName}$cost$quota$usable"
+        return "${schedule.displayName()} · schedule=${schedule.scheduleName}$cost$quota$runnable$usable"
     }
 
     /**
@@ -138,18 +149,59 @@ internal object AiStudioSchedules {
     fun trim(value: Double): String = trimNumber(value)
 
     /**
+     * 轮询期间的提示（v0.3.8，P0-1）。纯函数，可单测。
+     *
+     * **必须写出"最长等多久"**：以前只说"已等 N 秒"，用户不知道有上限，
+     * 只能干等或反复重点启动（每次重点都可能再扣算力卡）。
+     */
+    fun allocatingMessage(waitedSeconds: Int): String =
+        "平台正在分配机器…（已等 ${waitedSeconds} 秒，最长等 ${MAX_STARTUP_WAIT_SECONDS / 60} 分钟）"
+
+    /**
+     * 轮询跑满仍未变成 running 时的收尾文案（v0.3.8，P0-1）。
+     *
+     * 两种情况**必须分开**——用户的下一步完全不同：
+     *
+     * - [sawRunning] = true：平台受理过（真的标成 running=true）又自己退回。
+     *   那是"平台没能分配到机器"，等下次或换档位。
+     * - [sawRunning] = false：平台从头到尾**没有受理过**。真机实测（cf08）这种
+     *   情况对应的是**配额见底**：同日志里 `resourceConsume 3428 > resourceTotal 3418`
+     *   （已用超）、`DCU: 0`（该账号无 DCU 权益），而 16G 档启动会扣卡、32G 这次
+     *   `resourceFree` 一直没动——就是没真正分配出机器。
+     *
+     * 以前两种都回一句"状态未变化，可点「刷新」查看"：既没说等了多久，也没说原因，
+     * 更没说下一步（"点刷新"只是重复同样的等待）。**用户不是在等一个结果，
+     * 是在决定要不要继续投入。**
+     */
+    fun startupTimeoutMessage(sawRunning: Boolean, waitedSeconds: Int): String = if (sawRunning) {
+        "平台没能分配到机器，本次启动已结束（等了 ${waitedSeconds / 60} 分钟）。" +
+            "可稍后重试，或换一个算力档位。"
+    } else {
+        "平台在 ${waitedSeconds / 60} 分钟内始终没有接受本次启动。" +
+            "常见原因是**算力余额不足**（可到上方「本周算力剩余」确认）或该档位暂时无货。" +
+            "建议：先看余额 → 换一个档位（各档额度独立，低档位常还有余额）→ 或换账号重试。"
+    }
+
+    /** 启动轮询的最长等待（秒）。与 MainViewModel 的轮询一致（前 5 轮 4 秒 + 后 35 轮 8 秒）。 */
+    const val MAX_STARTUP_WAIT_SECONDS = 300
+
+    /**
      * 档位可用性一览（v0.3.4，清单 §1.2）。纯函数，可单测。
      *
      * 算力卡是**按档位独立**的（用户实测：CPU 48h / DCU 56h / V100 47h / A100 仅 4h）。
      * 某一档用完不等于没得玩——把全部档位的剩余摆出来，AI 才会去换可用的档位，
      * 而不是直接告诉用户「没算力了，明天再来」。
      */
-    fun availabilityHint(schedules: List<AiStudioSchedule>, pools: Map<String, Double> = emptyMap()): String = buildString {
+    fun availabilityHint(
+        schedules: List<AiStudioSchedule>,
+        pools: Map<String, Double> = emptyMap(),
+        balanceMinutes: Double? = null,
+    ): String = buildString {
         appendLine("算力卡按档位独立计算——这一档用完，其他档位可能仍有余额。当前可选：")
         if (schedules.isEmpty()) {
             append("（读不到档位列表）")
         } else {
-            schedules.forEach { appendLine("  " + describe(it, pools)) }
+            schedules.forEach { appendLine("  " + describe(it, pools, balanceMinutes)) }
         }
         append("挑一个可用的档位重传 schedule 即可；档位规格与价格不同，不要盲目选最贵的。")
     }

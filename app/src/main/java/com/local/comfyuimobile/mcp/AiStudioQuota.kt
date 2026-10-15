@@ -75,4 +75,59 @@ internal object AiStudioQuota {
             .filter { it.key !in used }
             .map { Pool(it.key, it.value) }
     }
+
+    /**
+     * 某档位的**实际可跑时长**（分钟）（v0.3.8，P0-4）。纯函数，可单测。
+     *
+     * ## 公式
+     *
+     * ```
+     * 可用时间 = min( 算力卡余额 ÷ (costPerHour / 100), 该档周配额剩余 )
+     * ```
+     *
+     * 两者取小——**两个限制哪个先到就停在哪**：余额管总账，周配额管该档的上限。
+     *
+     * ## 单位依据（以前存疑，现已确认）
+     *
+     * v0.3.7 刻意没做折算，因为 `costPerHour` 单位存疑（注释说"分"，日志 `"200"`
+     * ÷ 100 = 2 点/小时，而官方口径 0.5 点/小时，差 4 倍）。
+     *
+     * **官网档位弹窗截图解掉了这个疑点**：
+     * ```
+     * 算力卡余额 8.0 点  →  选中环境可用时间 4.0 小时
+     * 8.0 ÷ 4.0 = 2.0 点/小时  ≡  costPerHour "200" ÷ 100  ✓
+     * ```
+     * 所以代码的 `/100` 是对的，官方 0.5 那个口径不适用于当前平台费率（或已调整）。
+     *
+     * @param balanceMinutes 算力卡余额（分钟，即 `computeCardMinutes`）
+     * @param costPerHour 该档每小时消耗的原始值（平台给的，除以 100 才是"点"）
+     * @param poolMinutes 该档周配额剩余（分钟）；null = 不知道，则不参与取小
+     * @return 可跑分钟数；**任一关键输入不可信就返回 null**（不编数字）
+     */
+    fun runnableMinutes(balanceMinutes: Double?, costPerHour: Double?, poolMinutes: Double?): Double? {
+        if (balanceMinutes == null || balanceMinutes <= 0.0) return null
+        if (costPerHour == null || costPerHour <= 0.0) return null
+        // 余额（分钟）先转成"点"：60 分钟 = 1 点。
+        val points = balanceMinutes / 60.0
+        val pointsPerHour = costPerHour / 100.0
+        if (pointsPerHour <= 0.0) return null
+        val byBalance = points / pointsPerHour * 60.0
+        // 周配额未知时不参与取小（不能拿 null 当 0，那会把可跑时长算成 0）。
+        val pool = poolMinutes?.takeIf { it > 0.0 } ?: return byBalance
+        return minOf(byBalance, pool)
+    }
+
+    /**
+     * 可跑时长的展示文案（v0.3.8，P0-4）；算不出来返回 null。
+     *
+     * 必须写明**是哪个限制**在卡——用户要知道"是余额不够还是这档配额用完"，
+     * 因为下一步完全不同（充值/等下周 vs 换档位）。
+     */
+    fun runnableLabel(balanceMinutes: Double?, costPerHour: Double?, poolMinutes: Double?): String? {
+        val total = runnableMinutes(balanceMinutes, costPerHour, poolMinutes) ?: return null
+        val byBalance = runnableMinutes(balanceMinutes, costPerHour, null)
+        val limitedByPool = byBalance != null && poolMinutes != null && poolMinutes > 0 && poolMinutes < byBalance
+        val reason = if (limitedByPool) "受该档周配额限制" else "受算力卡余额限制"
+        return "约 ${AiStudioSchedules.trim(total / 60.0)} 小时（$reason）"
+    }
 }

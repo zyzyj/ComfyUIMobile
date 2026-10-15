@@ -5,6 +5,7 @@ import com.local.comfyuimobile.model.AiStudioAccount
 import com.local.comfyuimobile.model.AiStudioProject
 import com.local.comfyuimobile.model.TerminalCommandSafety
 import com.local.comfyuimobile.network.AiStudioKernelClient
+import com.local.comfyuimobile.network.TerminalOwnership
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
@@ -183,6 +184,7 @@ internal class McpTerminalHost(
         aliases.clear()
         opened.clear()
         buffers.clear()
+        TerminalOwnership.clearAllMcp()
     }
 
     /** 读某终端**当前累积的输出**（不清空，用于 tail 日志）。 */
@@ -368,6 +370,9 @@ internal class McpTerminalHost(
             asUiCurrent = false,
             onOutput = { chunk -> synchronized(buffer) { buffer.append(chunk) } },
             onOpen = {
+                // v0.3.8（P0-3）：向进程内归属表登记，好让 UI 能看出"AI 在用哪条"。
+                // 不登记的话，UI 会把 AI 的日志当成自己的，用户完全不知道。
+                TerminalOwnership.ownMcp(name)
                 // locale 修正：平台的 en_US.UTF-8 没生成，中文文件名会被转义成
                 // $'\345...' 八进制串，跟界面控制台同一处理。
                 kernel.sendInput(TERMINAL_LOCALE_FIX, kernel.session(name))
@@ -376,6 +381,7 @@ internal class McpTerminalHost(
             onClosed = { reason ->
                 AppLogger.info("MCP 终端 $name 已断开：$reason")
                 opened.remove(name)
+                TerminalOwnership.clearMcp(name)
             },        )
     }
 

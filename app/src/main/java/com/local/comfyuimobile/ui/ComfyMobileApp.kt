@@ -240,6 +240,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.local.comfyuimobile.MainViewModel
 import com.local.comfyuimobile.network.AiStudioProtocol
+import com.local.comfyuimobile.network.TerminalOwnership
 import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.AdvancedEditorActivity
 import com.local.comfyuimobile.AiStudioLoginActivity
@@ -3134,14 +3135,39 @@ private fun QuickGenScreen(state: AppUiState, viewModel: MainViewModel) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // v0.3.8（P1-3）：终端/连接刚断开时报"尚未连接 ComfyUI 服务器"——
+        // 而"尚未连接"只是默认状态，不是错误（真机日志：21:28:59 断开，
+        // 21:29:25 快捷工作流加载失败，连点两次都失败，界面没说在重连）。
+        // 重连期间把入口置为"重连中"并禁用，比弹一个看起来像失败的错误清楚。
+        val reconnecting = state.status == ConnectionStatus.RECONNECTING
+        if (reconnecting) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "正在重连 ComfyUI 服务器，稍候即可选择工作流",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+        }
         OutlinedButton(
             onClick = { showWorkflowPicker = true },
             modifier = Modifier.fillMaxWidth(),
+            enabled = !reconnecting,
         ) {
             Icon(Icons.Outlined.Folder, null)
             Spacer(Modifier.width(8.dp))
             Text(
-                state.quickWorkflowName ?: "选择工作流",
+                state.quickWorkflowName ?: if (reconnecting) "重连中…" else "选择工作流",
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
             )
@@ -5245,7 +5271,13 @@ private fun quotaTypeLabel(type: String): String = when (type.uppercase()) {
  * 数字是平台给的，但**它属于哪一档**现在写清楚了。
  */
 @Composable
-private fun QuotaRow(label: String, minutes: Double, note: String? = null) {
+private fun QuotaRow(
+    label: String,
+    minutes: Double,
+    note: String? = null,
+    /** 该档实际可跑时长文案（v0.3.8，P0-4）；null = 算不出来，不显示。 */
+    runnableLabel: String? = null,
+) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(label, style = MaterialTheme.typography.bodyMedium)
@@ -5254,6 +5286,13 @@ private fun QuotaRow(label: String, minutes: Double, note: String? = null) {
                     it,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            runnableLabel?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.tertiary,
                 )
             }
         }
@@ -5455,8 +5494,22 @@ private fun AccountScreen(state: AppUiState, viewModel: MainViewModel) {
                                     QuotaRow(label = quotaTypeLabel(type), minutes = minutes)
                                 }
                             } else {
-                                matched.forEach { (name, pool, _) ->
-                                    QuotaRow(label = name, minutes = pool.remainingMinutes, note = quotaTypeLabel(pool.type))
+                                matched.forEach { (name, pool, schedule) ->
+                                    // v0.3.8（P0-4）：并列给出**周剩余**与**实际可跑**。
+                                    // 两者是不同限制：周配额管该档上限，余额管总账，
+                                    // 取小的那个才是真限制。只给周剩余会让人以为
+                                    // "V100 还剩 20 小时"——而它可能已经开不了了。
+                                    val runnable = AiStudioQuota.runnableLabel(
+                                        panel.computeCardMinutes,
+                                        schedule.costPerHour,
+                                        pool.remainingMinutes,
+                                    )
+                                    QuotaRow(
+                                        label = name,
+                                        minutes = pool.remainingMinutes,
+                                        note = quotaTypeLabel(pool.type),
+                                        runnableLabel = runnable,
+                                    )
                                 }
                                 // 没有任何档位引用的池也列出来，免得信息凭空消失。
                                 AiStudioQuota.unmatchedPools(panel.schedules, panel.weekQuota).forEach { pool ->
@@ -5787,12 +5840,16 @@ private fun ProjectCard(project: AiStudioProject, panel: AiStudioState, viewMode
                                 ?.takeIf { it > 0 }
                                 ?.let { " · ${trimNumber(it / 100.0)} 算力卡/小时" }
                                 .orEmpty()
-                            // v0.3.8：带上**这一档自己**的周剩余。选档时就能看到
-                            // "这档还剩多少"，不用退回去对照上面的卡片。
-                            val quota = AiStudioQuota.poolFor(schedule, panel.weekQuota)
-                                ?.let { " · 本周剩 ${trimNumber(it.remainingMinutes / 60.0)} 小时" }
-                                .orEmpty()
-                            Text(schedule.displayName() + cost + quota)
+                            // v0.3.8（P0-4）：带上"这一档实际能跑多久"——
+                            // min(余额÷费率, 该档周配额)。以前只给周剩余，用户会把它
+                            // 当成可跑时长（V100 显示 20 小时但其实开不了）。
+                            val pool = AiStudioQuota.poolFor(schedule, panel.weekQuota)
+                            val runnable = AiStudioQuota.runnableLabel(
+                                panel.computeCardMinutes,
+                                schedule.costPerHour,
+                                pool?.remainingMinutes,
+                            )?.let { " · 可跑 $it" }.orEmpty()
+                            Text(schedule.displayName() + cost + runnable)
                         }
                     }
                 }
@@ -6203,6 +6260,8 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
     val context = LocalContext.current
     // 终端配色主题：用户可选，存偏好。默认第一套。
     val theme = remember(panel.consoleThemeId) { resolveTerminalTheme(panel.consoleThemeId) }
+    // v0.3.8（P0-3）：终端清单对话框。点顶栏的"列出终端"后置 true。
+    var showTerminals by remember { mutableStateOf(false) }
     var themePickerExpanded by remember { mutableStateOf(false) }
     // 常用命令面板的展开/添加态：纯 UI 瞬时状态，不必进 ViewModel。
     var commandsExpanded by remember { mutableStateOf(false) }
@@ -6282,6 +6341,17 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                     style = MaterialTheme.typography.labelSmall,
                     color = theme.text.copy(alpha = 0.6f),
                 )
+            }
+            // v0.3.8（P0-3）：能列出项目里的终端，并标出哪些是 AI 在用的。
+            // 平台返回的终端不分归属，以前用户完全不知道 AI 占了哪条
+            // （表现是"终端被占用、看不见 AI 在用哪条"）。
+            IconButton(
+                onClick = {
+                    viewModel.aiStudioListTerminals()
+                    showTerminals = true
+                },
+            ) {
+                Icon(Icons.AutoMirrored.Outlined.List, "列出终端", Modifier.size(20.dp), tint = theme.text)
             }
             if (panel.consoleBusy) {
                 CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -6676,6 +6746,51 @@ private fun ConsoleScreen(state: AppUiState, viewModel: MainViewModel) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        }
+
+        // v0.3.8（P0-3）：终端清单。平台返回的终端不分归属，这里把归属标出来——
+        // 以前用户完全不知道 AI 占了哪条（表现是"终端被占用、看不见 AI 在用哪条"）。
+        if (showTerminals) {
+            val mine = TerminalOwnership.ui()
+            AlertDialog(
+                onDismissRequest = { showTerminals = false },
+                title = { Text("项目里的终端") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (panel.terminalNames.isEmpty()) {
+                            Text(
+                                "没有读到终端（项目可能未运行）。点「列出终端」重试。",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        } else {
+                            panel.terminalNames.forEach { name ->
+                                val label = when {
+                                    name == mine -> "本机界面"
+                                    name in panel.aiTerminalNames -> "AI 在用"
+                                    else -> "其它"
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        label,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (label == "AI 在用") MaterialTheme.colorScheme.tertiary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            Text(
+                                "平台只给名字、不告诉归属，所以这里的归属是本机自己记的。" +
+                                    "界面只会连标为「本机界面」的那条——绝不会接管 AI 的终端；" +
+                                    "若看不到自己那条，点「连接终端」会新建一条。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { showTerminals = false }) { Text("关闭") } },
             )
         }
     }

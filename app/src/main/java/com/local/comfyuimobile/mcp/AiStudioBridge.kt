@@ -276,8 +276,10 @@ internal class AiStudioBridge(
 
         val schedules = runCatching { client.listSchedules(account, pid) }
             .getOrElse { error -> throw describe("读取算力档位", error) }
-        // v0.3.8：本周各配额池剩余（一次读，下面多处用）。读不到就是空 map。
-        val pools = quotaPools(account)
+        // v0.3.8：本周各配额池剩余 + 算力卡余额（一次读，下面多处用）。
+        val snapshot = quotaSnapshot(account)
+        val pools = snapshot.weekQuota
+        val balanceMinutes = snapshot.computeCardMinutes
         return buildString {
             appendLine("项目 $pid（${project.displayName()}）：")
             appendLine("- 状态：${AiStudioSchedules.describeState(state)}")
@@ -319,7 +321,7 @@ internal class AiStudioBridge(
             if (schedules.isEmpty()) {
                 appendLine("  （读不到档位——可能是登录态失效，或该项目当前不可选档）")
             } else {
-                schedules.forEach { schedule -> appendLine("  " + AiStudioSchedules.describe(schedule, pools)) }
+                schedules.forEach { schedule -> appendLine("  " + AiStudioSchedules.describe(schedule, pools, balanceMinutes)) }
             }
             append("启动用 start_gpu，schedule 取上面各项的 schedule= 值。")
         }
@@ -332,27 +334,30 @@ internal class AiStudioBridge(
         val schedules = runCatching { client.listSchedules(account, pid) }
             .getOrElse { error -> throw describe("读取算力档位", error) }
         if (schedules.isEmpty()) return "读不到项目 $pid 的可选档位（可能登录态失效或该项目不可选档）。"
-        // v0.3.8：带上**每档自己的**本周剩余（以前这里是死字段，从未显示过）。
-        // 读不到就不带——不阻断主流程（档位列表本身仍然有用）。
-        val pools = quotaPools(account)
+        // v0.3.8：带上**每档自己的**本周剩余与实际可跑时长
+        // （以前这里是死字段，从未显示过）。读不到就不带——不阻断主流程。
+        val snapshot = quotaSnapshot(account)
+        val pools = snapshot.weekQuota
+        val balanceMinutes = snapshot.computeCardMinutes
         return buildString {
             appendLine("项目 $pid 可选档位：")
-            schedules.forEach { appendLine("- " + AiStudioSchedules.describe(it, pools)) }
-            if (pools.isNotEmpty()) {
-                appendLine("（各档的「本周剩余」是该档自己配额池的数；换到更高级档位消耗更快，能跑的时间更短。）")
+            schedules.forEach { appendLine("- " + AiStudioSchedules.describe(it, pools, balanceMinutes)) }
+            if (pools.isNotEmpty() || balanceMinutes != null) {
+                appendLine("（「实际可跑」是 min(算力卡余额 ÷ 该档费率, 该档周配额剩余)，即**两个限制取小**；")
+                appendLine("  两者是不同限制，报告「还能跑多久」时必须说清是哪一档、受哪个限制。）")
             }
             append("start_gpu 的 schedule 参数取上面各项的 schedule= 值。")
         }
     }
 
     /**
-     * 本周各档配额池剩余（v0.3.8）。读不到就返回空 map——**不当成错误**：
+     * 本周各档配额池剩余 + 算力卡余额（v0.3.8）。读不到就返回空/ null——**不当成错误**：
      * 它只是锦上添花的信息，档位列表本身仍然可用。
      */
-    private suspend fun quotaPools(account: AiStudioAccount): Map<String, Double> =
-        runCatching { client.fetchResources(account).weekQuota }
+    private suspend fun quotaSnapshot(account: AiStudioAccount): AiStudioClient.ResourceSnapshot =
+        runCatching { client.fetchResources(account) }
             .onFailure { AppLogger.warn("读取本周配额失败（不影响档位列表）", it) }
-            .getOrDefault(emptyMap())
+            .getOrDefault(AiStudioClient.ResourceSnapshot(null, null, emptyMap()))
 
     /**
      * 启动项目环境（占一张 GPU）。
@@ -371,6 +376,10 @@ internal class AiStudioBridge(
         val schedules = runCatching {
             AiStudioRetry.withRiskRetry("读取算力档位") { client.listSchedules(account, pid) }
         }.getOrElse { error -> throw describe("读取算力档位", error) }
+        // v0.3.8（P0-4）：档位不可选时要给 AI 可行动的信息，包括"各档实际能跑多久"。
+        val quota = quotaSnapshot(account)
+        val pools = quota.weekQuota
+        val balanceMinutes = quota.computeCardMinutes
         // §4.1：没传档位时用**上次用过的那个**（持久化在偏好里），
         // 而不是直接拿列表第一项——AI 说的"已记住默认档位"只是它的会话记忆。
         val remembered = wanted.takeIf { it.isNotEmpty() }
@@ -388,7 +397,7 @@ internal class AiStudioBridge(
                     // （实测 CPU 48h / DCU 56h / V100 47h / A100 仅 4h）。
                     // 不引导的话，AI 会告诉用户「没算力了」——而其他档位可能还剩几十小时。
                     throw IllegalStateException(
-                        error.message + "\n" + AiStudioSchedules.availabilityHint(schedules),
+                        error.message + "\n" + AiStudioSchedules.availabilityHint(schedules, pools, balanceMinutes),
                         error,
                     )
                 }
