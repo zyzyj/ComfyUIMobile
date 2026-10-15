@@ -1488,13 +1488,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _state.update {
                         it.copy(aiStudio = it.aiStudio.copy(consoleBusy = false, consoleConnected = false))
                     }
-                    // v0.3.9（真机反馈）：环境已被回收时，App 自己就把它标明白——
-                    // 不要等用户自己去刷新列表才发现（真机上是 54 秒后才发现的）。
+                    // v0.3.9（真机反馈）：拿不到地址时，App 自己就把项目状态查明白——
+                    // 不要等用户自己去刷新才发现（真机上是 54 秒后才发现的）。
                     //
                     // 以前这里只报错，项目卡还挂着"运行中/环境已就绪"，于是用户会
                     // 反复点"连接终端"而不去重新启动——因为他以为环境还在。
+                    //
+                    // 两种情形都回查（recycled 只影响文案）：
+                    //   ① 已确认回收（running:false）→ 列表刷新会把项目卡扯成停止；
+                    //   ② 仍说在跑却没地址（真机上就是这种，running 是 true）→
+                    //      回查能看出它到底还在不在。
                     if (error is AiStudioEnvironmentGoneException) {
-                        AppLogger.warn("连接终端发现项目 $connectProjectId 环境已被回收，回查项目状态")
+                        AppLogger.warn(
+                            "连接终端失败：环境不可用（recycled=${error.recycled}），回查项目 $connectProjectId 状态",
+                        )
                         _state.update {
                             it.copy(
                                 aiStudio = it.aiStudio.copy(
@@ -1503,7 +1510,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 ),
                             )
                         }
-                        // 回查一次列表：把项目卡的"运行中"也扯掉（否则要等下次刷新）。
                         aiStudioLoadProjects(silent = true)
                     }
                     failAiStudio("连接控制台失败", error)
@@ -1847,7 +1853,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             var attempt = 0
             while (attempt < 3 && endpoint?.isUsable() != true) {
                 if (attempt > 0) delay(2_000L)
-                endpoint = kernelClient.fetchEndpoint(account!!, pid, "")
+                // v0.3.9：fetchEndpoint 拿不到地址时会抛 AiStudioEnvironmentGoneException
+                // （它现在是"拿不到就明说"）。但这里**必须继续重试**——
+                // 本节的目的正是"实例刚启动、环境还没分配完"时多等几秒（见上面的注释）。
+                // 不捕获的话重试语义就被那个异常吃掉了（循环第一次就跳出）。
+                endpoint = runCatching { kernelClient.fetchEndpoint(account!!, pid, "") }
+                    .onFailure { error ->
+                        if (error is CancellationException) throw error
+                        AppLogger.warn("补取项目级 Cookie：第 ${attempt + 1} 次拿环境地址失败（${error.message}）")
+                    }
+                    .getOrNull()
                 attempt += 1
             }
             val resolved = endpoint?.takeIf { it.isUsable() }
