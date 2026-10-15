@@ -125,6 +125,38 @@ class AiStudioProtocolTest {
         assertFalse(AiStudioProtocol.parseRunning(JSONObject("{}")))
     }
 
+    /**
+     * 环境回收判定（v0.3.9）。
+     *
+     * 真机日志：点连接终端时 baseinfo 连 4 次全回 `...null`，兜底
+     * `running_status_check` 回 `{"running":false,"baseUrl":""}`。
+     * 旧代码不看 running，报"平台没有返回环境地址"——而实际上是**环境已被回收**。
+     * 两者下一步完全不同（重试 vs 重新启动项目），必须分开。
+     */
+    @Test
+    fun detectsEnvironmentGoneFromStoppedFallback() {
+        // 真机原样：平台说项目没在跑 → 环境已被回收。
+        assertTrue(
+            AiStudioProtocol.environmentGone(JSONObject("""{"code":0,"jumpUrl":"","msg":"","running":false,"baseUrl":"","token":""}""")),
+        )
+    }
+
+    @Test
+    fun stillRunningIsNotGoneSoRetryIsMeaningful() {
+        // running=true 只是这次没给地址（环境正在分配）——可以重试，
+        // 绝不能报"已被回收"（那会叫用户把一个还活着的项目重新启动，白扣卡）。
+        assertFalse(
+            AiStudioProtocol.environmentGone(JSONObject("""{"running":true,"baseUrl":"","token":""}""")),
+        )
+    }
+
+    @Test
+    fun treatUnknownShapeAsGone() {
+        // 与 parseRunning 同一取向：没有线索时按"不运行"处理。
+        // 此处宁可让用户点一次启动，也不要让他无限重试一个已经没了的终端。
+        assertTrue(AiStudioProtocol.environmentGone(JSONObject("{}")))
+    }
+
     @Test
     fun parsesSignInStateFromIsFinishSign() {
         assertEquals(true, AiStudioProtocol.parseSignInDone(JSONObject("""{"isFinishSign":true}""")))

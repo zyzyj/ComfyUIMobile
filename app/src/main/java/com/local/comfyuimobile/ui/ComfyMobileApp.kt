@@ -4233,15 +4233,21 @@ private fun McpScreen(
                 // v0.2.97：标题叫"服务开关"——页面顶栏已经是"MCP 服务"，
                 // 这里再写一次会出现两个同名标题（用户截图确认过）。
                 title = "服务开关",
+                // v0.3.9：以**服务上报的真实状态**为准，不再靠 mcpServerPort > 0 猜。
+                // 四态：就绪 / 启动中 / 启动失败 / 已关闭。
+                //
+                // 以前只有"监听中 / 正在启动… / 已关闭"三态，服务真失败时既不算监听中
+                // （port=0）也不算关闭（enabled=true），于是永远停在"正在启动…"——
+                // 用户只看到转圈，不知道是失败还是慢，也无法行动。
                 subtitle = when {
-                    state.mcpServerEnabled && state.mcpServerPort > 0 -> {
+                    state.mcpServiceRunning && state.mcpServerPort > 0 -> {
                         val base = "监听中：127.0.0.1:${state.mcpServerPort}"
                         // 只在未就绪时挂一句短提示；就绪时不额外占字。
                         if (availability == ComfyAvailability.Reason.READY) base
                         else "$base · ComfyUI 未就绪，详见下方诊断"
                     }
-                    state.mcpServerEnabled -> "正在启动…"
-                    else -> "已关闭 —— 开启后同机 AiCode 可操作本 App 连着的 ComfyUI"
+                    !state.mcpServerEnabled -> "已关闭 —— 开启后同机 AiCode 可操作本 App 连着的 ComfyUI"
+                    else -> "正在启动…（若长时间停在这里，看下方诊断/日志）"
                 },
                 checked = state.mcpServerEnabled,
                 onCheckedChange = viewModel::setMcpServerEnabled,
@@ -4879,7 +4885,13 @@ private fun SettingsContent(
         // —— MCP 服务（v0.2.88）：入口在独立页 ——
         SettingsSection("MCP 服务", icon = Icons.Outlined.Extension) {
             Text(
-                if (state.mcpServerEnabled) "运行中 · 127.0.0.1:${state.mcpServerPort}" else "关闭中",
+                // v0.3.9：以真实状态为准——意图开但服务没起时不能报"运行中"，
+                // 而那正是真机上「假打开」让人看不出问题的原因。
+                when {
+                    state.mcpServiceRunning && state.mcpServerPort > 0 -> "运行中 · 127.0.0.1:${state.mcpServerPort}"
+                    state.mcpServerEnabled -> "启动失败或未就绪 —— 进右上页看诊断"
+                    else -> "关闭中"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

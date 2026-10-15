@@ -21,6 +21,7 @@ import com.local.comfyuimobile.mcp.AiStudioBridge
 import com.local.comfyuimobile.mcp.KernelTerminalBackend
 import com.local.comfyuimobile.mcp.McpCallLog
 import com.local.comfyuimobile.mcp.McpServerManager
+import com.local.comfyuimobile.mcp.McpServiceState
 import com.local.comfyuimobile.mcp.McpTerminalHost
 import com.local.comfyuimobile.network.AiStudioKernelClient
 import com.local.comfyuimobile.network.ComfyClient
@@ -104,10 +105,35 @@ class McpServerService : Service() {
             if (intent.action == ACTION_PANIC) panicStop() else stopServer(StopReason.USER)
             return START_NOT_STICKY
         }
+        // v0.3.9（修「假打开」）：这里**不再读磁盘**判断该不该跑。
+        //
+        // 原来的 `if (stored?.mcpServerEnabled != true)` 是那条竞态的根源：
+        // 用户点开时 `McpServerService.start()` 是**同步**发起的，而 enabled=true 的
+        // 落盘是 `viewModelScope.launch`（异步）——本方法几乎必然先跑，读到上一次的
+        // false 就立刻自停。界面开关读内存意图（true），于是「开亮着、服务已死、
+        // 通知没卡片」——用户说的"假打开"。
+        //
+        // 这里只看**内存意图**（本方法是同步的，读不了 DataStore）；
+        // 磁盘兑底交给 suspend 的 startServer（系统重建、没人表过态时用得上）。
+        if (McpServiceState.intent == false) {
+            AppLogger.warn("MCP 用户意图为关，本次不启动（START_NOT_STICKY）")
+            return START_NOT_STICKY
+        }
         // v0.3.5（P0-2）：上一轮是「不该运行」而停的，这一轮就别再让系统重建了。
         // 否则会变成：系统重建 → 立刻自停 → 系统再重建 → …（日志里 30 秒 24 次空转）。
+        //
+        // v0.3.9：**只对系统重建（intent == null）生效**。
+        //
+        // 以前不管哪种启动都拦，于是它成了「假打开」的**第二重成因**：
+        // 服务因 NOT_ENABLED 自停后（那正是开的时候必经的路），用户再拨开开关——
+        // 这次明明是用户的显式启动（带 intent），却因守卫直接返回，
+        // 服务永远起不来、通知也不会出现。用户看到的就是"开了个假的"。
+        // 用户的显式启动必须永远放行；需要限流的只是系统主动重建。
         val previous = lastStopReason
-        if (previous == StopReason.NOT_ENABLED || previous == StopReason.AUTH || previous == StopReason.START_FAILED) {
+        val systemRebuild = intent == null
+        if (systemRebuild &&
+            (previous == StopReason.NOT_ENABLED || previous == StopReason.AUTH || previous == StopReason.START_FAILED)
+        ) {
             AppLogger.warn(
                 "MCP 上一轮因「$previous」停止，本轮不再重建（START_NOT_STICKY）。" +
                     "若这是你没预料到的：请到 App 的 MCP 服务页确认开关状态；" +
@@ -126,9 +152,11 @@ class McpServerService : Service() {
     private suspend fun startServer(token: String) {
         val stored = runCatching { AppPreferences(this).settings.first() }.getOrNull()
         // v0.3.0（清单 P3）：sticky 重建（onStartCommand 收到 null intent）会重新走这里。
-        // 若用户已经关了 MCP（偏好 enabled=false），不应该被系统拉起来——
-        // 否则"关了又自己活了"，用户以为开关坏了。
-        if (stored?.mcpServerEnabled != true) {
+        //
+        // v0.3.9：判据改走 [McpServiceState.shouldRun]（意图优先、磁盘兜底）——
+        // 这里以前直接读 `stored?.mcpServerEnabled`，而磁盘写入是异步的，
+        // 会把用户刚点的"开"读成上一个"关"。
+        if (!McpServiceState.shouldRun(stored?.mcpServerEnabled == true)) {
             AppLogger.info("MCP 服务被系统重建，但开关已关闭，不再启动（改为正常停止）")
             stopServer(StopReason.NOT_ENABLED)
             return
@@ -204,7 +232,11 @@ class McpServerService : Service() {
             resultSink = { media, file -> resultCache.add(media, file, ResultSource.MCP) },
             onSubmitted = { promptId -> adoptSubmittedJob(promptId) },
         )
-        markRunning(true)
+        // v0.3.9：带上**真实绑定端口**上报——界面与自检都读它，不再各自猜。
+        McpServiceState.markRunning(bound)
+        // 启动成功就清掉上一轮的停止原因：否则一次历史失败会永久挡住
+        // 后续的系统重建（那些原因只在"上一轮就是因此停的"时才有意义）。
+        lastStopReason = null
         AppLogger.info("MCP 前台服务已就绪：127.0.0.1:$bound")
         // §4.5：真机日志里中途出现过一次 initialize，可能是"App 进程被杀后重启"
         // （那就是 AI 的那次长等待白等了）。启动也在调用日志里记一条——它在界面上
@@ -350,7 +382,7 @@ class McpServerService : Service() {
     private fun stopServer(reason: StopReason = StopReason.USER) {
         runCatching { manager?.stop() }
         manager = null
-        markRunning(false)
+        McpServiceState.markStopped()
         // 只有「用户主动关 / 紧急停止」才改开关。其余都是系统或内部行为，
         // 不代表用户意愿——写成 false 会悄悄关掉用户的开关，并（见上）形成自锁。
         //
@@ -371,7 +403,7 @@ class McpServerService : Service() {
     override fun onDestroy() {
         runCatching { manager?.stop() }
         manager = null
-        markRunning(false)
+        McpServiceState.markStopped()
         // 锁必须在 onDestroy 释放：stopServer 只覆盖"用户主动关"，
         // 系统回收服务（swipe/低内存）走的是 onDestroy。漏了就一直持有到进程死。
         releaseBackgroundLocks()
@@ -478,19 +510,14 @@ class McpServerService : Service() {
         const val EXTRA_TOKEN = "mcp_token"
 
         /**
-         * 服务当前是否在跑。
+         * v0.3.9 删除了这里的 `isRunning()`。
          *
-         * 用进程内的静态标记而非 `ActivityManager.getRunningServices`（后者对第三方
-         * App 已基本失效）。偏好里另存了开关值，两者含义不同：这里是"这一刻真的活着吗"。
+         * 它曾经是本类的静态标记，与界面侧的 `mcpServerPort > 0`（乐观值）各说一套，
+         * 直接造成了真机上的"开关亮着、服务已死、自检全红"。现在**只有**
+         * [McpServiceState] 是真相源——留着这个同义入口，下一个人很可能随手用它
+         * 又绕回平行路径（本项目已因此踩过 12 次）。调用方一律用
+         * `McpServiceState.isRunning()`。
          */
-        @Volatile
-        private var running = false
-
-        fun isRunning(): Boolean = running
-
-        internal fun markRunning(value: Boolean) {
-            running = value
-        }
 
         /** 启动前台服务。失败时不抛（调用方只需知道结果）。 */
         fun start(context: Context, token: String): Boolean = runCatching {

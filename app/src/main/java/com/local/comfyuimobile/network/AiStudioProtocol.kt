@@ -181,6 +181,23 @@ object AiStudioProtocol {
     fun parseProjects(result: JSONObject): List<AiStudioProject> = parseProjectPage(result).projects
 
     /**
+     * 从 `running_status_check` 的响应判定：环境是不是已经被回收了（v0.3.9）。
+     *
+     * ## 为什么要单独一个函数
+     *
+     * 这个接口是 baseinfo 拿不到地址时的**兜底**。真机日志（19:20:52 点连接终端）：
+     * baseinfo 连 4 次全回 `...null`，兜底回 `{"running":false,"baseUrl":""}`。
+     * 旧代码不看 `running`，直接拿空 baseUrl 去拼地址，招出"平台没有返回环境地址"——
+     * **用户完全不知道项目已经停了**（要 54 秒后列表刷新才发现）。
+     *
+     * 回 true  = 平台说项目还在跑（只是这次没给地址，可以重试）；
+     * 回 false = **环境已被回收**，重试无意义，必须重新启动项目。
+     *
+     * 抽成纯函数是为了可单测（网络链路上测不了这条分支，而它正是真机踩到的那条）。
+     */
+    fun environmentGone(fallbackResult: JSONObject): Boolean = !parseRunning(fallbackResult)
+
+    /**
      * 判断项目是否在运行。
      *
      * 平台真实字段：`running`（布尔，前端直接读它）。其余名字作为兜底。
@@ -714,3 +731,15 @@ class AiStudioException(
      */
     val errorCode: Int? = null,
 ) : IllegalStateException(message)
+
+/**
+ * 项目环境已被平台回收（v0.3.9）。
+ *
+ * 为什么单独一个类型：以前这种情况与"没拿到地址"共用同一条错误，而二者的**下一步
+ * 完全不同**——“没拿到地址”是等一等/重试就可能好（环境正在分配），而环境已被回收
+ * 必须**重新启动项目**。真机上用户正是因为看不出这个区别，反复点连接终端。
+ *
+ * 调用方（[com.local.comfyuimobile.MainViewModel.aiStudioConnectConsole]）靠它
+ * 决定要不要回查项目列表并清掉"环境已就绪"标记。
+ */
+class AiStudioEnvironmentGoneException(message: String) : AiStudioException(message)

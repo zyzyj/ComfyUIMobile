@@ -91,6 +91,7 @@ import com.local.comfyuimobile.network.LanAddress
 import com.local.comfyuimobile.network.LanScanner
 import com.local.comfyuimobile.mcp.AiStudioSchedules
 import com.local.comfyuimobile.mcp.McpServerManager
+import com.local.comfyuimobile.mcp.McpServiceState
 import com.local.comfyuimobile.network.NodeAvailability
 import com.local.comfyuimobile.network.ResultParser
 import com.local.comfyuimobile.network.PromptSubmissionException
@@ -121,6 +122,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
@@ -275,6 +277,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** MCP 自动拉起只试一次：偏好每次推送都重试会形成"启了又停"的抖动。 */
     private var mcpAutoStartAttempted = false
     /**
+     * 盯 MCP 启动结果的任务（v0.3.9）。
+     *
+     * 为什么要：以前界面只有"正在启动…"与"监听中"两态，服务因任何原因没起来
+     * 就永远停在"正在启动…"——既不说失败也不给下一步。这里给一个上陉，超时就
+     * 如实提示。重复拨开关时取消上一次，只留最新的那次。
+     */
+    private var mcpStartupWatchJob: Job? = null
+    /**
      * v0.3.5（P0-3）：MCP 开关的「内存领先磁盘」保护，与 `pendingAccountId` 同款。
      *
      * 用户点开启后，落盘是异步的；而服务停止时的落盘也是异步的。两者并发、
@@ -283,6 +293,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     @Volatile private var pendingMcpEnabled: Boolean? = null
     init {
+        // v0.3.9：订阅 MCP 服务真实状态。这是界面与自检**唯一**的真相源。
+        //
+        // 以前三处各说一套：界面看 `mcpServerPort > 0`（乐观值）、自检看
+        // `McpServerService.isRunning()`（另一个静态标记），而服务自己不同步任何东西。
+        // 结果就是真机反馈的"开关亮着、服务已死、自检全红"。
+        viewModelScope.launch {
+            McpServiceState.status.collect { status ->
+                val port = (status as? McpServiceState.Status.Running)?.port ?: 0
+                _state.update { it.copy(mcpServiceRunning = status is McpServiceState.Status.Running, mcpServerPort = port) }
+                // 服务真就绪了就取消超时抑制器（watchMcpStartup 里的 first 已会自然完成，
+                // 这里只是把引用清掉，避免下一次拨开关时 cancel 一个已完成的任务）。
+                if (status is McpServiceState.Status.Running) mcpStartupWatchJob = null
+            }
+        }
         // v0.2.81：把令牌刷新器接入两个 client。刷新出新 bdToken 后由 applyRefreshedToken
         // 回写账号并落盘（client 不知道账号列表与 DataStore）。
         aiStudio.tokenRefresher = tokenRefresher
@@ -339,7 +363,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         mcpServerToken = stored.mcpServerToken,
                         mcpServerRequireAuth = stored.mcpServerRequireAuth,
                         mcpServerConfiguredPort = stored.mcpServerPort,
-                        mcpServerPort = if (McpServerService.isRunning()) effectiveMcpPort() else 0,
+                        // v0.3.9：这里**不再算** mcpServerPort/mcpServiceRunning。
+                        //
+                        // 以前写的是 `if (McpServerService.isRunning()) effectiveMcpPort() else 0`
+                        // ——那是以偏好的每次推送为准在猜服务状态（且用的是**配置**端口，
+                        // 而服务绑的可能不是它）。现在这两个字段只由 `McpServiceState.status`
+                        // 推送，偏好不得插手，否则会把真实值冲成 0。
                         aiStudio = _state.value.aiStudio.copy(
                             accounts = stored.aiStudioAccounts,
                             // v0.2.46：账号字段跟 serverInput 一样需要"内存领先磁盘"的
@@ -378,21 +407,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 失败回拨开关并给提示。
                 // v0.3.5：自动拉起的判据同样以内存意图为准（与上面恢复偏好处一致）。
                 // 否则会出现「界面显示开、服务不拉起」或相反。
-                if ((pendingMcpEnabled ?: stored.mcpServerEnabled) && !McpServerService.isRunning() && !mcpAutoStartAttempted) {
+                // v0.3.9：自动拉起也要把意图写进 McpServiceState，否则服务侧的
+                // 启动判据仍会读到磁盘上的旧值（与手动路径同一个坑）。
+                if ((pendingMcpEnabled ?: stored.mcpServerEnabled) && !McpServiceState.isRunning() && !mcpAutoStartAttempted) {
+                    McpServiceState.intent = true
                     val started = McpServerService.start(app, stored.mcpServerToken)
                     mcpAutoStartAttempted = true
+                    if (started) watchMcpStartup()
                     if (!started) {
                         AppLogger.warn("MCP 自动拉起失败（通常是通知权限未授予）")
                         _state.update {
                             it.copy(
                                 mcpServerEnabled = false,
-                                mcpServerPort = 0,
                                 notice = "MCP 服务自动启动失败，请确认通知权限已开启后手动打开",
                             )
                         }
                         // 开关被回拨为 false：内存意图也要同步改，否则界面与磁盘
                         // 会各说一套（pendingMcpEnabled 会一直压住磁盘的 false）。
                         pendingMcpEnabled = false
+                        McpServiceState.intent = false
                         // 要落盘——否则下次进 App 又会试一次。
                         viewModelScope.launch {
                             runCatching { preferences.setMcpServerEnabled(false, System.currentTimeMillis()) }
@@ -985,9 +1018,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 切到 AiCode"，此时本 App 已进后台，挂 ViewModel 的进程会被回收。
      */
     fun setMcpServerEnabled(enabled: Boolean) {
-        // 先记内存意图：下面两个 launch（ViewModel 的落盘 与 服务停止时的落盘）
-        // 并发且无顺序保证，磁盘值可能在一瞬间被盖回旧值（P0-3）。
+        // 先记内存意图（两处）：
+        //  ① pendingMcpEnabled——挡下面两个异步落盘互相覆盖（v0.3.5 P0-3）；
+        //  ② McpServiceState.intent——**服务启动判据读它**（v0.3.9）。
+        // 少了②就会"假打开"：服务同步启动时读到的磁盘值还是上一次的 false，
+        // 立刻自停，而界面开关读内存意图显示"开"。
         pendingMcpEnabled = enabled
+        McpServiceState.intent = enabled
         if (enabled) {
             val token = _state.value.mcpServerToken.ifBlank {
                 val generated = McpServerManager.newToken()
@@ -997,19 +1034,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(mcpServerToken = token) }
             val started = McpServerService.start(app, token)
             if (!started) {
-                _state.update { it.copy(mcpServerEnabled = false, mcpServerPort = 0, notice = "MCP 服务启动失败，请确认通知权限已开启") }
-                return
-            }
-            _state.update {
-                it.copy(
-                    mcpServerEnabled = true,
-                    mcpServerPort = effectiveMcpPort(),
-                    notice = "MCP 服务已启动：127.0.0.1:${effectiveMcpPort()}",
-                )
+                // 连 startForegroundService 都没发出去（通常是通知权限）——
+                // 这不是"服务没起"而是"压根没让它起"，直接回拨开关。
+                McpServiceState.intent = false
+                pendingMcpEnabled = false
+                _state.update { it.copy(mcpServerEnabled = false, notice = "MCP 服务启动失败，请确认通知权限已开启") }
+            } else {
+                // v0.3.9：**不再乐观设置端口**。真实端口由服务上报到
+                // McpServiceState，界面订阅它。以前这里直接写 effectiveMcpPort()，
+                // 于是服务没真起来时界面也显示端口、状态文案就卡在"正在启动…"
+                // （因为那个分支要求 port > 0）。
+                _state.update {
+                    it.copy(mcpServerEnabled = true, notice = "MCP 服务正在启动…")
+                }
+                watchMcpStartup()
             }
         } else {
             McpServerService.stop(app)
-            _state.update { it.copy(mcpServerEnabled = false, mcpServerPort = 0, notice = "MCP 服务已停止") }
+            _state.update { it.copy(mcpServerEnabled = false, notice = "MCP 服务已停止") }
         }
         viewModelScope.launch {
             runCatching { preferences.setMcpServerEnabled(enabled, System.currentTimeMillis()) }
@@ -1017,9 +1059,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 实际生效的端口。与服务的端口解析走同一个纯函数，两边不可能再不一致。 */
-    private fun effectiveMcpPort(): Int =
-        McpServerManager.resolvePort(_state.value.mcpServerConfiguredPort)
+    /**
+     * 盯一次启动结果（v0.3.9）。
+     *
+     * 为什么要：以前界面只有"正在启动…"与"监听中"两态，服务因任何原因没起来
+     * （通知权限、端口占用、自停竞态）就永远停在"正在启动…"——既不说失败、
+     * 也不给下一步，用户只能反复拨开关（那正是"假打开"的观感）。
+     *
+     * 起键是 [McpServiceState.status]：服务真就绪就会变 Running，我们只是给
+     * 它一个上陉。超时不回拨开关（失败原因可能是可修的，如端口被占），只提示。
+     */
+    private fun watchMcpStartup() {
+        mcpStartupWatchJob?.cancel()
+        mcpStartupWatchJob = viewModelScope.launch {
+            val ok = withTimeoutOrNull(MCP_STARTUP_TIMEOUT_MS) {
+                McpServiceState.status.first { it is McpServiceState.Status.Running }
+            }
+            if (ok == null) {
+                // 超时不再是"正在启动…"——如实说是哪种失败，并给出可行动作。
+                AppLogger.warn("MCP 服务在 ${MCP_STARTUP_TIMEOUT_MS / 1000} 秒内未就绪（超时）")
+                _state.update {
+                    it.copy(notice = "MCP 服务未能启动。常见原因：通知权限未授予、端口被占用。" +
+                        "可到「高级」换一个端口，或检查系统的通知权限")
+                }
+            }
+        }
+    }
 
     /**
      * 修改 MCP 端口（v0.2.88）。服务在跑则重启到新端口。
@@ -1035,14 +1100,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(mcpServerConfiguredPort = port) }
         viewModelScope.launch { runCatching { preferences.setMcpServerPort(port) } }
         if (_state.value.mcpServerEnabled) {
+            // v0.3.9：重启前先锁意图为 true——服务侧判据读它；
+            // 不锁的话 stop→start 的间隙里服务可能读到旧值而不起。
+            McpServiceState.intent = true
             McpServerService.stop(app)
             McpServerService.start(app, _state.value.mcpServerToken)
+            // 端口不再乐观写——真实绑定端口由服务上报（改端口后绑的未必就是新值，
+            // 如新端口被占时会启动失败，那时界面应显示"未能启动"）。
             _state.update {
-                it.copy(
-                    mcpServerPort = port,
-                    notice = "端口已改为 $port；AiCode 配置里的 URL 需同步更新并新开会话",
-                )
+                it.copy(notice = "端口已改为 $port；AiCode 配置里的 URL 需同步更新并新开会话")
             }
+            watchMcpStartup()
         }
     }
 
@@ -1064,8 +1132,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 regenerateMcpToken()
                 return
             }
+            McpServiceState.intent = true
             McpServerService.stop(app)
             McpServerService.start(app, token)
+            watchMcpStartup()
         }
     }
 
@@ -1075,9 +1145,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(mcpServerToken = token) }
         viewModelScope.launch { runCatching { preferences.setMcpServerToken(token) } }
         if (_state.value.mcpServerEnabled) {
+            McpServiceState.intent = true
             McpServerService.stop(app)
             McpServerService.start(app, token)
             _state.update { it.copy(notice = "令牌已重新生成；AiCode 配置里的 Authorization 需同步更新并新开会话") }
+            watchMcpStartup()
         }
     }
 
@@ -1087,7 +1159,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     suspend fun runMcpDiagnostics(): List<Pair<String, Boolean>> = withContext(Dispatchers.IO) {
         val results = mutableListOf<Pair<String, Boolean>>()
-        results += "MCP 服务监听中" to (McpServerService.isRunning() && _state.value.mcpServerPort > 0)
+        // v0.3.9：用**真实上报**的端口，不再叠加 isRunning()。
+        //
+        // 两者以前各是一套：isRunning() 是服务里的静态标记，而 mcpServerPort
+        // 是界面自己算的乐观值——服务没起时后者也可能是非 0（于是又绿又红自相矛盾）。
+        results += "MCP 服务监听中" to _state.value.mcpServiceRunning
         val url = _state.value.activeServer?.baseUrl.orEmpty()
         results += "ComfyUI 服务器已连接" to (url.isNotBlank() && _state.value.status == ConnectionStatus.CONNECTED)
         if (results.all { it.second }) {
@@ -1410,6 +1486,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     kernelEndpoint = null
                     _state.update {
                         it.copy(aiStudio = it.aiStudio.copy(consoleBusy = false, consoleConnected = false))
+                    }
+                    // v0.3.9（真机反馈）：环境已被回收时，App 自己就把它标明白——
+                    // 不要等用户自己去刷新列表才发现（真机上是 54 秒后才发现的）。
+                    //
+                    // 以前这里只报错，项目卡还挂着"运行中/环境已就绪"，于是用户会
+                    // 反复点"连接终端"而不去重新启动——因为他以为环境还在。
+                    if (error is AiStudioEnvironmentGoneException) {
+                        AppLogger.warn("连接终端发现项目 $connectProjectId 环境已被回收，回查项目状态")
+                        _state.update {
+                            it.copy(
+                                aiStudio = it.aiStudio.copy(
+                                    environmentReadyProjectId = null,
+                                    startingProjectId = null,
+                                ),
+                            )
+                        }
+                        // 回查一次列表：把项目卡的"运行中"也扯掉（否则要等下次刷新）。
+                        aiStudioLoadProjects(silent = true)
                     }
                     failAiStudio("连接控制台失败", error)
                 }
@@ -7024,6 +7118,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         /** 启动项目的操作冷却（v0.2.94）：启动消耗算力卡，且连点会并发重试循环。 */
         const val START_PROJECT_COOLDOWN_MS = 4_000L
+
+        /**
+         * MCP 服务启动超时（v0.3.9）。
+         *
+         * 为什么是 5 秒：前台服务启动、建通知、绑端口都在本地完成（实测均 < 1s），
+         * 给宽裕一点只是包容冷启动；再久界面就只是挂着"正在启动…"，
+         * 而用户此刻关掉开关是极自然的动作。
+         */
+        const val MCP_STARTUP_TIMEOUT_MS = 5_000L
         /** WebSocket 重连退避封顶。反代抬断频繁，等太久会让进度长时间不动。 */
         const val WS_RECONNECT_MAX_MS = 10_000L
         const val DRAFT_SAVE_DEBOUNCE_MILLIS = 250L
