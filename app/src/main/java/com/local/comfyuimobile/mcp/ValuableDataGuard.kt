@@ -40,9 +40,12 @@ internal object ValuableDataGuard {
      * 宁可漏拦也不要误伤普通清理（误拦会让 AI 白折腾）。
      */
     fun isValuableDeletion(command: String): Boolean {
+        // v0.3.10：heredoc 正文不参与判定——写脚本时正文里的 `rm -rf ~/models`
+        // 是**脚本内容**，不是当前命令要删的东西（真机日志里因此误拦过）。
+        val stripped = TerminalCommandSafety.stripHeredocBodies(command)
         // 复合命令要逐段看（`ls && rm -rf ~/ComfyUI/models` 这种）。
-        val segments = TerminalCommandSafety.segmentsOf(TerminalCommandSafety.normalizeForMatch(command))
-        val toScan = if (segments.size > 1) segments else listOf(command)
+        val segments = TerminalCommandSafety.segmentsOf(TerminalCommandSafety.normalizeForMatch(stripped))
+        val toScan = if (segments.size > 1) segments else listOf(stripped)
         return toScan.any { segment -> segmentIsValuableDeletion(segment) }
     }
 

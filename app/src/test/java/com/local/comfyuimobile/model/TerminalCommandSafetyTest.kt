@@ -429,6 +429,84 @@ class TerminalCommandSafetyTest {
         assertFalse(TerminalCommandSafety.autoRunnable("echo / | xargs rm -rf", 3))
     }
 
+    // ===== v0.3.10：修误拦（真机日志）=====
+
+    @Test
+    fun cdIntoHomeThenDeleteSubdirIsNotCatastrophic() {
+        // 真机日志反复被拒的写法：
+        //   MCP 终端拒绝灾难性命令：cd /home/aistudio && rm -rf ComfyUI && for m in …
+        //   MCP 终端拒绝灾难性命令：cd /home/aistudio && … rm -rf /home/aistudio/.trash
+        //
+        // 根因：v0.2.75 的"整条命令再判一次"把**所有段的 token 当同一个池**，
+        // 于是 `cd` 里的 `/home/aistudio`（命中家目录正则）与别处的 `rm -rf` 拼成
+        // "递归删除家目录"。而实际删的是 `ComfyUI` / `.trash` 这种明确子目录。
+        listOf(
+            "cd /home/aistudio && rm -rf ComfyUI",
+            "cd /home/aistudio && rm -rf /home/aistudio/.trash",
+            "cd /home/aistudio && du -sh .trash 2>/dev/null; rm -rf /home/aistudio/.trash",
+        ).forEach { command ->
+            assertFalse("普通清理不该被当成删家目录：$command", TerminalCommandSafety.isCatastrophic(command))
+        }
+    }
+
+    @Test
+    fun reallyDeletingHomeItselfIsStillCatastrophic() {
+        // 反面：真删家目录（目标就是它）必须继续拦住——修误拦不能把拦截也弄丢。
+        listOf(
+            "rm -rf /home/aistudio",
+            "cd /tmp && rm -rf /home/aistudio",
+            "cd /home/aistudio && rm -rf /home/aistudio",
+            "rm -rf ~",
+            "ls && rm -rf /",
+        ).forEach { command ->
+            assertTrue("真删家目录/根必须拦：$command", TerminalCommandSafety.isCatastrophic(command))
+        }
+    }
+
+    @Test
+    fun heredocBodyIsNotTreatedAsACommand() {
+        // 真机日志：AI 写脚本的标准写法被当成"当前命令在删东西"而拒：
+        //   MCP 终端拒绝灾难性命令：cat > /home/aistudio/setup_danlu_np.sh <<'SCRIPT' …
+        //   MCP 终端拒绝灾难性命令：python3 - <<'PYEOF' （正文里嵌了 bash 脚本）
+        // 正文是**脚本内容**，不是现在要执行的命令。
+        val writeScript = """
+            cat > /home/aistudio/setup.sh <<'SCRIPT'
+            #!/bin/bash
+            rm -rf /home/aistudio/ComfyUI_old
+            rm -rf /
+            SCRIPT
+        """.trimIndent()
+        assertFalse("写脚本（正文含 rm -rf /）不该拒", TerminalCommandSafety.isCatastrophic(writeScript))
+
+        val pyHeredoc = """
+            python3 - <<'PYEOF'
+            script = 'rm -rf /'
+            print(script)
+            PYEOF
+        """.trimIndent()
+        assertFalse("python heredoc 同理", TerminalCommandSafety.isCatastrophic(pyHeredoc))
+    }
+
+    @Test
+    fun heredocCannotHideARealSystemWrite() {
+        // 反过来：`<<` 那一行本身的重定向目标**仍要判**——写 /etc 依旧该拦。
+        val writeEtc = """
+            cat > /etc/hosts <<'EOF'
+            hello
+            EOF
+        """.trimIndent()
+        assertTrue("写 /etc 的 heredoc 仍要拦：$writeEtc", TerminalCommandSafety.isCatastrophic(writeEtc))
+    }
+
+    @Test
+    fun heredocDoesNotWeakenSameLineDeletion() {
+        // heredoc 与真删除写在同一行时，行内那段当然要判。
+        assertTrue(
+            "同一行的 rm -rf / 仍要拦",
+            TerminalCommandSafety.isCatastrophic("rm -rf / ; cat > x.sh <<'E'\nhi\nE"),
+        )
+    }
+
     @Test
     fun processSubstitutionIsTreatedAsASeparator() {
         // `ls <(rm -rf x)`：子命令同样会执行，以前 <( 不在分隔符表里。

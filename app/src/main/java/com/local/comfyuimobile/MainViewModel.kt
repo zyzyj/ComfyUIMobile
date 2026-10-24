@@ -84,6 +84,7 @@ import com.local.comfyuimobile.network.TerminalOwnership
 import com.local.comfyuimobile.network.AiStudioTokenRefresher
 import com.local.comfyuimobile.network.AiStudioException
 import com.local.comfyuimobile.network.AiStudioEnvironmentGoneException
+import com.local.comfyuimobile.network.AiStudioLoginRequiredException
 import com.local.comfyuimobile.network.AiStudioProtocol
 import com.local.comfyuimobile.network.AiStudioRiskControl
 import com.local.comfyuimobile.network.AiStudioRetry
@@ -1512,6 +1513,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         aiStudioLoadProjects(silent = true)
                     }
+                    // v0.3.10：登录墙要额外标一下（真机日志里它被误诊成 405）。
+                    // 文案已在异常里说清（"回账号页重新登录"），这里只把状态标对——
+                    // 否则项目卡会继续显示"环境已就绪"，用户会反复重点连接。
+                    if (error is AiStudioLoginRequiredException) {
+                        AppLogger.warn("连接终端失败：AI Studio 登录态已失效（不是终端接口故障）")
+                    }
                     failAiStudio("连接控制台失败", error)
                 }
         }
@@ -1661,6 +1668,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val cause = listed.exceptionOrNull()
                 if (cause != null) {
                     AppLogger.warn("终端重连失败（第 ${current + 1} 次）：${cause.message.orEmpty()}", cause)
+                }
+                // v0.3.10（真机日志）：**登录失效就立刻停**，不要重连 8 次。
+                //
+                // 真机上就是这条路径刷了 8 次屏：Cookie 过期 → 网关 302 到登录页 →
+                // 返回 HTML → 新建终端 405。每次重试都一样，结果只是把日志刷满、
+                // 保活通知一直挂着，用户还以为"终端能救回来"。
+                // 登录过期是**用户才能解决**的事，继续重试毫无意义。
+                if (cause is AiStudioLoginRequiredException) {
+                    AppLogger.warn("终端重连中止：登录态已失效，需要用户重新登录")
+                    teardownTerminal(
+                        "AI Studio 登录态已失效，终端无法重连（重试也不会好）。" +
+                            "请回「账号」页重新登录后再连终端。",
+                    )
+                    return@launch
                 }
                 // v0.2.68：连续失败很多次后，基本可以判定"机器已经没了"（平台回收 / 项目
                 // 被停），而不是网络抖动。再无限重试下去，只会让保活通知永远挂在通知栏、

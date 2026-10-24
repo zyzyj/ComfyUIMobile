@@ -158,6 +158,66 @@ class AiStudioProtocolTest {
         assertTrue(AiStudioProtocol.environmentGone(JSONObject("{}")))
     }
 
+    /**
+     * 登录墙识别（v0.3.10）。
+     *
+     * 真机日志：Cookie 过期后，
+     * - `GET api/terminals` → 200 text/html（经 302 → /aistudio/projectdetail/…），
+     *   旧代码把它当正常、JSONArray 解不了就静默返回空列表（看着像"项目里没终端"）；
+     * - `POST api/terminals` → 405，旧代码报"新建终端失败：HTTP 405"（看着像接口坏了）。
+     * 两者都不告诉用户"重新登录"。
+     */
+    @Test
+    fun detectsLoginWallFromHtmlResponse() {
+        assertTrue(
+            AiStudioProtocol.isLoginWall(
+                contentType = "text/html;charset=UTF-8",
+                finalUrl = "https://aistudio.baidu.com/bj-cpu-01/user/1/2/api/terminals",
+                hadRedirect = true,
+                body = "<!doctype html><html><title>飞桨AI Studio星河社区</title></html>",
+            ),
+        )
+    }
+
+    @Test
+    fun detectsLoginWallFromRedirectAwayFromApi() {
+        // 关键信号：302 跟随后最终地址**不在 /api/ 下**（跳去了项目详情页）。
+        assertTrue(
+            AiStudioProtocol.isLoginWall(
+                contentType = "",
+                finalUrl = "https://aistudio.baidu.com/aistudio/projectdetail/10707054",
+                hadRedirect = true,
+                body = "",
+            ),
+        )
+    }
+
+    @Test
+    fun detectsLoginWallFromBodyWhenContentTypeMissing() {
+        // 有些网关不回 Content-Type，只能看返回体。
+        assertTrue(
+            AiStudioProtocol.isLoginWall(
+                contentType = "",
+                finalUrl = "https://aistudio.baidu.com/x/api/terminals",
+                hadRedirect = false,
+                body = "<!doctype html><html><head><title>AI Studio</title></head></html>",
+            ),
+        )
+    }
+
+    @Test
+    fun normalJsonResponseIsNotLoginWall() {
+        // 反面：正常的 JSON 响应绝不能被误判——否则每次调终端都报"登录失效"。
+        assertFalse(
+            AiStudioProtocol.isLoginWall(
+                contentType = "application/json",
+                finalUrl = "https://aistudio.baidu.com/bj-cpu-01/user/1/2/api/terminals",
+                hadRedirect = true,   // 平台确实会 302 到带 zone 的路径，但那仍在 /api/ 下
+                body = """[{"name":"1","last_activity":"2026-10-24T13:51:26Z"}]""",
+            ),
+        )
+    }
+
     @Test
     fun parsesSignInStateFromIsFinishSign() {
         assertEquals(true, AiStudioProtocol.parseSignInDone(JSONObject("""{"isFinishSign":true}""")))

@@ -512,7 +512,7 @@ object TerminalCommandSafety {
      * 即使开启跳过所有权限，关键路径的 rm 也永远不自动放行——这是熔断器，不是权限。
      */
     fun isCatastrophic(command: String): Boolean {
-        val normalized = normalize(command)
+        val normalized = normalize(stripHeredocBodies(command))
         if (normalized.isBlank()) return false
         if (FORK_BOMB.containsMatchIn(normalized)) return true
         if (writesToSystemPath(normalized)) return true
@@ -539,10 +539,26 @@ object TerminalCommandSafety {
             // 于是 v0.2.74 的分段版本**反而漏了这条**（v0.2.73 不分段时能拦住
             // —— 那时整条命令的 tokens 里 `/` 与 `rm` 同时出现）。
             // 这是分段引入的回归，这里补回来：整条命令再判一次。
-            val allTokens = normalized.split(' ', '\t')
-                .map { it.trim('"', '\'') }
-                .filter { it.isNotBlank() }
-            if (deletesCriticalPath(allTokens)) return true
+            //
+            // ⚠️ v0.3.10 修误拦（真机日志）：这个兜底曾把**任何段里的路径**都当成删除目标，
+            // 于是最普通的清理写法被当成"删家目录"：
+            //   `cd /home/aistudio && rm -rf ComfyUI`            ← 拒（真机 20:25）
+            //   `cd /home/aistudio && du -sh .trash; …; rm -rf /home/aistudio/.trash`  ← 拒
+            // 因为 `cd /home/aistudio` 里的 `/home/aistudio` 命中了家目录正则，
+            // 而 `rm -rf` 在另一段——两者被拼进同一个 token 池就变成"递归删家目录"。
+            //
+            // 但 v0.2.75 要挡的 `echo / | xargs rm -rf` 是**真危险**，不能直接删掉。
+            // 关键区别在于：那条命令里 `/` 是**要删的东西**（xargs 把前一段当参数喂给 rm）；
+            // 而 `cd /home/aistudio` 里那个路径是**工作目录**，不是删除目标。
+            // 所以这里只在「确实存在一个管道/ xargs 式串接」时才做整条判定——
+            // 那种情况下前一段的输出真的会成为 rm 的参数。
+            val feedsIntoDelete = PIPE_FEEDS_INTO_DELETE.containsMatchIn(normalized)
+            if (feedsIntoDelete) {
+                val allTokens = normalized.split(' ', '\t')
+                    .map { it.trim('"', '\'') }
+                    .filter { it.isNotBlank() }
+                if (deletesCriticalPath(allTokens)) return true
+            }
             return false
         }
 
@@ -567,6 +583,76 @@ object TerminalCommandSafety {
 
         return deletesCriticalPath(tokens)
     }
+
+    /**
+     * 整条命令是否含"把前一命令的输出当作删除参数"的串接（v0.3.10）。
+     *
+     * 只有这种写法才需要**跨段拼接 token** 来判定——因为前一命令的输出真的会变成
+     * `rm` 的参数（`echo / | xargs rm -rf` 等于 `rm -rf /`）。
+     *
+     * 为什么收窄到这个条件（真机日志）：以前无条件对整个命令做拼接判定，于是
+     * `cd /home/aistudio && rm -rf ComfyUI` 里 `cd` 的路径被当成了 `rm` 的目标，
+     * 普通清理被误拦成"删家目录"（日志里拒了不止一次，AI 只能改写重试）。
+     *
+     * 覆盖：`xargs`（标准写法）、`| rm` / `| xargs`（管道直接喂）、
+     * `find … -exec rm`（find 自己把路径喂给 rm，但它已经在段内被 [deletesCriticalPath] 盖住）。
+     */
+    private val PIPE_FEEDS_INTO_DELETE = Regex("""\bxargs\b""")
+
+    /**
+     * 剥离 heredoc 正文，只留命令本身（v0.3.10）。
+     *
+     * ## 为什么（真机日志）
+     *
+     * AI 写脚本的标准做法就是把正文拆 heredoc：
+     * ```
+     * cat > /home/aistudio/setup.sh <<'SCRIPT'
+     * rm -rf "$H/ComfyUI_old"     ← 这里是**脚本内容**，不是现在要执行的命令
+     * SCRIPT
+     * ```
+     * 以前把整段交给安全判定，正文里的 `rm -rf` / `mv` 会被当成"当前命令在删东西"，
+     * 于是写个脚本就被拒（日志里 `cat > … <<'SCRIPT'` 与 `python3 - <<'PYEOF'`
+     * 都因此被拒，AI 只能反复改写）。
+     *
+     * ## 保留什么
+     *
+     * 保留 **`<<` 所在那一行的全部内容**（含 `cat > /path` 这个重定向目标——
+     * `writesToSystemPath` 还要判它：写 `/etc` 依然该拦），
+     * 只把分隔符之后到结束分隔符之间的正文替换成占位。
+     *
+     * 不处理同一行里多个 heredoc（极罕见，且宁可多判危险）。
+     */
+    fun stripHeredocBodies(command: String): String {
+        if (!command.contains("<<")) return command
+        val out = StringBuilder()
+        var pendingDelimiter: String? = null
+        command.lineSequence().forEach { line ->
+            val delimiter = pendingDelimiter
+            if (delimiter == null) {
+                out.appendLine(line)
+                pendingDelimiter = heredocDelimiterOf(line)
+            } else {
+                // 正文行：直到遇到结束分隔符（允许 `-` 形式的前导制表符）。
+                val trimmed = line.trimStart('\t').trim()
+                if (trimmed == delimiter) {
+                    pendingDelimiter = null
+                    out.appendLine(trimmed)
+                }
+                // 其余正文行直接丢弃。
+            }
+        }
+        return out.toString()
+    }
+
+    /** 取该行的 heredoc 分隔符（`<<'EOF'` / `<<-EOF` / `<< "EOF"`）；没有则 null。 */
+    private fun heredocDelimiterOf(line: String): String? {
+        val match = HEREDOC_OPENER.find(line) ?: return null
+        val raw = match.groupValues[1].trim().trim('\'', '"', '\\')
+        return raw.takeIf { it.isNotBlank() }
+    }
+
+    /** `<<` / `<<-` 后面跟的分隔符（可带引号）。 */
+    private val HEREDOC_OPENER = Regex("""<<-?\s*([\w.'"\-]+)""")
 
     /**
      * 这条命令是不是"搜索类"（grep / rg）——它的 rc=1 无输出表示"没找到"，不是错误（v0.2.83）。

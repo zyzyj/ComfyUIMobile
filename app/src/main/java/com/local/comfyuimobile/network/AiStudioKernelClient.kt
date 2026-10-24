@@ -174,6 +174,31 @@ class AiStudioKernelClient {
     }
 
     /**
+     * 执行一个平台请求并取回 body（v0.3.10）。
+     *
+     * 抽出来是为了让 enter / baseinfo / running_status 这三个**裸调用**也走同一套
+     * 登录墙判定——它们以前各写一行 `newCall(...).execute()`，Cookie 过期时拿到
+     * 的是登录页 HTML，随后 `unwrap()` 解析失败报一句含糊的错（真机日志里就是这样
+     * 被误诊成接口故障的）。
+     *
+     * 不走 get/post 是因为这三个请求各自带不同 header 与参数形态，但它们对
+     * **登录墙**的判断应该完全一致——不能只有一个入口判、别的入口不判。
+     */
+    private fun executeForBody(request: Request, action: String): String {
+        val response = try {
+            client.newCall(request).execute()
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            throw AiStudioException("${action}失败：网络不可达（${error.message.orEmpty()}）")
+        }
+        return response.use { resp ->
+            val body = resp.body?.string().orEmpty()
+            ensureNotLoginWall(resp, body, action)
+            body
+        }
+    }
+
+    /**
      * 拉取环境连接信息。
      *
      * 真正管用的是 `GET /studio/project/envs/baseinfo?projectId=...`（前端
@@ -280,7 +305,7 @@ class AiStudioKernelClient {
             }
             .post(body.toRequestBody("application/x-www-form-urlencoded; charset=utf-8".toMediaType()))
             .build()
-        val raw = client.newCall(request).execute().use { it.body?.string().orEmpty() }
+        val raw = executeForBody(request, "进入 notebook")
         AppLogger.info("进入 notebook 响应：${raw.take(300)}")
         return raw
     }
@@ -303,7 +328,7 @@ class AiStudioKernelClient {
             }
             .get()
             .build()
-        val raw = client.newCall(request).execute().use { it.body?.string().orEmpty() }
+        val raw = executeForBody(request, "查询环境信息")
         AppLogger.info("环境信息响应：${AiStudioProtocol.redactSecrets(raw).take(300)}")
         return AiStudioProtocol.unwrap(raw, "查询环境信息")
     }
@@ -340,7 +365,7 @@ class AiStudioKernelClient {
             }
             .post(body.toRequestBody("application/x-www-form-urlencoded; charset=utf-8".toMediaType()))
             .build()
-        val raw = client.newCall(request).execute().use { it.body?.string().orEmpty() }
+        val raw = executeForBody(request, "查询内核环境")
         AppLogger.info("运行状态响应：${AiStudioProtocol.redactSecrets(raw).take(300)}")
         return AiStudioProtocol.unwrap(raw, "查询内核环境")
     }
@@ -748,11 +773,60 @@ class AiStudioKernelClient {
         }
         return response.use { resp ->
             val body = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) throw AiStudioException("${action}失败：HTTP ${resp.code}（${body.take(120)}）")
+            // v0.3.10（真机日志）：**先判登录墙**，再判 HTTP 状态码。
+            //
+            // 真机现象：Cookie 失效后网关 302 跳登录页，返回一个 HTML 页面。
+            //   GET  api/terminals → 200 text/html（经 302 → /aistudio/projectdetail/…）
+            //   POST api/terminals → 405 Method Not Allowed
+            // 旧代码把前者当正常（JSONArray 解不了 → 静默 emptyList），
+            // 把后者报成"新建终端失败：HTTP 405"（看着像接口坏了）。
+            // 结果 App 只会重连 8 次刷屏，**永远不告诉用户登录态已失效**。
+            ensureNotLoginWall(resp, body, action)
+            if (!resp.isSuccessful) throw AiStudioException("${action}失败：HTTP ${resp.code}")
             val redirected = resp.priorResponse?.let { "（经重定向 ${it.code} → ${resp.request.url}）" }.orEmpty()
             AppLogger.info("${action}：HTTP ${resp.code} ${resp.header("Content-Type").orEmpty()}$redirected")
             body
         }
+    }
+
+    /**
+     * 登录墙识别（v0.3.10）。任一信号命中就抛 [AiStudioLoginRequiredException]。
+     *
+     * ## 为什么必须单独判（真机日志）
+     *
+     * ```
+     * 读取终端列表：HTTP 200 text/html（经重定向 302 → https://…/aistudio/projectdetail/10707054）
+     * 终端列表响应：<!doctype html><title>飞桨AI Studio星河社区…</title>
+     * 新建终端失败：HTTP 405（Method Not Allowed）
+     * → 终端重连失败（第 1~8 次）… 直到「连续 8 次重连失败，停止重试并清理连接」
+     * ```
+     *
+     * 这不是"终端接口坏了"，而是**登录态失效了**：网关把所有未鉴权请求 302 到
+     * 登录页，返回 HTML。旧代码把 HTML 当 JSON 解，`JSONArray()` 失败就静默返回
+     * 空列表——用户看到"项目里没有终端"，完全不知道是登录过期；POST 更直接回 405，
+     * 看着像方法不允许。
+     *
+     * 按「登录墙」处理就能给出真正可行动的话：回 App 重新登录，而不是无限重连。
+     */
+    private fun ensureNotLoginWall(resp: Response, body: String, action: String) {
+        val contentType = resp.header("Content-Type").orEmpty()
+        val finalUrl = resp.request.url.toString()
+        // 判定本体在协议层（纯函数，可单测）——这里只做取信号 + 报错。
+        val loginWall = AiStudioProtocol.isLoginWall(
+            contentType = contentType,
+            finalUrl = finalUrl,
+            hadRedirect = resp.priorResponse != null,
+            body = body,
+        )
+        if (!loginWall) return
+        AppLogger.warn(
+            "$action 撞上登录墙（Content-Type=$contentType，重定向=${resp.priorResponse != null}，" +
+                "最终地址=$finalUrl）—— 登录态已失效",
+        )
+        throw AiStudioLoginRequiredException(
+            "AI Studio 登录态已失效：$action 被重定向到登录页。" +
+                "请回 App「账号」页重新登录后重试；这不是终端接口故障，反复重连也不会好。",
+        )
     }
 
     private fun post(
@@ -772,7 +846,16 @@ class AiStudioKernelClient {
         }
         return response.use { resp ->
             val body = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) throw AiStudioException("${action}失败：HTTP ${resp.code}（${body.take(120)}）")
+            // v0.3.10（真机日志）：**先判登录墙**，再判 HTTP 状态码。
+            //
+            // 真机现象：Cookie 失效后网关 302 跳登录页，返回一个 HTML 页面。
+            //   GET  api/terminals → 200 text/html（经 302 → /aistudio/projectdetail/…）
+            //   POST api/terminals → 405 Method Not Allowed
+            // 旧代码把前者当正常（JSONArray 解不了 → 静默 emptyList），
+            // 把后者报成"新建终端失败：HTTP 405"（看着像接口坏了）。
+            // 结果 App 只会重连 8 次刷屏，**永远不告诉用户登录态已失效**。
+            ensureNotLoginWall(resp, body, action)
+            if (!resp.isSuccessful) throw AiStudioException("${action}失败：HTTP ${resp.code}")
             val redirected = resp.priorResponse?.let { "（经重定向 ${it.code} → ${resp.request.url}）" }.orEmpty()
             AppLogger.info("${action}：HTTP ${resp.code} ${resp.header("Content-Type").orEmpty()}$redirected")
             body

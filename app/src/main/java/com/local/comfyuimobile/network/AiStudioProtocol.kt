@@ -181,6 +181,44 @@ object AiStudioProtocol {
     fun parseProjects(result: JSONObject): List<AiStudioProject> = parseProjectPage(result).projects
 
     /**
+     * 响应是否是"登录墙"（v0.3.10）。纯函数，三个信号任一命中即 true。
+     *
+     * ## 为什么需要
+     *
+     * 真机日志（Cookie 过期后）：
+     * ```
+     * 读取终端列表：HTTP 200 text/html（经重定向 302 → /aistudio/projectdetail/10707054）
+     * 终端列表响应：<!doctype html><title>飞桨AI Studio星河社区…</title>
+     * 新建终端失败：HTTP 405（Method Not Allowed）
+     * → 终端重连失败（第 1~8 次）…「连续 8 次重连失败，停止重试」
+     * ```
+     * 两处误诊：GET 把 HTML 当 JSON 解失败 → **静默返回空列表**（看着像"项目里没终端"）；
+     * POST 拿到 405 → 报"新建终端失败：HTTP 405"（看着像接口坏了）。
+     * 两者都不会告诉用户真正该做的事：**重新登录**。
+     *
+     * @param contentType 响应的 Content-Type（小写化前原值）
+     * @param finalUrl 跟随重定向后的最终地址
+     * @param hadRedirect 是否发生过重定向
+     * @param body 响应体（可能很大，只做子串检查）
+     */
+    fun isLoginWall(
+        contentType: String,
+        finalUrl: String,
+        hadRedirect: Boolean,
+        body: String,
+    ): Boolean {
+        val lowered = contentType.lowercase()
+        // ① 被重定向到了非 API 路径（302 后的最终地址是项目详情 / 登录页）。
+        if (hadRedirect && !finalUrl.contains("/api/")) return true
+        // ② 明明是终端 API，却返回 HTML——终端接口只会回 JSON。
+        if (lowered.contains("text/html")) return true
+        // ③ 返回体看着就是登录页（有些网关不回 Content-Type）。
+        val head = body.take(4096)
+        return head.contains("AI Studio", ignoreCase = true) &&
+            (head.contains("<html", ignoreCase = true) || head.contains("<!doctype", ignoreCase = true))
+    }
+
+    /**
      * 从 `running_status_check` 的响应判定：环境是不是已经被回收了（v0.3.9）。
      *
      * ## 为什么要单独一个函数
@@ -764,3 +802,17 @@ class AiStudioEnvironmentGoneException(
     /** true = 平台确认项目已停；false = 平台仍说在跑但拿不到地址。 */
     val recycled: Boolean,
 ) : AiStudioException(message)
+
+/**
+ * 登录态已失效（v0.3.10）。网关把未鉴权请求 302 到登录页，回的是 HTML。
+ *
+ * 为什么要单独一个类型：真机日志里它被误诊成两种完全不相干的东西——
+ * `listTerminals` 把 HTML 当 JSON 解失败后**静默返回空列表**（看着像"项目里没终端"），
+ * `createTerminal` 拿到 405 后报"新建终端失败：HTTP 405"（看着像接口坏了）。
+ * 两个都不会告诉用户真正该做的事：**重新登录**。
+ *
+ * 调用方靠它决定「不要重试」：重连 8 次只是刷屏（真机日志就是这么跑的）。
+ * 本异常 errorCode 为 null，`AiStudioRiskControl.isRetryable(null)` = false，
+ * 所以不会被风控退避逻辑无意义重试。
+ */
+class AiStudioLoginRequiredException(message: String) : AiStudioException(message)
