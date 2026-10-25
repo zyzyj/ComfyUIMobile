@@ -215,10 +215,21 @@ class AiStudioKernelClient {
             runCatching { enterNotebook(account, projectId) }
                 .onFailure { AppLogger.warn("notebook/enter 失败（继续尝试取环境信息）", it) }
             // baseinfo 在环境刚起来/正在回收时会短暂返回 `...null`（真机日志里反复出现）。
-            // 以前只重试 1 次就走兜底，而兜底的 running_status_check 根本不回 baseUrl，
-            // 于是环境明明存在也报“平台没有返回环境地址”。改成多次退避重试。
-            repeat(4) { attempt ->
-                if (attempt > 0) delay(1_500L)
+            //
+            // v0.3.12（P0-1）：把重试窗口从「4 次 × 1.5 秒 ≈ 5 秒」拉长到「8 次 ×
+            // 递增退避 ≈ 58 秒」。
+            //
+            // 依据（真机日志 2026-10-15）：19:20:16 已拿到过有效地址，19:20:52 调
+            // enterNotebook 触发 IDE 容器拉起后 baseinfo 就变 null 了——jupyter 容器
+            // 冷启动通常二三十秒，5 秒窗口必然等不到，于是误报"平台没有返回环境地址"。
+            // 环境明明存在，多等一会儿就能连上。
+            //
+            // 退避而非固定间隔：避免密集请求触发平台 8407 风控（本项目已因高频请求
+            // 吃过这个亏，v0.2.92）。只改这里，不动 [peekEndpoint]（轮询探测要保持
+            // 轻量，每几秒跑一次，加长会拖垮启动轮询）。
+            val backoffDelays = listOf(0L, 2_000L, 3_000L, 5_000L, 8_000L, 10_000L, 10_000L, 10_000L)
+            for ((attempt, wait) in backoffDelays.withIndex()) {
+                if (attempt > 0) delay(wait)
                 val info = runCatching { fetchBaseInfo(account, projectId) }.getOrNull()
                 if (info != null && validBaseUrl(info.optString("baseUrl")) != null) {
                     return@withContext info
