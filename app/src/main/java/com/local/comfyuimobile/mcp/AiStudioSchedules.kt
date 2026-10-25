@@ -29,7 +29,15 @@ internal object AiStudioSchedules {
     fun choose(schedules: List<AiStudioSchedule>, requested: String?): AiStudioSchedule? {
         if (schedules.isEmpty()) return null
         val wanted = requested?.trim().orEmpty()
-        if (wanted.isEmpty()) return schedules.first()
+        // v0.3.12（P0-1）：没指定档位时，优先取**第一个可用**的档位，而不是盲目取列表首项。
+        //
+        // 列表首项可能是不可用档（余额用完/无货），提交后端不报错、按默认档启动；
+        // 也可能首项比后面某一档更贵——盲目取首项等于静默替用户花钱。
+        // 但**绝不在多个可用档位里自己挑**（那条原则不变）：只加"可用性"这一个维度，
+        // 多个可用档位时仍取它们中的第一项（保持列表顺序，不猜哪个更便宜/更适合）。
+        if (wanted.isEmpty()) {
+            return schedules.firstOrNull { it.available } ?: schedules.first()
+        }
 
         schedules.firstOrNull { it.scheduleName.equals(wanted, ignoreCase = true) }
             ?.let { return it }

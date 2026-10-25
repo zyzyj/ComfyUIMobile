@@ -52,6 +52,38 @@ class AiStudioSchedulesTest {
     }
 
     @Test
+    fun blankSkipsUnavailableFirstOption() {
+        // v0.3.12（P0-1）：列表首项不可用时，不要盲目取它——否则提交后端按默认档启动
+        // （可能是更贵的档），静默替用户花钱。应取**第一个可用**的档位。
+        val withUnavailableHead = listOf(
+            schedule("V100", "V100 16GB", available = false),
+            schedule("A100", "A100 40GB"),
+        )
+        assertEquals("A100", AiStudioSchedules.choose(withUnavailableHead, null)?.scheduleName)
+    }
+
+    @Test
+    fun blankFallsBackToFirstWhenAllUnavailable() {
+        // 全都不可用时才回落首项（没有更好的选择，且返回里有 unavailableNote 说明）。
+        val allUnavailable = listOf(
+            schedule("V100", "V100 16GB", available = false),
+            schedule("A100", "A100 40GB", available = false),
+        )
+        assertEquals("V100", AiStudioSchedules.choose(allUnavailable, null)?.scheduleName)
+    }
+
+    @Test
+    fun blankKeepsFirstAvailableOrderAmongMultiple() {
+        // 多个可用时仍取第一个，**不自己挑**（那条原则不变）：不猜哪个更便宜。
+        val multiple = listOf(
+            schedule("V100", "V100 16GB"),
+            schedule("A100", "A100 40GB"),
+            schedule("DCU", "DCU", available = false),
+        )
+        assertEquals("V100", AiStudioSchedules.choose(multiple, null)?.scheduleName)
+    }
+
+    @Test
     fun unknownNameThrowsWithAvailableList() {
         val error = runCatching { AiStudioSchedules.choose(options, "H100") }.exceptionOrNull()
         assertTrue("应抛异常而不是静默降级", error is IllegalArgumentException)

@@ -148,6 +148,22 @@ class LocalResultCacheTest {
     }
 
     @Test
+    fun copyFailureThrowsInsteadOfFallingBackToTemp() = runBlocking {
+        // v0.3.12（P0-2）：复制失败（源文件不存在/磁盘满/权限）**不静默退回临时路径**。
+        // 以前退回会让记录指向临时文件，TTL 一到就变灰块。现在失败应抛异常，
+        // 调用方（MCP 的 resultSink / App 的 JobMonitorService）各自处理。
+        val cache = cacheIn(temporaryFolder.newFolder("base"))
+        val nonexistent = File(temporaryFolder.root, "does-not-exist.png")
+        assertTrue("前置：源文件确实不存在", !nonexistent.isFile)
+
+        val error = runCatching { cache.add(media(), nonexistent, ResultSource.MCP) }.exceptionOrNull()
+
+        assertTrue("应抛异常而不是静默退回：$error", error != null)
+        // 索引里也不该出现指向临时文件的记录。
+        assertTrue("索引应保持空", cache.load().isEmpty())
+    }
+
+    @Test
     fun sourceSurvivesReload() = runBlocking {
         val dir = temporaryFolder.newFolder("base")
         val cache = cacheIn(dir)

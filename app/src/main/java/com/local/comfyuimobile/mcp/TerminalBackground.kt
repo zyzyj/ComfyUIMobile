@@ -56,7 +56,11 @@ internal object TerminalBackground {
      *
      * 输出形如 `12345\r\n`（echo $! 的结果，PTY 可能带回车）。拿不到返回 null——
      * 不要编一个假 PID。
+     *
+     * v0.3.12（P1-3）：取**最后一个**可解析数字，而不是第一个。`echo $!` 的 PID
+     * 是最后打印的那行；若缓冲区里混着上一条命令残留的输出（里面有纯数字行），
+     * 取第一个会拿到错的 PID——而 AI 会拿它去 `kill`，杀错进程。
      */
     fun parsePid(output: String): Long? =
-        output.replace("\r", "\n").lines().firstNotNullOfOrNull { it.trim().toLongOrNull() }
+        output.replace("\r", "\n").lines().mapNotNull { it.trim().toLongOrNull() }.lastOrNull()
 }

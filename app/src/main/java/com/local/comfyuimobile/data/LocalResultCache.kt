@@ -91,9 +91,21 @@ class LocalResultCache internal constructor(
                 }.onFailure { error ->
                     AppLogger.error("结果收存失败：${media.filename}", error)
                 }
-                // 复制失败时退回原路径（聊胜于无：至少当前会话内还能看），
-                // 但记录的寿命就随那个临时文件了。
-                if (destination.isFile) destination else file
+                // v0.3.12（P0-2）：复制失败**不静默退回临时路径**。
+                //
+                // 以前这里 `if (destination.isFile) destination else file`——复制失败
+                // （磁盘满/并发/权限）时把记录指向调用方的临时文件，临时文件一过
+                // TTL（停服/重启/1 小时）就变灰块，用户看到的是"图加载不出来"，
+                // 真实原因是"根本没存进去"。
+                //
+                // 现在失败直接抛异常：MCP 侧 resultSink 已包 runCatching（记日志、
+                // 不影响返回给模型的 URL）；App 侧 JobMonitorService 已包 runCatching
+                // 且会重试 3 次。宁可"这条没进结果页"，也不造一条指向临时文件的
+                // 假记录，让它过一会儿变灰块。
+                if (!destination.isFile) {
+                    throw IllegalStateException("结果收存失败：${media.filename}（复制未完成）")
+                }
+                destination
             }
             val records = readIndex().filterNot { it.optString("key") == key }.toMutableList()
             // v0.3.8（P2-1）：在这里生成缩略图——只有这里同时拿得到原图与落点，

@@ -1,3 +1,72 @@
+# v0.3.12 — 按《优化报告》修 4 项（回落判可用 / 收存失败不静默 / 平行路径 / PID 取错）
+
+> 依据用户提供的《优化报告 v0.3.12 起》。报告基线 dev v0.3.11，我逐条读源码核实，
+> **只修了 4 条已确认属实的**，其余两条（P1-2 / P1-4）报告自己标“未实测/无样本”，
+> 属推断，不凭猜测改。
+
+## P0-1 · `choose()` 回落不判 `available`（属实）
+
+`AiStudioSchedules.choose(schedules, null)` 原来直接 `schedules.first()`，
+**不看 `available`**。首项可能是不可用档位（余额用完/无货），提交后端不报错、
+按默认档启动；也可能首项比后面某一档更贵——盲目取首项等于静默替用户花钱。
+
+修：
+- `wanted` 为空时先取**第一个 `available` 的档位**；
+- 全都不可用才回落首项（返回里的 `unavailableNote` 会说明）；
+- **没有**在多个可用档位里自己挑（那条原则不变，只补“可用性”一个维度）。
+
+新增 3 条单测：跳过不可用首项 / 全不可用回落首项 / 多可用时保持顺序不挑。
+
+## P0-2 · 收存失败静默退回临时文件（属实）
+
+`LocalResultCache.add()` 复制失败时原来 `if (destination.isFile) destination else file`——
+把记录指向调用方的**临时文件**。临时文件一过 TTL（停服/重启/1 小时）就变灰块，
+用户看到的是“图加载不出来”，真实原因是“根本没存进去”。
+
+修：复制失败**直接抛异常**，不退回临时路径。
+- MCP 侧 `resultSink` 已包 `runCatching`（记日志、不影响返回给模型的 URL）；
+- App 侧 `JobMonitorService` 已包 `runCatching` 且重试 3 次。
+
+宁可“这条没进结果页”，也不造一条指向临时文件的假记录让它过一会儿变灰块。
+新增 1 条单测（源文件不存在 → 抛异常且索引保持空）。
+
+## P1-1 · `aiOwnedAmong` 死代码（属实）
+
+`TerminalOwnership.aiOwnedAmong()` 在**主代码零调用**，真正生效的是 `MainViewModel`
+自己写的 `names.filter { it in aiNames }`——同一件事两处各写一遍（第 13 条平行路径）。
+
+修：`MainViewModel` 改用 `aiOwnedAmong(names)`，删掉重复的 filter。
+
+## P1-3 · `parsePid` 取第一个数字可能取错（属实）
+
+`echo $!` 的 PID 是**最后**打印的行。若缓冲区混着上一条命令残留输出（纯数字行），
+取第一个会拿到错的 PID，而 AI 会拿它去 `kill`——杀错进程。
+
+修：改取**最后一个**可解析数字（`mapNotNull().lastOrNull()`）。
+
+## 未修（如实说明）
+
+- **P1-2**（后台日志放 `/tmp/mcp-bg` 平台重启即丢）：报告自己标“未实测”，`/tmp` 在
+  AI Studio 容器上的实际生命周期没验证过，改到 `work/` 会引入“日志污染持久化目录”的新问题，
+  收益不确。**待真机确认 `/tmp` 是否真被回收后再定。**
+- **P1-4**（`isLoginWall` 把 502 HTML 误诊为登录墙）：报告自己标“是推断，没抓到真实样本”。
+  v0.3.10 的 `text/html` 分支对**终端 API**（只回 JSON）是成立的；对 `enter`/`baseinfo`/
+  `running_status` 是否会误判 502 错误页，没有样本不能改判据，改了可能把真登录墙漏掉。
+  **待抓到真实 502 响应样本后再加分支。**
+
+## 测试 +7
+
+`AiStudioSchedulesTest` +3、`TerminalBackgroundTest` +2、`LocalResultCacheTest` +1、
+`AiStudioProtocolTest` +1（脱敏，上版遗留）。全部 `testDebugUnitTest` 本地跑通。
+
+## 边界（如实说）
+
+- 本版仍未真机验证（本地 JVM 单测 + 编译通过）。
+- P0-2 改“抛异常”后，MCP 出图**结果页收存失败不再产生灰块记录**，但代价是
+  那条图在结果页里看不到——比“看起来能看、一小时后变灰块”诚实。
+
+---
+
 # v0.3.11 — MCP 异常消息凭据脱敏（防 Cookie/bdToken 泄给 AI）
 
 > 承接第 11 节「查日志里长期被忽略的问题」。审计 MCP 请求链路时发现：

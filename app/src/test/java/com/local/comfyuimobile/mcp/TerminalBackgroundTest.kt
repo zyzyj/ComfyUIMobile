@@ -78,7 +78,15 @@ class TerminalBackgroundTest {
     }
 
     @Test
-    fun parsePidTakesFirstNumberLine() {
+    fun parsePidTakesLastNumberLine() {
         assertEquals(777L, TerminalBackground.parsePid("noise\r\n777\r\n"))
+    }
+
+    @Test
+    fun parsePidSkipsEarlierResidualNumbers() {
+        // v0.3.12（P1-3）：echo $! 的 PID 是**最后**打印的那行。
+        // 若缓冲区混着上一条命令的残留输出（纯数字行），取第一个会拿到错的 PID——
+        // AI 会拿它去 kill，杀错进程。必须取最后一个。
+        assertEquals(999L, TerminalBackground.parsePid("42\r\nnoise\r\n999\r\n"))
     }
 }

@@ -1379,12 +1379,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
                 .onSuccess { names ->
                     // 归属表是进程内单例：MCP 侧开的终端会在那里登记。
-                    val aiNames = TerminalOwnership.mcpSnapshot()
+                    // v0.3.12（P1-1）：改用 TerminalOwnership.aiOwnedAmong 而不是自己
+                    // 再写一遍 names.filter { it in aiNames }——那套“谁是 AI 的”判定
+                    // 已经有一个纯函数，重复写一遍就是平行路径（本项目已犯 12 次）。
                     _state.update {
                         it.copy(
                             aiStudio = it.aiStudio.copy(
                                 terminalNames = names,
-                                aiTerminalNames = names.filter { name -> name in aiNames }.toSet(),
+                                aiTerminalNames = TerminalOwnership.aiOwnedAmong(names).toSet(),
                                 error = null,
                             ),
                         )
