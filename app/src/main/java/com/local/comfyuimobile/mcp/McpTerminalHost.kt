@@ -445,6 +445,9 @@ internal class McpTerminalHost(
 
     /**
      * 把 AI Studio 错误翻译成模型能据以行动的话（与 [AiStudioBridge.describe] 同一条约定）。
+     *
+     * v0.3.11：异常消息先过 [AiStudioProtocol.redactCredentials]——与桥接层同一份脱敏，
+     * 终端错误同样可能带凭据（OkHttp 消息、网关重定向 URL）。
      */
     private fun describe(action: String, error: Throwable): Throwable {
         if (error is CancellationException) throw error
@@ -455,7 +458,8 @@ internal class McpTerminalHost(
             code == 403 -> "登录态或令牌已失效——请在 App 的「账号」页重新登录后重试。"
             else -> null
         }
-        val base = "$action 失败：" + (error.message ?: "未知错误")
+        val sanitized = com.local.comfyuimobile.network.AiStudioProtocol.redactCredentials(error.message ?: "未知错误")
+        val base = "$action 失败：" + sanitized
         return IllegalStateException(if (hint.isNullOrBlank()) base else "$base\n$hint", error)
     }
 

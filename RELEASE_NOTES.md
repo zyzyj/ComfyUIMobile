@@ -1,3 +1,59 @@
+# v0.3.11 — MCP 异常消息凭据脱敏（防 Cookie/bdToken 泄给 AI）
+
+> 承接第 11 节「查日志里长期被忽略的问题」。审计 MCP 请求链路时发现：
+> **工具返回给 AI 模型的错误文本可能携带凭据**。
+
+## 问题：错误消息把账号交给模型
+
+MCP 的工具调用由 AiCode 里的外部模型发起，它看不到手机、只会读工具返回的文本。
+而我们的异常消息来自 OkHttp / 网关重定向 / 平台原始响应，形态里**可能**带：
+
+- Jupyter `token`（可直接访问云端环境，等同密码）：`GET api/terminals?token=abc123`
+- 反代 Cookie：`Cookie: BDUSS=xxx; PSTM=yyy`
+- 平台令牌：`x-studio-token=…`、`bdToken=…`
+
+以前三处把 `error.message` 原样拼进返回文本：
+- `AiStudioBridge.describe()`（GPU 档位 / 启动 / 停止）
+- `McpTerminalHost.describe()`（终端）
+- `McpToolRegistry.handleToolCall()`（所有工具的异常统一出口，以及 `isError` 正常返回）
+
+凭据一旦漏进返回文本，等于把账号密码交给 AI。
+
+## 修：只写一份脱敏，三层兑底
+
+新增 `AiStudioProtocol.redactCredentials()` 纯函数，覆盖三类真实形态：
+
+| 形态 | 示例 | 处理后 |
+|---|---|---|
+| URL 查询参数 | `?token=abc123&foo=bar` | `?token=***&foo=bar` |
+| Cookie 头 | `Cookie: BDUSS=xxx; PSTM=yyy` | `Cookie: ***` |
+| 散落键值对 | `BDUSS=xxx 已过期` | `BDUSS=*** 已过期` |
+
+保留主机名与路径（排障需要），只替换值。三处调用同一份，不另写：
+
+1. `AiStudioBridge.describe()` —— 局部脱敏；
+2. `McpTerminalHost.describe()` —— 同上；
+3. `McpToolRegistry.handleToolCall()` —— **最后兑底**：既脱敏 catch 到的异常，
+   也脱敏 `isError=true` 的正常返回（如 `GenerateOutcome.Failed` 包的"提交失败：{message}"，
+   它不走 catch，若不脱敏仍会漏）。
+
+> 边界（如实说）：这是**文本层**的尽力而为，脚本语言里的语义逃逸（如 AI 让它执行的
+> `curl` 命令里硬编码凭据）不在本层能挡的范围，那种仍靠终端命令安全判定与人工兜底。
+
+## 测试 +4
+
+`AiStudioProtocolTest` 新增：URL 查询参数脱敏、Cookie 头脱敏、散落键值对脱敏、
+无凭据文本恒等。全部 `testDebugUnitTest` 本地跑通（48 条测试全绿）。
+
+## 未做
+
+- 真机端到端仍未验证（本地 JVM 单测 + 编译通过）。
+- 脱敏只处理**异常消息文本**；日志侧已有 `redactSecrets` 处理 JSON 形态，两条不同入口、
+  各自覆盖自己的形态，未合并（合并会让日志的 `<已省略 len=N>` 形态与异常消息的 `***`
+  形态互相干扰）。
+
+---
+
 # v0.3.10 — 日志复查：登录墙误诊 / MCP 误拦 / heredoc 误判
 
 > 上一版（v0.3.9）修的是你报的四条症状。这一版是我**重新通读 10 天日志**（7469 行）

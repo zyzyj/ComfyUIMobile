@@ -437,4 +437,42 @@ class AiStudioProtocolTest {
         // 换行/制表保留（终端输出靠它们分行）。
         assertEquals("a\nb\tc", AiStudioProtocol.stripControlChars("a\nb\tc"))
     }
+
+    // ===== 异常消息凭据脱敏（v0.3.11）=====
+    // MCP 工具把异常消息直接返回给 AI 模型。凭据（Cookie / bdToken / Jupyter token）
+    // 一旦漏进去等于把账号交给模型。以下锁住三类真实形态。
+
+    @Test
+    fun redactsUrlQueryCredentials() {
+        val raw = "读取终端列表失败：HTTP 302 https://aistudio.baidu.com/api/terminals?token=abc123&foo=bar"
+        val out = AiStudioProtocol.redactCredentials(raw)
+        assertFalse(out.contains("abc123"))
+        assertTrue(out.contains("token=***"))
+        assertTrue(out.contains("foo=bar"))  // 非凭据参数保留
+    }
+
+    @Test
+    fun redactsCookieHeaderValues() {
+        val raw = "请求失败：Cookie: BDUSS=abcd1234; PSTM=999; baiduid=xyz"
+        val out = AiStudioProtocol.redactCredentials(raw)
+        assertFalse(out.contains("abcd1234"))
+        assertFalse(out.contains("999"))
+        assertTrue(out.contains("Cookie: ***"))
+    }
+
+    @Test
+    fun redactsScatteredCredentialPairs() {
+        val raw = "启动失败：BDUSS=abcd1234 已过期；x-studio-token=tokenxyz 同样失效"
+        val out = AiStudioProtocol.redactCredentials(raw)
+        assertFalse(out.contains("abcd1234"))
+        assertFalse(out.contains("tokenxyz"))
+        assertTrue(out.contains("BDUSS=***"))
+        assertTrue(out.contains("x-studio-token=***"))
+    }
+
+    @Test
+    fun leavesPlainMessageUntouched() {
+        val raw = "项目 42 已停止：终端连接已失效"
+        assertEquals(raw, AiStudioProtocol.redactCredentials(raw))
+    }
 }

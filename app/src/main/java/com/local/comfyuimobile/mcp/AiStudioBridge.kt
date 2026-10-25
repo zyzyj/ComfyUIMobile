@@ -5,6 +5,7 @@ import com.local.comfyuimobile.data.AppPreferences
 import com.local.comfyuimobile.model.AiStudioAccount
 import com.local.comfyuimobile.network.AiStudioClient
 import com.local.comfyuimobile.network.AiStudioException
+import com.local.comfyuimobile.network.AiStudioProtocol
 import com.local.comfyuimobile.network.AiStudioRiskControl
 import com.local.comfyuimobile.network.AiStudioRetry
 import com.local.comfyuimobile.network.AiStudioTokenRefresher
@@ -480,16 +481,24 @@ internal class AiStudioBridge(
      *
      * 8407（风控）与 403（令牌/登录）是最常见的两类，且**含义完全不同**：前者等一会
      * 儿重试就好，后者要用户重新登录。混成一句"请求失败"会让 AI 白重试很多轮。
+     *
+     * ## 凭据安全（v0.3.11）
+     *
+     * 原始异常消息可能包含请求 URL 或响应头里的凭据（Cookie / bdToken）。
+     * 本方法返回给 MCP 客户端的文本**绝不包含**这些敏感信息——统一走
+     * [AiStudioProtocol.redactCredentials]（与终端层同一份，不另写）。
      */
     private fun describe(action: String, error: Throwable): Throwable {
         if (error is CancellationException) throw error
         val code = (error as? AiStudioException)?.errorCode
+        val rawMessage = error.message ?: "未知错误"
+        val sanitizedMessage = AiStudioProtocol.redactCredentials(rawMessage)
         val hint = when {
             AiStudioRiskControl.isRetryable(code) -> AiStudioRiskControl.messageFor(code, null)
             code == 403 -> "登录态或令牌已失效——请在 App 的「账号」页重新登录后重试。"
             else -> null
         }
-        val base = "$action 失败：" + (error.message ?: "未知错误")
+        val base = "$action 失败：" + sanitizedMessage
         return IllegalStateException(if (hint.isNullOrBlank()) base else "$base\n$hint", error)
     }
 }

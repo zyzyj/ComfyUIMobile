@@ -33,3 +33,6 @@ captures/
 其他项目（与项目六无关）/
 图片文件夹/
 LiuMoApp/
+
+# Android 系统媒体扫描标记（空文件，非项目源码）
+.nomedia

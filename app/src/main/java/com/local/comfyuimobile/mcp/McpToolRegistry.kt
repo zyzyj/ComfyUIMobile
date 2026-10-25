@@ -246,12 +246,20 @@ internal class McpToolRegistry(
         } catch (error: Exception) {
             // 工具执行失败按 MCP 约定回 isError=true 的**正常结果**（而非 JSON-RPC error），
             // 这样模型能看到失败原因并自行调整，而不是整轮对话中断。
+            val sanitized = com.local.comfyuimobile.network.AiStudioProtocol
+                .redactCredentials(error.message ?: "未知错误")
             return McpProtocol.success(
                 id,
-                McpProtocol.textResult("工具 $name 执行失败：${error.message}", isError = true),
+                McpProtocol.textResult("工具 $name 执行失败：$sanitized", isError = true),
             )
         }
-        return McpProtocol.success(id, McpProtocol.textResult(result.text, isError = result.isError))
+        // v0.3.11（凭据安全）：业务失败（isError=true）不是异常，上面的 catch 覆盖不到——
+        // 比如 ComfyMcpHost 把"提交失败：{error.message}"包进 GenerateOutcome.Failed 正常返回，
+        // 而那 message 可能带反代 Cookie。所以对**返回文本**再做一次脱敏（对无凭据的文本
+        // 是恒等变换，零副作用）。这是返回给模型的最后一道兑底。
+        val sanitizedText = com.local.comfyuimobile.network.AiStudioProtocol
+            .redactCredentials(result.text)
+        return McpProtocol.success(id, McpProtocol.textResult(sanitizedText, isError = result.isError))
     }
 
     /**

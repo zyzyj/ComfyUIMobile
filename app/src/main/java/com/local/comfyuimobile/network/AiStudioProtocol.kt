@@ -446,6 +446,35 @@ object AiStudioProtocol {
     private val REDACT_KEYS = listOf("token", "bdToken", "cookie")
 
     /**
+     * 把**异常消息**里的凭据脱敏（v0.3.11）。
+     *
+     * [redactSecrets] 只处理 JSON 形态（`"token": "..."`），而异常消息是**自由文本**：
+     * 可能来自 OkHttp（`Failed to connect to host:port`）、网关重定向
+     * （`经重定向 302 → https://…/projectdetail/…?token=…`）或平台返回的原始错误。
+     * MCP 工具把异常消息直接返回给 AI 模型，凭据一旦漏进去等于把账号交给模型。
+     *
+     * 覆盖三类真实形态：
+     *  - URL 查询参数里的凭据（Jupyter 用 `?token=`，网关用 `auth` / `_xsrf`）；
+     *  - Cookie 头（`Cookie: BDUSS=…` / `Set-Cookie: …`）；
+     *  - 散落的 `BDUSS=` / `bdToken=` / `x-studio-token=` 键值对。
+     *
+     * 保留主机名与路径（排障需要），只替换值部分。纯函数，可单测。
+     */
+    fun redactCredentials(message: String): String {
+        var result = message
+        // URL 查询参数里的凭据（值到下一个 & 或空白为止）
+        result = Regex("([?&](?:token|auth|_xsrf|sign|access_token)=)[^\\s&]*")
+            .replace(result) { it.groupValues[1] + "***" }
+        // Cookie 头（值整段替换，名字保留）
+        result = Regex("(?i)(Cookie|Set-Cookie):\\s*[^\\r\\n]*")
+            .replace(result) { it.groupValues[1] + ": ***" }
+        // 散落的键值对（值到空白 / ; / , / 引号为止）
+        result = Regex("(?i)(BDUSS|bdToken|x-studio-token|PSTM)=([^\\s;,\"'&]*)")
+            .replace(result) { it.groupValues[1] + "=***" }
+        return result
+    }
+
+    /**
      * 按名称合并多串 Cookie，**后面的覆盖前面的**（同名的取靠后那份）。
      *
      * 用途：账号 Cookie（BDUSS 等） + 连终端时网关下发的项目级 Cookie
