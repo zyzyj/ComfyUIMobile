@@ -2166,19 +2166,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // 正在使用的 GPU 档位（项目列表接口不带这个字段）。
                     val running = page.projects.firstOrNull { it.running }
                     if (running != null) {
-                        if (_state.value.aiStudio.environmentReadyProjectId != running.projectId) {
-                            val ready = runCatching {
-                                kernelClient.peekEndpoint(account, running.projectId)
-                            }.getOrNull() != null
-                            if (ready) {
-                                _state.update {
-                                    it.copy(
-                                        aiStudio = it.aiStudio.copy(
-                                            environmentReadyProjectId = running.projectId,
-                                        ),
-                                    )
-                                }
-                            }
+                        // v0.3.14（P0-2）：**每轮刷新都复查**，而不是"没置位才 peek"。
+                        //
+                        // 以前这里 `if (ready != running.projectId)` 只在没置位时 peek——
+                        // ready 一旦置位就**再也没有失效机制**：环境被回收后，若平台列表
+                        // 仍回 running=true（真机日志里回收过程中 running 仍是 true），
+                        // justStopped 不触发、用户也不去点连接终端，ready 就永久残留，
+                        // 卡片一直显示"运行中"而实际连不上（用户报的现象）。
+                        //
+                        // 平台在环境回收时 baseinfo 返回 null（v0.3.13 注释已确认：
+                        // "正在回收时会短暂返回 ...null"），所以这里每轮用轻量 peek 复查：
+                        // 拿到有效地址就置位（幂等），拿到 null 就清掉本项目的 ready。
+                        // peek 是单次 fetchBaseInfo，列表刷新本就有节奏，不额外起轮询。
+                        val ready = runCatching {
+                            kernelClient.peekEndpoint(account, running.projectId)
+                        }.getOrNull() != null
+                        _state.update {
+                            it.copy(
+                                aiStudio = it.aiStudio.copy(
+                                    environmentReadyProjectId = if (ready) {
+                                        running.projectId
+                                    } else {
+                                        // 只清本项目，别动其他可能同时 ready 的项目。
+                                        it.aiStudio.environmentReadyProjectId
+                                            ?.takeIf { id -> id != running.projectId }
+                                    },
+                                ),
+                            )
                         }
                         if (running.runningGpuLabel.isBlank()) {
                             refreshRunningGpuLabel(account, running.projectId)
@@ -2363,6 +2377,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // 轮询超时也要清掉，否则卡片会一直转圈。
                     startingProjectId = null,
                     stoppingProjectId = null,
+                    // v0.3.14（P0-1）：**仅启动方向**超时时清 ready。
+                    // 启动超时 = 这次没能确认环境可用，不该留下"已就绪"标记（否则
+                    // 用户报的「启动中变运行中、实际没运行」会因残留 ready 继续显示
+                    // "运行中"）。停止方向超时 = 没等到 running=false，项目可能还在跑，
+                    // ready 必须保留——误清会让一个还活着的项目回到"正在启动环境…"。
+                    environmentReadyProjectId = if (wantRunning) {
+                        it.aiStudio.environmentReadyProjectId
+                            ?.takeIf { id -> id != projectId }
+                    } else {
+                        it.aiStudio.environmentReadyProjectId
+                    },
                     message = AiStudioSchedules.startupTimeoutMessage(sawRunning, waitedSeconds),
                 ),
             )
