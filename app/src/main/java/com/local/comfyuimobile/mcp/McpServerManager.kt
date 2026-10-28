@@ -71,12 +71,21 @@ internal class McpServerManager(
         onSubmitted: (suspend (promptId: String) -> Unit)? = null,
     ): Int {
         if (isRunning) return port
-        // v0.3.15（安全硬约束）：绑 0.0.0.0（局域网可达）时必须启用鉴权。
-        // 免鉴权的前提是**只绑 127.0.0.1**——一旦开放到局域网，terminal_exec 等于
-        // 把任意命令执行权交给同一 WiFi 下的任何人，绝不允许免鉴权。
+        // v0.3.18（产品决策）：局域网**不再强制鉴权**。
+        //
+        // 早期（v0.3.15~v0.3.17）把「局域网 + 免鉴权」当硬约束拒绝启动，结果反而
+        // 造成两个更糟的问题：① 用户关鉴权时服务拒绝启动、UI 卡死横跳；② 存量脏数据
+        // （LAN=true + auth=false）让滑动后台重进后自动拉起失败。
+        //
+        // 现在的边界：局域网 + 免鉴权 = 同一 WiFi 下任何人可调 terminal_exec（任意命令
+        // 执行）。这是真实风险，但属用户自担的设备/局域网场景；UI 上会给出醒目警告，
+        // 把选择权交给用户，而不是替用户把服务掐死。
         val lan = bindAddress == LAN_ALL
-        require(!lan || requireAuth) {
-            "开放局域网访问必须启用鉴权：请在 MCP 服务页打开「要求鉴权」后再试。"
+        if (lan && !requireAuth) {
+            AppLogger.warn(
+                "MCP 以「局域网 + 免鉴权」启动：同一 WiFi 下任何设备都能调 terminal_exec 执行任意命令。" +
+                    "这是用户明确选择的低安全配置。",
+            )
         }
         // 启用鉴权时才必须有 token；免鉴权模式不需要（也就不该因缺 token 而拒绝启动）。
         require(!requireAuth || token.isNotBlank()) { "已开启鉴权，请先生成访问令牌" }

@@ -180,13 +180,16 @@ class McpServerService : Service() {
         val resolvedToken = token.ifBlank { stored?.mcpServerToken.orEmpty() }
         // 免鉴权模式下不需要 token（F1）；只有开启鉴权时才要求必须有。
         val requireAuth = stored?.mcpServerRequireAuth == true
-        // v0.3.15：局域网模式强制鉴权（在 manager.start 里也会再校验一次，
-        // 这里先挡一道，避免"没鉴权又开局域网"走到 manager 才失败）。
+        // v0.3.18（产品决策）：局域网**不再强制鉴权**。
+        //
+        // 旧版在这里挡一道「LAN=true 且 auth=false 就拒绝启动」，但那是用户可自选的
+        // 低安全配置（同一 WiFi 下任何人能调 terminal_exec）。真实风险由 UI 警告兜底，
+        // 服务不再替用户掐死启动——否则滑动后台重进后，存量脏数据会让自动拉起失败。
         val lanEnabled = stored?.mcpServerLanEnabled == true
         if (lanEnabled && !requireAuth) {
-            AppLogger.warn("MCP 前台服务启动被拒：局域网访问要求开启鉴权")
-            stopServer(StopReason.AUTH)
-            return
+            AppLogger.warn(
+                "MCP 以「局域网 + 免鉴权」启动：同一 WiFi 下任何设备都能执行任意命令。",
+            )
         }
         if (requireAuth && resolvedToken.isBlank()) {
             AppLogger.warn("MCP 前台服务启动被拒：已开启鉴权但没有令牌")

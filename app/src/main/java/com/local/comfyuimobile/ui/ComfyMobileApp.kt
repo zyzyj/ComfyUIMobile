@@ -4358,36 +4358,49 @@ private fun McpScreen(
                     }
                 }
                 // 开启鉴权（F1 默认关）。
-                // v0.3.16：局域网开着时此开关**禁用**——局域网强制鉴权，用户不能在此
-                // 关掉鉴权让服务拒绝启动（真机日志 19:42:32 起十几次横跳的根因）。
-                val lanOn = state.mcpServerLanEnabled
+                // v0.3.18：鉴权独立于局域网，不再联动/禁用。
                 SettingsToggleRow(
                     title = "要求鉴权（Bearer token）",
-                    subtitle = when {
-                        lanOn -> "局域网访问已开启，鉴权被强制启用（终端执行权不可裸露在局域网）"
-                        state.mcpServerRequireAuth -> "已开启：AiCode 必须带 token 才能调用"
-                        else -> "默认关闭。仅绑 127.0.0.1，本机其他 App 可访问；想更严可以打开"
+                    subtitle = if (state.mcpServerRequireAuth) {
+                        "已开启：AiCode 必须带 token 才能调用"
+                    } else {
+                        "默认关闭。仅本机可访问时可保持关闭；开启局域网后强烈建议打开"
                     },
-                    checked = state.mcpServerRequireAuth || lanOn,
-                    enabled = !lanOn,
+                    checked = state.mcpServerRequireAuth,
                     onCheckedChange = viewModel::setMcpServerRequireAuth,
                 )
-                // v0.3.15：局域网访问。安全不变量：开启即强制鉴权。
+                // v0.3.15：局域网访问。v0.3.18：鉴权可选，但免鉴权 + 局域网给醒目警告。
                 SettingsToggleRow(
                     title = "允许局域网访问",
-                    subtitle = if (state.mcpServerLanEnabled) {
-                        val ip = LocalNetwork.primaryIpv4()
-                        if (ip != null) {
-                            "已开启：同一 WiFi 下其它设备用 http://$ip:${state.mcpServerPort.takeIf { it > 0 } ?: effectivePort(state)}/mcp 连接（已强制鉴权）"
-                        } else {
-                            "已开启：但没读到本机 IPv4 地址，局域网可能连不上（请确认已连 WiFi）"
+                    subtitle = when {
+                        state.mcpServerLanEnabled && !state.mcpServerRequireAuth -> {
+                            val ip = LocalNetwork.primaryIpv4()
+                            "⚠ 已开启且未鉴权：同一 WiFi 下任何设备都能执行任意命令（terminal_exec）。" +
+                                "建议打开上方「要求鉴权」。" +
+                                (ip?.let { "连接地址 http://$it:${state.mcpServerPort.takeIf { it > 0 } ?: effectivePort(state)}/mcp" } ?: "")
                         }
-                    } else {
-                        "关闭：仅本机可连。开启后同一 WiFi 下其它设备也能连，但会**强制启用鉴权**"
+                        state.mcpServerLanEnabled -> {
+                            val ip = LocalNetwork.primaryIpv4()
+                            if (ip != null) {
+                                "已开启：同一 WiFi 下其它设备用 http://$ip:${state.mcpServerPort.takeIf { it > 0 } ?: effectivePort(state)}/mcp 连接（需带 token）"
+                            } else {
+                                "已开启：但没读到本机 IPv4 地址，局域网可能连不上（请确认已连 WiFi）"
+                            }
+                        }
+                        else -> "关闭：仅本机可连。开启后同一 WiFi 下其它设备也能连"
                     },
                     checked = state.mcpServerLanEnabled,
                     onCheckedChange = viewModel::setMcpServerLanEnabled,
                 )
+                // v0.3.18：局域网 + 免鉴权的醒目风险提示（独立于开关副标题，红色强调）。
+                if (state.mcpServerLanEnabled && !state.mcpServerRequireAuth) {
+                    Text(
+                        "⚠ 当前局域网访问未开启鉴权，同一 WiFi 下任何设备都能通过 terminal_exec 执行任意命令。" +
+                            "仅在可信网络（如家里 WiFi）使用，或打开上方「要求鉴权」。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 Text(
                     "⚠ 改完配置需在 AiCode 里新开一次会话才生效",
                     style = MaterialTheme.typography.bodySmall,

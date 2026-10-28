@@ -1082,8 +1082,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 超时不再是"正在启动…"——如实说是哪种失败，并给出可行动作。
                 AppLogger.warn("MCP 服务在 ${MCP_STARTUP_TIMEOUT_MS / 1000} 秒内未就绪（超时）")
                 _state.update {
-                    it.copy(notice = "MCP 服务未能启动。常见原因：通知权限未授予、端口被占用。" +
-                        "可到「高级」换一个端口，或检查系统的通知权限")
+                    it.copy(
+                        notice = "MCP 服务未能启动。常见原因：通知权限未授予、端口被占用。" +
+                            "可到「高级」换一个端口，或检查系统的通知权限；" +
+                            "若刚从后台切回，请确认通知栏还有 MCP 服务的常驻卡片。",
+                    )
                 }
             }
         }
@@ -1128,29 +1131,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 服务在跑就重启——鉴权是启动参数，不重启不生效。
      */
     fun setMcpServerRequireAuth(enabled: Boolean) {
-        val current = _state.value
-        // v0.3.16（修「关鉴权但局域网开着 → 服务拒绝启动」的横跳循环）：
+        // v0.3.18（产品决策）：鉴权开关**独立**，不再与局域网联动。
         //
-        // 局域网模式**强制要求鉴权**（绑 0.0.0.0 时 terminal_exec = 任意命令执行权，
-        // 免鉴权等于把这权力交给同一 WiFi 下任何人）。所以用户关鉴权时，若局域网
-        // 还开着，必须**一起关掉局域网**，而不是让服务下次重启时拒绝启动、
-        // UI 卡在"正在启动…"、用户只能反复拨开关（真机日志 19:42:32 起十几次横跳）。
-        val mustCloseLan = !enabled && current.mcpServerLanEnabled
+        // 旧版（v0.3.17）关鉴权时若局域网开着会一起关掉局域网、开鉴权时强制鉴权——
+        // 那是「局域网强制鉴权」的遗留。现在局域网鉴权可选（用户自担风险），
+        // 两个开关互不干扰，只各自落盘 + 重启。
+        val current = _state.value
         _state.update { it.copy(mcpServerRequireAuth = enabled) }
         if (!_state.value.mcpServerEnabled) {
             viewModelScope.launch {
-                runCatching {
-                    if (mustCloseLan) preferences.setMcpServerLanAndAuth(lanEnabled = false, requireAuth = false)
-                    else preferences.setMcpServerRequireAuth(enabled)
-                }.onFailure { AppLogger.error("保存 MCP 鉴权开关失败", it) }
-            }
-            if (mustCloseLan) {
-                _state.update {
-                    it.copy(
-                        mcpServerLanEnabled = false,
-                        notice = "已关闭鉴权；为安全起见，局域网访问也一并关闭（局域网必须鉴权）。",
-                    )
-                }
+                runCatching { preferences.setMcpServerRequireAuth(enabled) }
+                    .onFailure { AppLogger.error("保存 MCP 鉴权开关失败", it) }
             }
             return
         }
@@ -1161,21 +1152,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         McpServiceState.intent = true
-        // v0.3.16：先落盘、成功后重启，避免服务读到旧鉴权态。
-        // 关鉴权且局域网开着 → 原子关局域网，落盘后重启。
+        // 先落盘、成功后重启，避免服务读到旧鉴权态。
         viewModelScope.launch {
-            runCatching {
-                if (mustCloseLan) preferences.setMcpServerLanAndAuth(lanEnabled = false, requireAuth = false)
-                else preferences.setMcpServerRequireAuth(enabled)
-            }.onFailure { AppLogger.error("保存 MCP 鉴权开关失败", it) }
-            if (mustCloseLan) {
-                _state.update {
-                    it.copy(
-                        mcpServerLanEnabled = false,
-                        notice = "已关闭鉴权；为安全起见，局域网访问也一并关闭（局域网必须鉴权）。",
-                    )
-                }
-            }
+            runCatching { preferences.setMcpServerRequireAuth(enabled) }
+                .onFailure { AppLogger.error("保存 MCP 鉴权开关失败", it) }
             McpServerService.restart(app, token)
             watchMcpStartup()
         }
@@ -1184,37 +1164,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * 开关局域网访问（v0.3.15）。
      *
-     * 安全不变量：局域网（绑 0.0.0.0）**必须**启用鉴权——否则同一 WiFi 下任何人
-     * 都能调 terminal_exec（任意命令执行）。
+     * v0.3.18（产品决策）：局域网鉴权**可选**，不再强制。
      *
-     * 处理：
-     *  - 开启局域网但鉴权关闭 → 先强制打开鉴权（并保证有 token），再重启服务；
-     *  - 关闭局域网 → 鉴权可以保留（不影响，用户自己决定），只重启服务。
+     * 旧版开局域网会自动强制开鉴权、关鉴权会联动关局域网。现在两个开关独立：
+     * 用户自选「局域网 + 免鉴权」= 同一 WiFi 下任何人可调 terminal_exec（任意命令
+     * 执行）。这是真实风险，UI 会给出醒目警告；服务只记日志、不拒绝启动。
      */
     fun setMcpServerLanEnabled(enabled: Boolean) {
         val current = _state.value
         _state.update { it.copy(mcpServerLanEnabled = enabled) }
-        // v0.3.16（修重启竞态）：LAN 与鉴权必须**原子落盘**，且**落盘完成后再重启**。
-        //
-        // 以前 `lanEnabled` 和 `requireAuth` 各发一次独立的异步落盘，服务重启读磁盘时
-        // 可能读到「LAN=true 但鉴权=false」的中间态——那个组合在服务端会被硬校验拒绝
-        // （真机日志 17:36:17 "局域网访问要求开启鉴权"，17:36:22 "5 秒未就绪"）。
-        // 另一个竞态：restart 是同步发 intent，而落盘是异步——服务起来时可能读到旧值。
-        // 所以重启动作必须放进落盘协程、在 edit 成功之后。
-        val targetAuth = if (enabled) true else current.mcpServerRequireAuth
-        if (enabled && !current.mcpServerRequireAuth) {
-            // 开局域网却没鉴权：内存态同步打开鉴权。
-            _state.update {
-                it.copy(
-                    mcpServerRequireAuth = true,
-                    notice = "已开启局域网访问：为安全起见，自动启用了鉴权（Bearer token）。",
-                )
-            }
-        }
         if (!current.mcpServerEnabled) {
             // 服务没开：只落盘，不重启。
             viewModelScope.launch {
-                runCatching { preferences.setMcpServerLanAndAuth(enabled, targetAuth) }
+                runCatching { preferences.setMcpServerLanEnabled(enabled) }
                     .onFailure { AppLogger.error("保存局域网访问开关失败", it) }
             }
             return
@@ -1225,19 +1187,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             generated
         }
         McpServiceState.intent = true
-        // v0.3.16：先原子落盘，成功后再重启；失败也要重启（用内存态兑底，总比裸奔好）。
+        // 先落盘、成功后重启（restart 不落盘 enabled=false）。
         viewModelScope.launch {
-            val saved = runCatching { preferences.setMcpServerLanAndAuth(enabled, targetAuth) }.isSuccess
+            runCatching { preferences.setMcpServerLanEnabled(enabled) }
+                .onFailure { AppLogger.error("保存局域网访问开关失败", it) }
             if (token.isNotBlank() && token != _state.value.mcpServerToken) {
                 runCatching { preferences.setMcpServerToken(token) }
             }
-            if (!saved) AppLogger.error("保存局域网访问开关失败，仍按内存态重启")
-            // restart 而非 stop+start——stop 会落盘 enabled=false（把开关关掉）。
             McpServerService.restart(app, token)
             _state.update {
                 it.copy(
                     notice = if (enabled) {
-                        "局域网访问已开启：同一 WiFi 下其它设备可用本机 IP 连接（需带 token）。"
+                        if (_state.value.mcpServerRequireAuth) {
+                            "局域网访问已开启：同一 WiFi 下其它设备可用本机 IP 连接（需带 token）。"
+                        } else {
+                            "⚠ 局域网访问已开启且未鉴权：同一 WiFi 下任何设备都能执行任意命令。" +
+                                "建议开启「要求鉴权」。"
+                        }
                     } else {
                         "局域网访问已关闭，仅本机可连。"
                     },
