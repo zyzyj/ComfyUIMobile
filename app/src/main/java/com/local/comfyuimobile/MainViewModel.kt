@@ -1128,11 +1128,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 服务在跑就重启——鉴权是启动参数，不重启不生效。
      */
     fun setMcpServerRequireAuth(enabled: Boolean) {
+        val current = _state.value
+        // v0.3.16（修「关鉴权但局域网开着 → 服务拒绝启动」的横跳循环）：
+        //
+        // 局域网模式**强制要求鉴权**（绑 0.0.0.0 时 terminal_exec = 任意命令执行权，
+        // 免鉴权等于把这权力交给同一 WiFi 下任何人）。所以用户关鉴权时，若局域网
+        // 还开着，必须**一起关掉局域网**，而不是让服务下次重启时拒绝启动、
+        // UI 卡在"正在启动…"、用户只能反复拨开关（真机日志 19:42:32 起十几次横跳）。
+        val mustCloseLan = !enabled && current.mcpServerLanEnabled
         _state.update { it.copy(mcpServerRequireAuth = enabled) }
         if (!_state.value.mcpServerEnabled) {
             viewModelScope.launch {
-                runCatching { preferences.setMcpServerRequireAuth(enabled) }
-                    .onFailure { AppLogger.error("保存 MCP 鉴权开关失败", it) }
+                runCatching {
+                    if (mustCloseLan) preferences.setMcpServerLanAndAuth(lanEnabled = false, requireAuth = false)
+                    else preferences.setMcpServerRequireAuth(enabled)
+                }.onFailure { AppLogger.error("保存 MCP 鉴权开关失败", it) }
+            }
+            if (mustCloseLan) {
+                _state.update {
+                    it.copy(
+                        mcpServerLanEnabled = false,
+                        notice = "已关闭鉴权；为安全起见，局域网访问也一并关闭（局域网必须鉴权）。",
+                    )
+                }
             }
             return
         }
@@ -1144,9 +1162,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         McpServiceState.intent = true
         // v0.3.16：先落盘、成功后重启，避免服务读到旧鉴权态。
+        // 关鉴权且局域网开着 → 原子关局域网，落盘后重启。
         viewModelScope.launch {
-            runCatching { preferences.setMcpServerRequireAuth(enabled) }
-                .onFailure { AppLogger.error("保存 MCP 鉴权开关失败", it) }
+            runCatching {
+                if (mustCloseLan) preferences.setMcpServerLanAndAuth(lanEnabled = false, requireAuth = false)
+                else preferences.setMcpServerRequireAuth(enabled)
+            }.onFailure { AppLogger.error("保存 MCP 鉴权开关失败", it) }
+            if (mustCloseLan) {
+                _state.update {
+                    it.copy(
+                        mcpServerLanEnabled = false,
+                        notice = "已关闭鉴权；为安全起见，局域网访问也一并关闭（局域网必须鉴权）。",
+                    )
+                }
+            }
             McpServerService.restart(app, token)
             watchMcpStartup()
         }

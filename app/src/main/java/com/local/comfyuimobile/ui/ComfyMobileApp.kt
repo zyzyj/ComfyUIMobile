@@ -4358,14 +4358,18 @@ private fun McpScreen(
                     }
                 }
                 // 开启鉴权（F1 默认关）。
+                // v0.3.16：局域网开着时此开关**禁用**——局域网强制鉴权，用户不能在此
+                // 关掉鉴权让服务拒绝启动（真机日志 19:42:32 起十几次横跳的根因）。
+                val lanOn = state.mcpServerLanEnabled
                 SettingsToggleRow(
                     title = "要求鉴权（Bearer token）",
-                    subtitle = if (state.mcpServerRequireAuth) {
-                        "已开启：AiCode 必须带 token 才能调用"
-                    } else {
-                        "默认关闭。仅绑 127.0.0.1，本机其他 App 可访问；想更严可以打开"
+                    subtitle = when {
+                        lanOn -> "局域网访问已开启，鉴权被强制启用（终端执行权不可裸露在局域网）"
+                        state.mcpServerRequireAuth -> "已开启：AiCode 必须带 token 才能调用"
+                        else -> "默认关闭。仅绑 127.0.0.1，本机其他 App 可访问；想更严可以打开"
                     },
-                    checked = state.mcpServerRequireAuth,
+                    checked = state.mcpServerRequireAuth || lanOn,
+                    enabled = !lanOn,
                     onCheckedChange = viewModel::setMcpServerRequireAuth,
                 )
                 // v0.3.15：局域网访问。安全不变量：开启即强制鉴权。
@@ -4669,18 +4673,30 @@ private fun SettingsToggleRow(
     subtitle: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
 ) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyMedium)
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(
+            Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (enabled) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Text(
                 subtitle,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Spacer(Modifier.width(12.dp))
-        AppSwitch(checked, onCheckedChange)
+        AppSwitch(checked, onCheckedChange, enabled)
     }
 }
 
@@ -4693,10 +4709,11 @@ private fun SettingsToggleRow(
  *  - on 轨道用主题强调色（而非默认值），与 App 其他选中态一致。
  */
 @Composable
-private fun AppSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+private fun AppSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit, enabled: Boolean = true) {
     Switch(
         checked = checked,
-        onCheckedChange = onCheckedChange,
+        onCheckedChange = if (enabled) onCheckedChange else null,
+        enabled = enabled,
         colors = SwitchDefaults.colors(
             checkedThumbColor = Color.White,
             checkedTrackColor = MaterialTheme.colorScheme.primary,
@@ -4704,6 +4721,12 @@ private fun AppSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
             uncheckedThumbColor = MaterialTheme.colorScheme.surface,
             uncheckedTrackColor = MaterialTheme.colorScheme.outlineVariant,
             uncheckedBorderColor = MaterialTheme.colorScheme.outline,
+            disabledCheckedThumbColor = MaterialTheme.colorScheme.surface,
+            disabledCheckedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
+            disabledCheckedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
+            disabledUncheckedThumbColor = MaterialTheme.colorScheme.surface,
+            disabledUncheckedTrackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+            disabledUncheckedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
         ),
     )
 }
@@ -5004,7 +5027,7 @@ private fun SettingsContent(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        AppSwitch(rule.enabled) { viewModel.setCacheRuleEnabled(rule, it) }
+                        AppSwitch(checked = rule.enabled, onCheckedChange = { viewModel.setCacheRuleEnabled(rule, it) })
                         IconButton(onClick = { viewModel.removeCacheRule(rule) }) {
                             Icon(Icons.Outlined.Delete, "删除白名单")
                         }
