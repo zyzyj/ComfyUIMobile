@@ -43,6 +43,12 @@ internal class McpFileStore(
 
     init {
         runCatching { cacheDir.mkdirs() }
+        // v0.3.15：启动时**无条件扫一次孤儿**。
+        //
+        // 以前 sweepOrphans 只在 newFile() 时顺手扫，而进程被强杀（或启动竞态导致
+        // 旧 server 没被正确 stop）会让 clear() 没执行——文件留在 mcp_files/ 且不在
+        // 登记表里，永远不被统计、也不被清。这里构造时先清一轮，弥补强杀后的残留。
+        sweepOrphans()
     }
 
     /**

@@ -44,6 +44,14 @@ internal class McpServer(
      * 免鉴权的前提是**只绑 127.0.0.1**（本机其他 App 可访问，局域网不可）。
      */
     private val requireAuth: Boolean,
+    /**
+     * 绑定地址（v0.3.15）。默认 `127.0.0.1`（仅本机）；局域网模式传 `0.0.0.0`。
+     *
+     * 安全约束：绑 `0.0.0.0` 时必须 [requireAuth] = true——否则同一 WiFi 下任何人都
+     * 能调 `terminal_exec`（任意命令执行）/`start_gpu`（烧算力卡）。这个不变量由
+     * [com.local.comfyuimobile.mcp.McpServerManager.start] 统一校验，本类不重复判。
+     */
+    private val bindAddress: String = "127.0.0.1",
     private val tools: McpToolRegistry,
     private val files: McpFileStore,
 ) {
@@ -73,11 +81,12 @@ internal class McpServer(
         if (!running.compareAndSet(false, true)) return
         workers = newWorkerPool()
         try {
-            // bind 到 loopback：第三个参数 backlog，第四个是绑定地址。
-            val socket = ServerSocket(port, 16, InetAddress.getByName(LOOPBACK))
+            // 第三个参数 backlog，第四个是绑定地址。
+            // v0.3.15：绑定地址改为可注入（loopback 或 0.0.0.0）。
+            val socket = ServerSocket(port, 16, InetAddress.getByName(bindAddress))
             serverSocket = socket
             boundPort = socket.localPort
-            AppLogger.info("MCP server 已启动：http://$LOOPBACK:$boundPort/mcp")
+            AppLogger.info("MCP server 已启动：http://$bindAddress:$boundPort/mcp")
         } catch (error: Throwable) {
             running.set(false)
             throw error

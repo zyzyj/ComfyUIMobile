@@ -1,3 +1,69 @@
+# v0.3.15 — MCP 局域网访问（强制鉴权）+ 缓存孤儿清理
+
+> 依据《MCP 局域网与缓存精细化_优化方案_v0.3.14 起》。逐条核实后实施：
+> 局域网访问用**方案 A（强制 Bearer 鉴权）**，SSE 暂不做，缓存取已确认的孤儿清理。
+
+## 一、局域网访问（新功能）
+
+以前 MCP 只绑 `127.0.0.1`——这是**安全前提**而非 bug（免鉴权只在本机才成立）。
+本版把它做成可配置：
+
+### 安全硬约束（不变量）
+
+**绑 `0.0.0.0`（局域网可达）时必须启用鉴权，否则拒绝启动。**
+
+原因：`terminal_exec` 是**任意命令执行**，`start_gpu` 直接烧算力卡。免鉴权 + 局域网 =
+同一 WiFi 下任何人能拿你的环境干任何事。所以 `McpServerManager.start()` 里加了
+`require(!lan || requireAuth)`，`McpServerService` 也挡一道（早失败）。
+
+### 三处硬编码同步改（不再漏）
+
+- `McpServer`：加 `bindAddress` 参数（默认 `127.0.0.1`，LAN 传 `0.0.0.0`）
+- `McpServerManager.fileUrlBase`：LAN 模式用本机 IPv4，**不是 127.0.0.1**——
+  否则电脑拿到的图片 URL 指向它自己，必然 404 且日志干净、极难查
+- `configSnippet`：同理由支持 `lanHost`
+
+### 取本机 IP
+
+新增 `LocalNetwork`（独立于 `LanAddress`——那个是 URL 归一化工具，名字像但不是）。
+遍历 `NetworkInterface`，取私有 IPv4（192.168 > 10 > 172 排序），排除虚拟/回环/
+链路本地；多个候选**全返回、不自己挑**（挑错是局域网最难查的失败）。
+
+### UI
+
+- MCP 页新增「允许局域网访问」开关，开启时**自动强制开鉴权**
+- 状态区/配置片段/通知栏都显示本机 IP 而非 127.0.0.1
+
+## 二、缓存孤儿清理
+
+`McpFileStore.init` 现在**无条件扫一次孤儿**。以前 `sweepOrphans()` 只在 `newFile()`
+时顺手扫——进程强杀（或旧 server 没被正确 stop）会让 `clear()` 没执行，残留文件
+留在 `mcp_files/` 且不在登记表，永远不被统计、不被清。这对应方案里那个「900 MB
+差额」的疑点（待真机 `du` 确认）。
+
+## 未做（如实说明）
+
+- **SSE 流支持**：本服务全部是"请求-响应"模型，无 server-push 场景；纯 JSON 响应
+  符合 MCP Streamable HTTP 规范。且容器内无法实测 Claude Desktop/Cursor，盲写协议层
+  代码风险高、无法验证。等真实客户端报告连不上再补。
+- **fetchedAt 标记 / L1 软上限 / 按 job 聚合**：需要结果页 UI 联动，属新功能增强，
+  不是 bug；方案自己也标了「超限只提示不自动删」等红线。留待下批。
+- **多网卡时让用户选 IP**：当前 URL 用 `primaryIpv4()`（第一个候选），候选已按
+  常见性排序，但没做选择器。真机遇到多网卡连不上时再补。
+
+## 测试 +6
+
+`McpServerManagerTest` +3（configSnippet 默认/局域网/空 lanHost）、
+`LocalNetworkTest` +3（不抛异常/都是合法 IPv4/primary 在候选中）。
+
+## 边界（如实说）
+
+- 本版未经真机验证。
+- Android 10+ `NetworkInterface.getNetworkInterfaces()` 取 WiFi IP 是否稳定未实测
+  （方案 §六.1 已标待验证）。
+
+---
+
 # v0.3.14 — 修「启动中→运行中」误报：ready 永不复查
 
 > 依据《报告 v0.3.13 审查》。报告基于 dev v0.3.13 逐行读源码，

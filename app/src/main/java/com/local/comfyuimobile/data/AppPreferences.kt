@@ -129,6 +129,13 @@ data class StoredSettings(
      */
     val mcpServerRequireAuth: Boolean = false,
     /**
+     * 是否允许局域网访问（v0.3.15）。默认 false = 只绑 127.0.0.1。
+     *
+     * 开启时服务绑 0.0.0.0，且**强制要求鉴权**（见 McpServerManager.start 的
+     * 不变量：LAN + 免鉴权 = 同一 WiFi 下任何人能执行任意命令，绝不允许）。
+     */
+    val mcpServerLanEnabled: Boolean = false,
+    /**
      * MCP 端口（v0.2.88）：用户改过一次就一直用。0 表示从未设置，用 [com.local.comfyuimobile.mcp.McpServerManager.DEFAULT_PORT]。
      * 端口持久化是为了不让 AiCode 那三行配置悄悄失效——端口一变就要重新复制配置。
      */
@@ -174,6 +181,7 @@ class AppPreferences(private val context: Context) {
         val mcpServerEnabledSeq = longPreferencesKey("mcp_server_enabled_seq")
         val mcpServerToken = stringPreferencesKey("mcp_server_token")
         val mcpServerRequireAuth = booleanPreferencesKey("mcp_server_require_auth")
+        val mcpServerLanEnabled = booleanPreferencesKey("mcp_server_lan_enabled")
         val mcpServerPort = intPreferencesKey("mcp_server_port")
         val lastGpuSchedule = stringPreferencesKey("last_gpu_schedule")
         /**
@@ -219,6 +227,7 @@ class AppPreferences(private val context: Context) {
             mcpServerEnabled = preferences[Keys.mcpServerEnabled] ?: false,
             mcpServerToken = preferences[Keys.mcpServerToken].orEmpty(),
             mcpServerRequireAuth = preferences[Keys.mcpServerRequireAuth] ?: false,
+            mcpServerLanEnabled = preferences[Keys.mcpServerLanEnabled] ?: false,
             mcpServerPort = preferences[Keys.mcpServerPort] ?: 0,
             lastGpuSchedule = preferences[Keys.lastGpuSchedule].orEmpty(),
             gpuSessionStart = GpuSessionStart.parse(preferences[Keys.gpuSessionStart].orEmpty()),
@@ -469,6 +478,11 @@ class AppPreferences(private val context: Context) {
     /** 持久化"是否启用 Bearer 鉴权"（v0.2.97，F1）。 */
     suspend fun setMcpServerRequireAuth(enabled: Boolean) {
         context.dataStore.edit { it[Keys.mcpServerRequireAuth] = enabled }
+    }
+
+    /** 持久化"是否允许局域网访问"（v0.3.15）。 */
+    suspend fun setMcpServerLanEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.mcpServerLanEnabled] = enabled }
     }
 
     /**

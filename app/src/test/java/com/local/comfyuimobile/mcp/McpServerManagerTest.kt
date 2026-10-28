@@ -42,4 +42,27 @@ class McpServerManagerTest {
         // 防止以后改 DEFAULT_PORT 时改到非法区间（那会让默认配置直接失效）。
         assert(McpServerManager.DEFAULT_PORT in McpServerManager.MIN_PORT..McpServerManager.MAX_PORT)
     }
+
+    // ===== v0.3.15 局域网 =====
+
+    @Test
+    fun configSnippetDefaultsToLoopback() {
+        val snippet = McpServerManager.configSnippet("tok", 23456, requireAuth = false)
+        assert(snippet.contains("http://127.0.0.1:23456/mcp"))
+        assert(!snippet.contains("Authorization"))
+    }
+
+    @Test
+    fun configSnippetUsesLanHost() {
+        val snippet = McpServerManager.configSnippet("tok", 23456, requireAuth = true, lanHost = "192.168.1.5")
+        assert(snippet.contains("http://192.168.1.5:23456/mcp"))
+        assert(snippet.contains("Authorization"))
+        assert(!snippet.contains("127.0.0.1"))
+    }
+
+    @Test
+    fun configSnippetIgnoresBlankLanHost() {
+        val snippet = McpServerManager.configSnippet("tok", 23456, requireAuth = false, lanHost = "")
+        assert(snippet.contains("http://127.0.0.1:23456/mcp"))
+    }
 }

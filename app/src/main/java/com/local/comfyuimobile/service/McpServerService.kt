@@ -97,6 +97,8 @@ class McpServerService : Service() {
     /** 服务当前生效的服务器地址与 Cookie；用于跳过偏好流里的重复推送。 */
     @Volatile private var appliedUrl: String = ""
     @Volatile private var appliedCookie: String = ""
+    /** 服务本次绑定的地址（loopback 或 0.0.0.0，v0.3.15）。 */
+    @Volatile private var lanBindAddress: String = McpServerManager.LOOPBACK
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -164,6 +166,14 @@ class McpServerService : Service() {
         val resolvedToken = token.ifBlank { stored?.mcpServerToken.orEmpty() }
         // 免鉴权模式下不需要 token（F1）；只有开启鉴权时才要求必须有。
         val requireAuth = stored?.mcpServerRequireAuth == true
+        // v0.3.15：局域网模式强制鉴权（在 manager.start 里也会再校验一次，
+        // 这里先挡一道，避免"没鉴权又开局域网"走到 manager 才失败）。
+        val lanEnabled = stored?.mcpServerLanEnabled == true
+        if (lanEnabled && !requireAuth) {
+            AppLogger.warn("MCP 前台服务启动被拒：局域网访问要求开启鉴权")
+            stopServer(StopReason.AUTH)
+            return
+        }
         if (requireAuth && resolvedToken.isBlank()) {
             AppLogger.warn("MCP 前台服务启动被拒：已开启鉴权但没有令牌")
             stopServer(StopReason.AUTH)
@@ -221,10 +231,14 @@ class McpServerService : Service() {
             },
         )
         this.manager = manager
+        // v0.3.15：局域网模式下绑 0.0.0.0，并记下本机 IPv4 供通知/URL 用。
+        val bindAddress = if (lanEnabled) McpServerManager.LAN_ALL else McpServerManager.LOOPBACK
+        lanBindAddress = bindAddress
         val bound = manager.start(
             resolvedToken,
             // 鉴权开关从偏好读（F1：默认免鉴权）。服务可能比界面先起，所以不能靠 Intent 传。
-            requireAuth = stored?.mcpServerRequireAuth == true,
+            requireAuth = requireAuth,
+            bindAddress = bindAddress,
             // 端口解析必须与 UI 同一条路（resolvePort）：直接传偏好原值的话，
             // 0 会被 ServerSocket 理解成"系统随机分配"——UI 显示 23456、
             // 配置片段也生成 23456，服务却绑在随机端口上，AiCode 必然连不上。
@@ -237,12 +251,17 @@ class McpServerService : Service() {
         // 启动成功就清掉上一轮的停止原因：否则一次历史失败会永久挡住
         // 后续的系统重建（那些原因只在"上一轮就是因此停的"时才有意义）。
         lastStopReason = null
-        AppLogger.info("MCP 前台服务已就绪：127.0.0.1:$bound")
+        val displayHost = if (lanEnabled) {
+            com.local.comfyuimobile.network.LocalNetwork.primaryIpv4() ?: McpServerManager.LOOPBACK
+        } else {
+            McpServerManager.LOOPBACK
+        }
+        AppLogger.info("MCP 前台服务已就绪：$displayHost:$bound")
         // §4.5：真机日志里中途出现过一次 initialize，可能是"App 进程被杀后重启"
         // （那就是 AI 的那次长等待白等了）。启动也在调用日志里记一条——它在界面上
         // 可见、且（v0.2.97 起）会落盘，于是重启与调用能拼成一条时间线。
-        McpCallLog.log("服务启动", ok = true, detail = "监听 127.0.0.1:$bound")
-        startForeground(FOREGROUND_ID, buildNotification(bound))
+        McpCallLog.log("服务启动", ok = true, detail = "监听 $displayHost:$bound")
+        startForeground(FOREGROUND_ID, buildNotification(bound, displayHost = displayHost))
         // 服务真正就绪才持锁：MCP 的价值就在于"用户切走后 AI 还能继续调"，
         // 息屏后网络被 Doze 掐断正是实测断链的原因。服务停止/销毁必须释放，
         // 否则用户关了 MCP 仍在白白耗电。
@@ -321,7 +340,15 @@ class McpServerService : Service() {
                         appliedUrl = url
                         appliedCookie = cookie
                         AppLogger.info(if (url.isBlank()) "MCP：服务器已清空" else "MCP 服务器已切换：$url")
-                        startForeground(FOREGROUND_ID, buildNotification(port, urlBlank = url.isBlank()))
+                        val displayHost = if (lanBindAddress == McpServerManager.LAN_ALL) {
+                            com.local.comfyuimobile.network.LocalNetwork.primaryIpv4() ?: McpServerManager.LOOPBACK
+                        } else {
+                            McpServerManager.LOOPBACK
+                        }
+                        startForeground(
+                            FOREGROUND_ID,
+                            buildNotification(port, urlBlank = url.isBlank(), displayHost = displayHost),
+                        )
                     } else if (cookie != lastCookie) {
                         lastCookie = cookie
                         client.setAuthCookie(cookie)
@@ -415,7 +442,7 @@ class McpServerService : Service() {
      * 常驻通知。内容里直接给出地址与"点按返回 App"，让用户切到 AiCode 后不必
      * 再切回来确认端口。
      */
-    private fun buildNotification(port: Int, urlBlank: Boolean = false): Notification {
+    private fun buildNotification(port: Int, urlBlank: Boolean = false, displayHost: String? = null): Notification {
         val open = PendingIntent.getActivity(
             this,
             0,
@@ -430,6 +457,7 @@ class McpServerService : Service() {
             Intent(this, McpServerService::class.java).setAction(ACTION_PANIC),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val host = displayHost ?: McpServerManager.LOOPBACK
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("MCP 服务运行中 · 息屏保活已开启")
@@ -438,7 +466,7 @@ class McpServerService : Service() {
                     // P1-2：没连服务器时不能假装一切正常——否则用户切到 AiCode 后
                     // 每个工具都失败，还以为是协议或配置问题。
                     urlBlank -> "未连接 ComfyUI，工具不可用 —— 点按回 App 连接"
-                    port > 0 -> "127.0.0.1:$port · AiCode 可连接，点按返回 App"
+                    port > 0 -> "$host:$port · AiCode 可连接，点按返回 App"
                     else -> "正在启动…"
                 },
             )

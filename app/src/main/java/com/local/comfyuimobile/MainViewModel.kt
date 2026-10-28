@@ -364,6 +364,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         mcpServerEnabled = pendingMcpEnabled ?: stored.mcpServerEnabled,
                         mcpServerToken = stored.mcpServerToken,
                         mcpServerRequireAuth = stored.mcpServerRequireAuth,
+                        mcpServerLanEnabled = stored.mcpServerLanEnabled,
                         mcpServerConfiguredPort = stored.mcpServerPort,
                         // v0.3.9：这里**不再算** mcpServerPort/mcpServiceRunning。
                         //
@@ -1139,6 +1140,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             McpServerService.start(app, token)
             watchMcpStartup()
         }
+    }
+
+    /**
+     * 开关局域网访问（v0.3.15）。
+     *
+     * 安全不变量：局域网（绑 0.0.0.0）**必须**启用鉴权——否则同一 WiFi 下任何人
+     * 都能调 terminal_exec（任意命令执行）。
+     *
+     * 处理：
+     *  - 开启局域网但鉴权关闭 → 先强制打开鉴权（并保证有 token），再重启服务；
+     *  - 关闭局域网 → 鉴权可以保留（不影响，用户自己决定），只重启服务。
+     */
+    fun setMcpServerLanEnabled(enabled: Boolean) {
+        val current = _state.value
+        _state.update { it.copy(mcpServerLanEnabled = enabled) }
+        viewModelScope.launch {
+            runCatching { preferences.setMcpServerLanEnabled(enabled) }
+                .onFailure { AppLogger.error("保存局域网访问开关失败", it) }
+        }
+        if (!current.mcpServerEnabled) return
+        if (enabled && !current.mcpServerRequireAuth) {
+            // 开局域网却没鉴权：强制补上鉴权（不静默放行裸奔的局域网）。
+            _state.update {
+                it.copy(
+                    mcpServerRequireAuth = true,
+                    notice = "已开启局域网访问：为安全起见，自动启用了鉴权（Bearer token）。",
+                )
+            }
+            viewModelScope.launch { runCatching { preferences.setMcpServerRequireAuth(true) } }
+        }
+        // 服务在跑就重启到新绑定地址。
+        val token = _state.value.mcpServerToken.ifBlank {
+            val generated = McpServerManager.newToken()
+            viewModelScope.launch { runCatching { preferences.setMcpServerToken(generated) } }
+            _state.update { it.copy(mcpServerToken = generated) }
+            generated
+        }
+        McpServiceState.intent = true
+        McpServerService.stop(app)
+        McpServerService.start(app, token)
+        _state.update {
+            it.copy(
+                notice = if (enabled) {
+                    "局域网访问已开启：同一 WiFi 下其它设备可用本机 IP 连接（需带 token）。"
+                } else {
+                    "局域网访问已关闭，仅本机可连。"
+                },
+            )
+        }
+        watchMcpStartup()
     }
 
     /** 重新生成访问令牌。服务在跑的话一并重启，否则新令牌不生效。 */

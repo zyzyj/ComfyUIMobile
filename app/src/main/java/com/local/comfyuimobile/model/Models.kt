@@ -339,6 +339,8 @@ data class AppUiState(
     val mcpServerToken: String = "",
     /** 是否启用 Bearer 鉴权（v0.2.97，F1：默认免鉴权）。 */
     val mcpServerRequireAuth: Boolean = false,
+    /** 是否允许局域网访问（v0.3.15）。开启时服务绑 0.0.0.0 且强制鉴权。 */
+    val mcpServerLanEnabled: Boolean = false,
     val quickWorkflowName: String? = null,
     val quickFields: List<ParameterField> = emptyList(),
     val quickEnabledParams: List<String> = emptyList(),

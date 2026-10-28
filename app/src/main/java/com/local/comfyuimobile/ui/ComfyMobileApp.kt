@@ -242,6 +242,7 @@ import com.local.comfyuimobile.MainViewModel
 import com.local.comfyuimobile.network.AiStudioProtocol
 import com.local.comfyuimobile.network.TerminalOwnership
 import com.local.comfyuimobile.network.LanAddress
+import com.local.comfyuimobile.network.LocalNetwork
 import com.local.comfyuimobile.AdvancedEditorActivity
 import com.local.comfyuimobile.AiStudioLoginActivity
 import com.local.comfyuimobile.bridge.ComfyBridge
@@ -4241,7 +4242,13 @@ private fun McpScreen(
                 // 用户只看到转圈，不知道是失败还是慢，也无法行动。
                 subtitle = when {
                     state.mcpServiceRunning && state.mcpServerPort > 0 -> {
-                        val base = "监听中：127.0.0.1:${state.mcpServerPort}"
+                        // v0.3.15：局域网模式下显示本机 IP，否则显示 127.0.0.1。
+                        val host = if (state.mcpServerLanEnabled) {
+                            LocalNetwork.primaryIpv4() ?: "127.0.0.1"
+                        } else {
+                            "127.0.0.1"
+                        }
+                        val base = "监听中：$host:${state.mcpServerPort}"
                         // 只在未就绪时挂一句短提示；就绪时不额外占字。
                         if (availability == ComfyAvailability.Reason.READY) base
                         else "$base · ComfyUI 未就绪，详见下方诊断"
@@ -4279,7 +4286,11 @@ private fun McpScreen(
         if (token.isNotBlank()) {
             SettingsSection("AiCode 配置", icon = Icons.Outlined.ContentCopy) {
                 val actualPort = state.mcpServerPort.takeIf { it > 0 } ?: effectivePort(state)
-                val snippet = McpServerManager.configSnippet(token, actualPort, state.mcpServerRequireAuth)
+                // v0.3.15：局域网模式下，URL 用本机 IPv4（电脑要连的是手机，不是它自己）。
+                val lanHost = if (state.mcpServerLanEnabled) LocalNetwork.primaryIpv4() else null
+                val snippet = McpServerManager.configSnippet(
+                    token, actualPort, state.mcpServerRequireAuth, lanHost,
+                )
                 // v0.2.97（F2）：默认收拢。设置页已经很长，配置块不常改。
                 var configExpanded by rememberSaveable { mutableStateOf(false) }
                 Row(
@@ -4303,12 +4314,13 @@ private fun McpScreen(
                 }
                 if (configExpanded) {
                     // 分步展示：用户知道自己在配什么、哪一步出错了。
+                    val displayHost = lanHost ?: "127.0.0.1"
                     Text(
-                        "第 1 步 · URL：\nhttp://127.0.0.1:$actualPort/mcp",
+                        "第 1 步 · URL：\nhttp://$displayHost:$actualPort/mcp",
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     )
                     TextButton(onClick = {
-                        val url = "http://127.0.0.1:$actualPort/mcp"
+                        val url = "http://$displayHost:$actualPort/mcp"
                         clipboard.setPrimaryClip(ClipData.newPlainText("MCP URL", url))
                         android.widget.Toast.makeText(context, "已复制 URL", Toast.LENGTH_SHORT).show()
                     }) { Text("复制 URL") }
@@ -4355,6 +4367,22 @@ private fun McpScreen(
                     },
                     checked = state.mcpServerRequireAuth,
                     onCheckedChange = viewModel::setMcpServerRequireAuth,
+                )
+                // v0.3.15：局域网访问。安全不变量：开启即强制鉴权。
+                SettingsToggleRow(
+                    title = "允许局域网访问",
+                    subtitle = if (state.mcpServerLanEnabled) {
+                        val ip = LocalNetwork.primaryIpv4()
+                        if (ip != null) {
+                            "已开启：同一 WiFi 下其它设备用 http://$ip:${state.mcpServerPort.takeIf { it > 0 } ?: effectivePort(state)}/mcp 连接（已强制鉴权）"
+                        } else {
+                            "已开启：但没读到本机 IPv4 地址，局域网可能连不上（请确认已连 WiFi）"
+                        }
+                    } else {
+                        "关闭：仅本机可连。开启后同一 WiFi 下其它设备也能连，但会**强制启用鉴权**"
+                    },
+                    checked = state.mcpServerLanEnabled,
+                    onCheckedChange = viewModel::setMcpServerLanEnabled,
                 )
                 Text(
                     "⚠ 改完配置需在 AiCode 里新开一次会话才生效",
