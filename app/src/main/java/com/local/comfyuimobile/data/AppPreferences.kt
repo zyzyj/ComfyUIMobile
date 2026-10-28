@@ -486,6 +486,21 @@ class AppPreferences(private val context: Context) {
     }
 
     /**
+     * 原子写「局域网 + 鉴权」两个开关（v0.3.16）。
+     *
+     * 为什么必须原子：局域网模式**强制要求鉴权**，而服务重启会读磁盘判断。若两个
+     * 开关分开落盘，重启可能读到「LAN=true 但鉴权=false」的中间态——那个组合在
+     * 服务端会被硬校验拒绝（"局域网访问要求开启鉴权"），于是用户开 LAN 却得到
+     * "启动被拒"。一次 edit 写两个值，中间态不存在。
+     */
+    suspend fun setMcpServerLanAndAuth(lanEnabled: Boolean, requireAuth: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[Keys.mcpServerLanEnabled] = lanEnabled
+            preferences[Keys.mcpServerRequireAuth] = requireAuth
+        }
+    }
+
+    /**
      * 保存 AI Studio 账号。
      *
      * 凭据（cookie / bdToken）**明文**写入 DataStore，未做加密——这是有意选择：

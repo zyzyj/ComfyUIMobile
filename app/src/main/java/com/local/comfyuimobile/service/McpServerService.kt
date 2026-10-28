@@ -107,6 +107,20 @@ class McpServerService : Service() {
             if (intent.action == ACTION_PANIC) panicStop() else stopServer(StopReason.USER)
             return START_NOT_STICKY
         }
+        // v0.3.16：重启 = 停掉旧 server（**不 stopSelf、不落盘 false**）+ 重新 startServer。
+        //
+        // 为什么不能走上面的 ACTION_STOP：STOP 会落盘 enabled=false（StopReason.USER），
+        // 而重启的语义是"换配置再起"，不是"用户要关"——走 STOP 会把开关悄悄关掉。
+        if (intent?.action == ACTION_RESTART) {
+            AppLogger.info("MCP 重启请求（换配置）")
+            runCatching { manager?.stop() }
+            manager = null
+            McpServiceState.markStopped()
+            releaseBackgroundLocks()
+            val token = intent?.getStringExtra(EXTRA_TOKEN).orEmpty()
+            scope.launch { runCatching { startServer(token) }.onFailure { onStartFailed(it) } }
+            return START_STICKY
+        }
         // v0.3.9（修「假打开」）：这里**不再读磁盘**判断该不该跑。
         //
         // 原来的 `if (stored?.mcpServerEnabled != true)` 是那条竞态的根源：
@@ -535,6 +549,15 @@ class McpServerService : Service() {
         private const val FOREGROUND_ID = 4201
         const val ACTION_STOP = "com.local.comfyuimobile.mcp.STOP"
         const val ACTION_PANIC = "com.local.comfyuimobile.mcp.PANIC"
+        /**
+         * 重启服务（v0.3.16）。
+         *
+         * 为什么不能复用 [ACTION_STOP]：STOP 会被 [stopServer] 当成 [StopReason.USER]，
+         * 而 USER 会**落盘 enabled=false**——重启若走 STOP，开关就被"重启"这个动作
+         * 悄悄关掉了（真机日志 17:36:01 就是这个：点局域网后开关没了）。
+         * 重启是"换配置再起"，不是"用户要关"，必须走一条不落盘 false 的路径。
+         */
+        const val ACTION_RESTART = "com.local.comfyuimobile.mcp.RESTART"
         const val EXTRA_TOKEN = "mcp_token"
 
         /**
@@ -557,5 +580,17 @@ class McpServerService : Service() {
         fun stop(context: Context) {
             runCatching { context.startService(Intent(context, McpServerService::class.java).setAction(ACTION_STOP)) }
         }
+
+        /**
+         * 重启服务（v0.3.16）：停旧 server + 起新的，**不落盘 enabled=false**。
+         *
+         * 换端口/换鉴权/换局域网模式都要重启，但都不能走 [stop]——那会把开关关掉。
+         */
+        fun restart(context: Context, token: String): Boolean = runCatching {
+            val intent = Intent(context, McpServerService::class.java)
+                .setAction(ACTION_RESTART)
+                .putExtra(EXTRA_TOKEN, token)
+            androidx.core.content.ContextCompat.startForegroundService(context, intent)
+        }.isSuccess
     }
 }

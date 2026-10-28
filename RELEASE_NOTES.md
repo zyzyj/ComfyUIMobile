@@ -1,3 +1,50 @@
+# v0.3.16 — 修局域网开关「启动被拒 / 开关被关」
+
+> 真机反馈：开「允许局域网访问」后，界面显示已开启，但日志报「局域网访问要求开启鉴权」
+> +「5 秒未就绪」，且开关被悄悄关掉。三个竞态叠加。
+
+## 三个根因（都是 v0.3.15 引入的）
+
+### ① LAN 与鉴权分开落盘，服务读到中间态
+
+`setMcpServerLanEnabled` 原来分两次异步写 `lan=true` 和 `requireAuth=true`。
+服务重启读磁盘时，可能读到「LAN=true 但鉴权=false」——那个组合被硬校验拒绝：
+
+```
+17:36:17 MCP 前台服务启动被拒：局域网访问要求开启鉴权
+17:36:22 MCP 服务在 5 秒内未就绪（超时）
+```
+
+修：新增 `setMcpServerLanAndAuth(lan, auth)`，**一次 edit 原子写两个值**，中间态不存在。
+
+### ② 重启误走「用户关闭」路径，把开关关掉
+
+换配置原用 `McpServerService.stop()` + `start()`。而 `stop()` 发 `ACTION_STOP`，
+服务端当成 `StopReason.USER` → **落盘 `mcpServerEnabled=false`**。
+
+所以"开个局域网"这个动作，副作用是把服务开关关掉了——用户看到的"没开成功"就是它。
+
+修：新增 `ACTION_RESTART` + `McpServerService.restart()`：停旧 server + 起新的，
+**不落盘 false**。
+
+### ③ 重启比落盘快
+
+重启是同步发 intent、落盘是异步 edit，服务起来时可能还没读到新值。
+
+修：四个 setter（LAN / 鉴权 / 端口 / 重新生成 token）都改为「先落盘、成功后重启」。
+
+## 改动文件
+
+- `AppPreferences`：+`setMcpServerLanAndAuth`
+- `McpServerService`：+`ACTION_RESTART`、`restart()`
+- `MainViewModel`：4 个 setter 改为先落盘后重启，重启统一走 `restart()`
+
+## 边界（如实说）
+
+- 本版未经真机验证，需真机复测局域网开关切换。
+
+---
+
 # v0.3.15 — MCP 局域网访问（强制鉴权）+ 缓存孤儿清理
 
 > 依据《MCP 局域网与缓存精细化_优化方案_v0.3.14 起》。逐条核实后实施：

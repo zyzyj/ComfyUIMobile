@@ -1101,13 +1101,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         _state.update { it.copy(mcpServerConfiguredPort = port) }
-        viewModelScope.launch { runCatching { preferences.setMcpServerPort(port) } }
-        if (_state.value.mcpServerEnabled) {
-            // v0.3.9：重启前先锁意图为 true——服务侧判据读它；
-            // 不锁的话 stop→start 的间隙里服务可能读到旧值而不起。
-            McpServiceState.intent = true
-            McpServerService.stop(app)
-            McpServerService.start(app, _state.value.mcpServerToken)
+        if (!_state.value.mcpServerEnabled) {
+            viewModelScope.launch { runCatching { preferences.setMcpServerPort(port) } }
+            return
+        }
+        // v0.3.9：重启前先锁意图为 true——服务侧判据读它；
+        // 不锁的话 stop→start 的间隙里服务可能读到旧值而不起。
+        McpServiceState.intent = true
+        // v0.3.16：先落盘、成功后重启（restart 不落盘 enabled=false）。
+        viewModelScope.launch {
+            runCatching { preferences.setMcpServerPort(port) }
+                .onFailure { AppLogger.error("保存 MCP 端口失败", it) }
+            McpServerService.restart(app, _state.value.mcpServerToken)
             // 端口不再乐观写——真实绑定端口由服务上报（改端口后绑的未必就是新值，
             // 如新端口被占时会启动失败，那时界面应显示"未能启动"）。
             _state.update {
@@ -1124,20 +1129,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun setMcpServerRequireAuth(enabled: Boolean) {
         _state.update { it.copy(mcpServerRequireAuth = enabled) }
+        if (!_state.value.mcpServerEnabled) {
+            viewModelScope.launch {
+                runCatching { preferences.setMcpServerRequireAuth(enabled) }
+                    .onFailure { AppLogger.error("保存 MCP 鉴权开关失败", it) }
+            }
+            return
+        }
+        val token = _state.value.mcpServerToken
+        if (enabled && token.isBlank()) {
+            // 开鉴权却没 token：先生成一个，否则重启后服务会拒绝启动。
+            regenerateMcpToken()
+            return
+        }
+        McpServiceState.intent = true
+        // v0.3.16：先落盘、成功后重启，避免服务读到旧鉴权态。
         viewModelScope.launch {
             runCatching { preferences.setMcpServerRequireAuth(enabled) }
                 .onFailure { AppLogger.error("保存 MCP 鉴权开关失败", it) }
-        }
-        if (_state.value.mcpServerEnabled) {
-            val token = _state.value.mcpServerToken
-            if (enabled && token.isBlank()) {
-                // 开鉴权却没 token：先生成一个，否则重启后服务会拒绝启动。
-                regenerateMcpToken()
-                return
-            }
-            McpServiceState.intent = true
-            McpServerService.stop(app)
-            McpServerService.start(app, token)
+            McpServerService.restart(app, token)
             watchMcpStartup()
         }
     }
@@ -1155,52 +1165,73 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setMcpServerLanEnabled(enabled: Boolean) {
         val current = _state.value
         _state.update { it.copy(mcpServerLanEnabled = enabled) }
-        viewModelScope.launch {
-            runCatching { preferences.setMcpServerLanEnabled(enabled) }
-                .onFailure { AppLogger.error("保存局域网访问开关失败", it) }
-        }
-        if (!current.mcpServerEnabled) return
+        // v0.3.16（修重启竞态）：LAN 与鉴权必须**原子落盘**，且**落盘完成后再重启**。
+        //
+        // 以前 `lanEnabled` 和 `requireAuth` 各发一次独立的异步落盘，服务重启读磁盘时
+        // 可能读到「LAN=true 但鉴权=false」的中间态——那个组合在服务端会被硬校验拒绝
+        // （真机日志 17:36:17 "局域网访问要求开启鉴权"，17:36:22 "5 秒未就绪"）。
+        // 另一个竞态：restart 是同步发 intent，而落盘是异步——服务起来时可能读到旧值。
+        // 所以重启动作必须放进落盘协程、在 edit 成功之后。
+        val targetAuth = if (enabled) true else current.mcpServerRequireAuth
         if (enabled && !current.mcpServerRequireAuth) {
-            // 开局域网却没鉴权：强制补上鉴权（不静默放行裸奔的局域网）。
+            // 开局域网却没鉴权：内存态同步打开鉴权。
             _state.update {
                 it.copy(
                     mcpServerRequireAuth = true,
                     notice = "已开启局域网访问：为安全起见，自动启用了鉴权（Bearer token）。",
                 )
             }
-            viewModelScope.launch { runCatching { preferences.setMcpServerRequireAuth(true) } }
         }
-        // 服务在跑就重启到新绑定地址。
+        if (!current.mcpServerEnabled) {
+            // 服务没开：只落盘，不重启。
+            viewModelScope.launch {
+                runCatching { preferences.setMcpServerLanAndAuth(enabled, targetAuth) }
+                    .onFailure { AppLogger.error("保存局域网访问开关失败", it) }
+            }
+            return
+        }
         val token = _state.value.mcpServerToken.ifBlank {
             val generated = McpServerManager.newToken()
-            viewModelScope.launch { runCatching { preferences.setMcpServerToken(generated) } }
             _state.update { it.copy(mcpServerToken = generated) }
             generated
         }
         McpServiceState.intent = true
-        McpServerService.stop(app)
-        McpServerService.start(app, token)
-        _state.update {
-            it.copy(
-                notice = if (enabled) {
-                    "局域网访问已开启：同一 WiFi 下其它设备可用本机 IP 连接（需带 token）。"
-                } else {
-                    "局域网访问已关闭，仅本机可连。"
-                },
-            )
+        // v0.3.16：先原子落盘，成功后再重启；失败也要重启（用内存态兑底，总比裸奔好）。
+        viewModelScope.launch {
+            val saved = runCatching { preferences.setMcpServerLanAndAuth(enabled, targetAuth) }.isSuccess
+            if (token.isNotBlank() && token != _state.value.mcpServerToken) {
+                runCatching { preferences.setMcpServerToken(token) }
+            }
+            if (!saved) AppLogger.error("保存局域网访问开关失败，仍按内存态重启")
+            // restart 而非 stop+start——stop 会落盘 enabled=false（把开关关掉）。
+            McpServerService.restart(app, token)
+            _state.update {
+                it.copy(
+                    notice = if (enabled) {
+                        "局域网访问已开启：同一 WiFi 下其它设备可用本机 IP 连接（需带 token）。"
+                    } else {
+                        "局域网访问已关闭，仅本机可连。"
+                    },
+                )
+            }
+            watchMcpStartup()
         }
-        watchMcpStartup()
     }
 
     /** 重新生成访问令牌。服务在跑的话一并重启，否则新令牌不生效。 */
     fun regenerateMcpToken() {
         val token = McpServerManager.newToken()
         _state.update { it.copy(mcpServerToken = token) }
-        viewModelScope.launch { runCatching { preferences.setMcpServerToken(token) } }
-        if (_state.value.mcpServerEnabled) {
-            McpServiceState.intent = true
-            McpServerService.stop(app)
-            McpServerService.start(app, token)
+        if (!_state.value.mcpServerEnabled) {
+            viewModelScope.launch { runCatching { preferences.setMcpServerToken(token) } }
+            return
+        }
+        McpServiceState.intent = true
+        // v0.3.16：先落盘、成功后重启，避免服务读到旧 token。
+        viewModelScope.launch {
+            runCatching { preferences.setMcpServerToken(token) }
+                .onFailure { AppLogger.error("保存 MCP token 失败", it) }
+            McpServerService.restart(app, token)
             _state.update { it.copy(notice = "令牌已重新生成；AiCode 配置里的 Authorization 需同步更新并新开会话") }
             watchMcpStartup()
         }
