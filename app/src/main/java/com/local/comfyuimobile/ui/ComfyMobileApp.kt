@@ -4195,6 +4195,8 @@ private fun McpScreen(
     var diagnosing by remember { mutableStateOf(false) }
     var diagnoseResult by remember { mutableStateOf<List<Pair<String, Boolean>>>(emptyList()) }
     var logTick by remember { mutableStateOf(0) } // 日志是内存态，用 tick 驱动重组
+    // v0.3.19：自定义 token 输入草稿（随 state 里的真实 token 变化而重置）。
+    var tokenDraft by remember(state.mcpServerToken) { mutableStateOf(state.mcpServerToken) }
 
     // v0.2.99：ComfyUI 连接状态**不再单独占一行红字**（用户反馈"这行没用"，
     // 且截图里那条折成了两行）。理由：
@@ -4283,130 +4285,154 @@ private fun McpScreen(
 
         // ===== AiCode 配置 =====
         val token = state.mcpServerToken
-        if (token.isNotBlank()) {
-            SettingsSection("AiCode 配置", icon = Icons.Outlined.ContentCopy) {
-                val actualPort = state.mcpServerPort.takeIf { it > 0 } ?: effectivePort(state)
-                // v0.3.15：局域网模式下，URL 用本机 IPv4（电脑要连的是手机，不是它自己）。
-                val lanHost = if (state.mcpServerLanEnabled) LocalNetwork.primaryIpv4() else null
-                val snippet = McpServerManager.configSnippet(
-                    token, actualPort, state.mcpServerRequireAuth, lanHost,
-                )
-                // v0.2.97（F2）：默认收拢。设置页已经很长，配置块不常改。
-                var configExpanded by rememberSaveable { mutableStateOf(false) }
-                Row(
-                    Modifier.fillMaxWidth().clickable { configExpanded = !configExpanded },
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        if (state.mcpServerRequireAuth) "已开启鉴权（需 token）" else "免鉴权（本地服务）",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f),
-                    )
+        SettingsSection("AiCode 配置", icon = Icons.Outlined.ContentCopy) {
+            val actualPort = state.mcpServerPort.takeIf { it > 0 } ?: effectivePort(state)
+            // v0.3.15：局域网模式下，URL 用本机 IPv4（电脑要连的是手机，不是它自己）。
+            val lanHost = if (state.mcpServerLanEnabled) LocalNetwork.primaryIpv4() else null
+            val displayHost = lanHost ?: "127.0.0.1"
+            val url = "http://$displayHost:$actualPort/mcp"
+            val snippet = McpServerManager.configSnippet(
+                token, actualPort, state.mcpServerRequireAuth, lanHost,
+            )
+            // v0.3.19：AiCode 的 MCP「添加远程 HTTP」是表单式（名称/地址/请求头），
+            // 逐项摆出来照着填，比塞一个 JSON 片段更顺手。JSON 仍保留"复制全部"
+            // 供 Claude Desktop / Cursor 等纯 JSON 客户端用。
+            Text(
+                "在 AiCode → 设置 → MCP 服务器 → + → 远程 HTTP，逐项照填：",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            ConfigFieldRow("名称", "comfy") { "comfy" }
+            ConfigFieldRow("服务器地址", url) { url }
+            if (state.mcpServerRequireAuth && token.isNotBlank()) {
+                ConfigFieldRow("请求头 Key", "Authorization") { "Authorization" }
+                ConfigFieldRow("请求头 Value", "Bearer $token") { "Bearer $token" }
+            }
+            // 一行按钮：复制 URL / 复制鉴权头 / 复制完整 JSON。
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = {
+                    clipboard.setPrimaryClip(ClipData.newPlainText("MCP URL", url))
+                    android.widget.Toast.makeText(context, "已复制 URL", Toast.LENGTH_SHORT).show()
+                }) { Text("复制 URL") }
+                if (state.mcpServerRequireAuth && token.isNotBlank()) {
                     TextButton(onClick = {
-                        clipboard.setPrimaryClip(ClipData.newPlainText("AiCode MCP 配置", snippet))
-                        android.widget.Toast.makeText(context, "已复制配置", Toast.LENGTH_SHORT).show()
-                    }) { Text("复制全部") }
-                    Icon(
-                        if (configExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                        null,
-                    )
+                        clipboard.setPrimaryClip(ClipData.newPlainText("MCP 鉴权头", "Bearer $token"))
+                        android.widget.Toast.makeText(context, "已复制鉴权头", Toast.LENGTH_SHORT).show()
+                    }) { Text("复制鉴权头") }
                 }
-                if (configExpanded) {
-                    // 分步展示：用户知道自己在配什么、哪一步出错了。
-                    val displayHost = lanHost ?: "127.0.0.1"
-                    Text(
-                        "第 1 步 · URL：\nhttp://$displayHost:$actualPort/mcp",
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    )
-                    TextButton(onClick = {
-                        val url = "http://$displayHost:$actualPort/mcp"
-                        clipboard.setPrimaryClip(ClipData.newPlainText("MCP URL", url))
-                        android.widget.Toast.makeText(context, "已复制 URL", Toast.LENGTH_SHORT).show()
-                    }) { Text("复制 URL") }
-                    if (state.mcpServerRequireAuth) {
-                        Text(
-                            "第 2 步 · Token（已打码，点「显示」查看）",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        var tokenVisible by rememberSaveable { mutableStateOf(false) }
-                        Text(
-                            if (tokenVisible) token else "•".repeat(token.length.coerceAtMost(32)),
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(onClick = { tokenVisible = !tokenVisible }) {
-                                Text(if (tokenVisible) "隐藏" else "显示")
-                            }
-                            TextButton(onClick = {
-                                clipboard.setPrimaryClip(ClipData.newPlainText("MCP token", token))
-                                android.widget.Toast.makeText(context, "已复制 token", Toast.LENGTH_SHORT).show()
-                            }) { Text("复制 token") }
-                            TextButton(onClick = viewModel::regenerateMcpToken) { Text("重新生成") }
-                        }
-                    }
-                    SelectionContainer {
-                        Text(
-                            snippet,
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                                .padding(10.dp),
-                        )
-                    }
-                }
-                // 开启鉴权（F1 默认关）。
-                // v0.3.18：鉴权独立于局域网，不再联动/禁用。
-                SettingsToggleRow(
-                    title = "要求鉴权（Bearer token）",
-                    subtitle = if (state.mcpServerRequireAuth) {
-                        "已开启：AiCode 必须带 token 才能调用"
-                    } else {
-                        "默认关闭。仅本机可访问时可保持关闭；开启局域网后强烈建议打开"
-                    },
-                    checked = state.mcpServerRequireAuth,
-                    onCheckedChange = viewModel::setMcpServerRequireAuth,
-                )
-                // v0.3.15：局域网访问。v0.3.18：鉴权可选，但免鉴权 + 局域网给醒目警告。
-                SettingsToggleRow(
-                    title = "允许局域网访问",
-                    subtitle = when {
-                        state.mcpServerLanEnabled && !state.mcpServerRequireAuth -> {
-                            val ip = LocalNetwork.primaryIpv4()
-                            "⚠ 已开启且未鉴权：同一 WiFi 下任何设备都能执行任意命令（terminal_exec）。" +
-                                "建议打开上方「要求鉴权」。" +
-                                (ip?.let { "连接地址 http://$it:${state.mcpServerPort.takeIf { it > 0 } ?: effectivePort(state)}/mcp" } ?: "")
-                        }
-                        state.mcpServerLanEnabled -> {
-                            val ip = LocalNetwork.primaryIpv4()
-                            if (ip != null) {
-                                "已开启：同一 WiFi 下其它设备用 http://$ip:${state.mcpServerPort.takeIf { it > 0 } ?: effectivePort(state)}/mcp 连接（需带 token）"
-                            } else {
-                                "已开启：但没读到本机 IPv4 地址，局域网可能连不上（请确认已连 WiFi）"
-                            }
-                        }
-                        else -> "关闭：仅本机可连。开启后同一 WiFi 下其它设备也能连"
-                    },
-                    checked = state.mcpServerLanEnabled,
-                    onCheckedChange = viewModel::setMcpServerLanEnabled,
-                )
-                // v0.3.18：局域网 + 免鉴权的醒目风险提示（独立于开关副标题，红色强调）。
-                if (state.mcpServerLanEnabled && !state.mcpServerRequireAuth) {
-                    Text(
-                        "⚠ 当前局域网访问未开启鉴权，同一 WiFi 下任何设备都能通过 terminal_exec 执行任意命令。" +
-                            "仅在可信网络（如家里 WiFi）使用，或打开上方「要求鉴权」。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
+                TextButton(onClick = {
+                    clipboard.setPrimaryClip(ClipData.newPlainText("AiCode MCP 配置", snippet))
+                    android.widget.Toast.makeText(context, "已复制 JSON 配置", Toast.LENGTH_SHORT).show()
+                }) { Text("复制 JSON") }
+            }
+            // 完整 JSON 折叠（给需要 .mcp.json 文件的客户端）。
+            var jsonExpanded by rememberSaveable { mutableStateOf(false) }
+            Row(
+                Modifier.fillMaxWidth().clickable { jsonExpanded = !jsonExpanded },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
-                    "⚠ 改完配置需在 AiCode 里新开一次会话才生效",
+                    "完整 JSON（Claude Desktop / Cursor 等）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    if (jsonExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    null,
+                )
+            }
+            if (jsonExpanded) {
+                SelectionContainer {
+                    Text(
+                        snippet,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                            .padding(10.dp),
+                    )
+                }
+            }
+            // v0.3.19：token 自定义输入 + 显示/复制/重新生成。
+            Text(
+                "访问令牌（可自定义）",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = tokenDraft,
+                    onValueChange = { tokenDraft = it },
+                    label = { Text("Token") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    onClick = { viewModel.setMcpServerToken(tokenDraft) },
+                    enabled = tokenDraft != state.mcpServerToken,
+                ) { Text("保存") }
+                TextButton(onClick = {
+                    val generated = McpServerManager.newToken()
+                    tokenDraft = generated
+                    viewModel.setMcpServerToken(generated)
+                }) { Text("随机生成") }
+            }
+            if (token.isNotBlank() && token != tokenDraft) {
+                Text(
+                    "当前生效 token 与草稿不同，保存后才会更新。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
             }
+            // 开启鉴权（F1 默认关）。
+            // v0.3.18：鉴权独立于局域网，不再联动/禁用。
+            SettingsToggleRow(
+                title = "要求鉴权（Bearer token）",
+                subtitle = if (state.mcpServerRequireAuth) {
+                    "已开启：AiCode 必须带 token 才能调用"
+                } else {
+                    "默认关闭。仅本机可访问时可保持关闭；开启局域网后强烈建议打开"
+                },
+                checked = state.mcpServerRequireAuth,
+                onCheckedChange = viewModel::setMcpServerRequireAuth,
+            )
+            // v0.3.15：局域网访问。v0.3.18：鉴权可选，但免鉴权 + 局域网给醒目警告。
+            SettingsToggleRow(
+                title = "允许局域网访问",
+                subtitle = when {
+                    state.mcpServerLanEnabled && !state.mcpServerRequireAuth -> {
+                        val ip = LocalNetwork.primaryIpv4()
+                        "⚠ 已开启且未鉴权：同一 WiFi 下任何设备都能执行任意命令（terminal_exec）。" +
+                            "建议打开上方「要求鉴权」。" +
+                            (ip?.let { "连接地址 http://$it:${state.mcpServerPort.takeIf { it > 0 } ?: effectivePort(state)}/mcp" } ?: "")
+                    }
+                    state.mcpServerLanEnabled -> {
+                        val ip = LocalNetwork.primaryIpv4()
+                        if (ip != null) {
+                            "已开启：同一 WiFi 下其它设备用 http://$ip:${state.mcpServerPort.takeIf { it > 0 } ?: effectivePort(state)}/mcp 连接（需带 token）"
+                        } else {
+                            "已开启：但没读到本机 IPv4 地址，局域网可能连不上（请确认已连 WiFi）"
+                        }
+                    }
+                    else -> "关闭：仅本机可连。开启后同一 WiFi 下其它设备也能连"
+                },
+                checked = state.mcpServerLanEnabled,
+                onCheckedChange = viewModel::setMcpServerLanEnabled,
+            )
+            // v0.3.18：局域网 + 免鉴权的醒目风险提示（独立于开关副标题，红色强调）。
+            if (state.mcpServerLanEnabled && !state.mcpServerRequireAuth) {
+                Text(
+                    "⚠ 当前局域网访问未开启鉴权，同一 WiFi 下任何设备都能通过 terminal_exec 执行任意命令。" +
+                        "仅在可信网络（如家里 WiFi）使用，或打开上方「要求鉴权」。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            Text(
+                "⚠ 改完配置需在 AiCode 里新开一次会话才生效",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
         }
 
         // ===== 工具 =====
@@ -4676,6 +4702,37 @@ private fun SettingsSection(
             }
             content()
         }
+    }
+}
+
+/**
+ * 一行配置项：左侧标签，右侧可长按选中的值 + 点按复制（v0.3.19）。
+ * 用于 AiCode MCP 表单式配置（名称/地址/请求头），比 JSON 片段更好逐项照填。
+ */
+@Composable
+private fun ConfigFieldRow(label: String, value: String, copyValue: () -> String) {
+    val context = LocalContext.current
+    val clipboard = remember { context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(76.dp),
+        )
+        SelectionContainer {
+            Text(
+                value,
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+                maxLines = 2,
+            )
+        }
+        TextButton(onClick = {
+            clipboard.setPrimaryClip(ClipData.newPlainText(label, copyValue()))
+            android.widget.Toast.makeText(context, "已复制 $label", Toast.LENGTH_SHORT).show()
+        }) { Text("复制", style = MaterialTheme.typography.labelSmall) }
     }
 }
 

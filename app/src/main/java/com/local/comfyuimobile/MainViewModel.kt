@@ -1233,6 +1233,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
+     * 用户自定义 token（v0.3.19）。
+     *
+     * 为什么要有：AiCode 侧的 MCP 配置可能已经填了一个固定 token（或用户想用自己
+     * 记得住的），重新生成会让旧配置失效。这里允许直接设定——空串视为"清空"，
+     * 鉴权开启时服务端会拒绝空 token（已有校验），所以空串只能配合免鉴权用。
+     */
+    fun setMcpServerToken(token: String) {
+        val trimmed = token.trim()
+        _state.update { it.copy(mcpServerToken = trimmed) }
+        if (!_state.value.mcpServerEnabled) {
+            viewModelScope.launch { runCatching { preferences.setMcpServerToken(trimmed) } }
+            return
+        }
+        // 鉴权开启时不允许设空 token（服务端会拒绝启动，这里提前拦下，给明确提示）。
+        if (_state.value.mcpServerRequireAuth && trimmed.isBlank()) {
+            _state.update {
+                it.copy(notice = "鉴权已开启，token 不能为空；如需清空请先关闭鉴权。")
+            }
+            return
+        }
+        McpServiceState.intent = true
+        viewModelScope.launch {
+            runCatching { preferences.setMcpServerToken(trimmed) }
+                .onFailure { AppLogger.error("保存 MCP token 失败", it) }
+            McpServerService.restart(app, trimmed)
+            _state.update { it.copy(notice = "token 已更新；AiCode 配置里的 Authorization 需同步更新并新开会话") }
+            watchMcpStartup()
+        }
+    }
+
+    /**
      * MCP 链路自检（v0.2.88）：服务监听 → ComfyUI 可达 → 工作流可列。
      * 每项独立判定，哪层红了直接看见——排查"AI 说调了但没反应"时先跑这个。
      */

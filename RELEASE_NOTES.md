@@ -1,3 +1,35 @@
+# v0.3.19 — 自定义 token + AiCode 配置区 UI 重构
+
+> 用户反馈：鉴权无法关闭（实为 0.3.17 旧版本，0.3.18 已修）；无法自定义 token；
+> AiCode 下拉式 MCP 配置区 UI 需要优化。
+
+## 自定义 token
+
+新增 `setMcpServerToken()`：
+- 可直接输入任意 token 保存（空串=清空）
+- 鉴权开启时设空串会被提前拦截并提示（避免服务拒绝启动）
+- UI 提供输入框 + 「保存」+「随机生成」
+
+## AiCode 配置区重构
+
+查 AiCode 官方文档确认：其 MCP「添加远程 HTTP」是**表单式**（名称/地址/自定义请求头），
+旧代码注释「AiCode 图形界面只能填 URL，token 没地方填」已过时。
+
+因此把原来的「JSON 片段折叠」改为**逐项照填表单**：
+- 名称 `comfy`
+- 服务器地址 `http://host:port/mcp`
+- 请求头 Key `Authorization` / Value `Bearer token`（开启鉴权时显示）
+- 每项可点按复制
+- 完整 JSON 折叠区保留（Claude Desktop / Cursor 等纯 JSON 客户端用）
+
+新增 `ConfigFieldRow` 组件。
+
+## 边界（如实说）
+
+- 本版未经真机验证，表单式 UI 布局需真机确认。
+
+---
+
 # v0.3.18 — 局域网鉴权改为可选 + 修后台重进启动失败
 
 > 用户需求：本机默认免鉴权，局域网鉴权**可以手动关闭**。
