@@ -140,12 +140,16 @@ class McpServerTest {
             port = 0,
             token = TOKEN,
             // 本套测试验证的是带 token 的鉴权路径（401 等），所以显式开启鉴权。
-            // 免鉴权是 App 的默认值（F1），但不是这里要测的行为。
+            // v0.3.20：本机 loopback 永远免鉴权，所以测试用 isLoopbackClient 注入
+            // `false`（模拟局域网来源）来触发 token 校验路径。
             requireAuth = true,
             tools = McpToolRegistry(host, files) { "http://127.0.0.1:${portHolder[0]}/files/" },
             // 必须与 registry 共用同一实例：各建一份的话，工具登记的文件在文件端点里
             // 根本查不到（这条曾经真的错过，由本测试拦住）。
             files = files,
+            // v0.3.20：模拟局域网来源（真实 socket 是 127.0.0.1 loopback，
+            // 但测试要验证的是"局域网设备需要 token"这条路径）。
+            isLoopbackClient = { false },
         )
 
         fun start(): Int {
@@ -295,6 +299,68 @@ class McpServerTest {
         assertEquals(401, noToken)
         val (badToken, _) = postMcp(port, """{"jsonrpc":"2.0","id":1,"method":"initialize"}""", token = "wrong")
         assertEquals(401, badToken)
+    }
+
+    @Test
+    fun loopbackClientIsAlwaysAllowedEvenWithoutToken() {
+        // v0.3.20：本机 loopback 永远免鉴权，即使 requireAuth=true 也不该要 token。
+        val fixture = Fixture()
+        // 用真实 loopback 判据（不注入 false）重建一个服务，模拟同机 AiCode。
+        val loopbackServer = McpServer(
+            port = 0,
+            token = TOKEN,
+            requireAuth = true,
+            tools = McpToolRegistry(fixture.host, fixture.files) { "http://127.0.0.1:${fixture.server.boundPort}/files/" },
+            files = fixture.files,
+            isLoopbackClient = { it.isLoopbackAddress },
+        )
+        try {
+            loopbackServer.start()
+            val port = loopbackServer.boundPort
+            val (code, _) = postMcp(port, """{"jsonrpc":"2.0","id":1,"method":"initialize"}""", token = "")
+            assertEquals("本机 loopback 免鉴权，不带 token 也应 200", 200, code)
+        } finally {
+            runCatching { loopbackServer.stop() }
+        }
+    }
+
+    @Test
+    fun restrictedLanClientGetsOnlyImageTools() {
+        // v0.3.20：局域网免鉴权（requireAuth=false + 非 loopback）只暴露出图相关工具，
+        // 终端/GPU/账号工具不列出，调用时回错误。
+        val fixture = Fixture()
+        val restrictedServer = McpServer(
+            port = 0,
+            token = "",
+            requireAuth = false,
+            tools = McpToolRegistry(fixture.host, fixture.files) { "http://127.0.0.1:${fixture.server.boundPort}/files/" },
+            files = fixture.files,
+            isLoopbackClient = { false }, // 模拟局域网来源
+        )
+        try {
+            restrictedServer.start()
+            val port = restrictedServer.boundPort
+            // tools/list 只含出图相关，不含 terminal_exec
+            val (_, listBody) = postMcp(port, """{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")
+            val tools = JSONObject(listBody).getJSONObject("result").getJSONArray("tools")
+            val names = (0 until tools.length()).map { tools.getJSONObject(it).getString("name") }
+            assertTrue("generate 应在列", "generate" in names)
+            assertTrue("job_status 应在列", "job_status" in names)
+            assertTrue("terminal_exec 不应在受限工具列表", "terminal_exec" !in names)
+            assertTrue("start_gpu 不应在受限工具列表", "start_gpu" !in names)
+            assertTrue("switch_account 不应在受限工具列表", "switch_account" !in names)
+            // 直接调 terminal_exec 应回 isError 且提示受限
+            val (_, callBody) = postMcp(
+                port,
+                """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"terminal_exec","arguments":{"command":"ls"}}}""",
+            )
+            val result = JSONObject(callBody).getJSONObject("result")
+            assertTrue("受限调用应回 isError", result.getBoolean("isError"))
+            val text = result.getJSONArray("content").getJSONObject(0).getString("text")
+            assertTrue("应提示受限", text.contains("受限") || text.contains("只允许"))
+        } finally {
+            runCatching { restrictedServer.stop() }
+        }
     }
 
     @Test

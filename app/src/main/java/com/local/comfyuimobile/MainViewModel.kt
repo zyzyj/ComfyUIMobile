@@ -1133,9 +1133,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setMcpServerRequireAuth(enabled: Boolean) {
         // v0.3.18（产品决策）：鉴权开关**独立**，不再与局域网联动。
         //
-        // 旧版（v0.3.17）关鉴权时若局域网开着会一起关掉局域网、开鉴权时强制鉴权——
-        // 那是「局域网强制鉴权」的遗留。现在局域网鉴权可选（用户自担风险），
-        // 两个开关互不干扰，只各自落盘 + 重启。
+        // v0.3.20：鉴权只对**局域网来源**生效，本机 loopback 永远免鉴权。
+        // 所以开鉴权但 token 为空也不再自动生成——本机照样用，局域网连不上而已。
         val current = _state.value
         _state.update { it.copy(mcpServerRequireAuth = enabled) }
         if (!_state.value.mcpServerEnabled) {
@@ -1146,17 +1145,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val token = _state.value.mcpServerToken
-        if (enabled && token.isBlank()) {
-            // 开鉴权却没 token：先生成一个，否则重启后服务会拒绝启动。
-            regenerateMcpToken()
-            return
-        }
         McpServiceState.intent = true
         // 先落盘、成功后重启，避免服务读到旧鉴权态。
         viewModelScope.launch {
             runCatching { preferences.setMcpServerRequireAuth(enabled) }
                 .onFailure { AppLogger.error("保存 MCP 鉴权开关失败", it) }
             McpServerService.restart(app, token)
+            if (enabled && token.isBlank()) {
+                _state.update {
+                    it.copy(notice = "已开启鉴权，但 token 为空：本机仍可用，局域网设备将无法连接。" +
+                        "建议在下方填入 token。")
+                }
+            }
             watchMcpStartup()
         }
     }
@@ -1236,8 +1236,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 用户自定义 token（v0.3.19）。
      *
      * 为什么要有：AiCode 侧的 MCP 配置可能已经填了一个固定 token（或用户想用自己
-     * 记得住的），重新生成会让旧配置失效。这里允许直接设定——空串视为"清空"，
-     * 鉴权开启时服务端会拒绝空 token（已有校验），所以空串只能配合免鉴权用。
+     * 记得住的），重新生成会让旧配置失效。这里允许直接设定。
+     *
+     * v0.3.20：鉴权只对局域网来源生效，本机 loopback 永远免鉴权——所以 token 为空
+     * 也是合法状态（本机可用，局域网连不上）。不再拦截空串。
      */
     fun setMcpServerToken(token: String) {
         val trimmed = token.trim()
@@ -1246,19 +1248,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             viewModelScope.launch { runCatching { preferences.setMcpServerToken(trimmed) } }
             return
         }
-        // 鉴权开启时不允许设空 token（服务端会拒绝启动，这里提前拦下，给明确提示）。
-        if (_state.value.mcpServerRequireAuth && trimmed.isBlank()) {
-            _state.update {
-                it.copy(notice = "鉴权已开启，token 不能为空；如需清空请先关闭鉴权。")
-            }
-            return
-        }
         McpServiceState.intent = true
         viewModelScope.launch {
             runCatching { preferences.setMcpServerToken(trimmed) }
                 .onFailure { AppLogger.error("保存 MCP token 失败", it) }
             McpServerService.restart(app, trimmed)
-            _state.update { it.copy(notice = "token 已更新；AiCode 配置里的 Authorization 需同步更新并新开会话") }
+            _state.update {
+                it.copy(
+                    notice = if (trimmed.isBlank() && _state.value.mcpServerRequireAuth) {
+                        "token 已清空：本机仍可用，局域网设备将因缺 token 无法连接。"
+                    } else {
+                        "token 已更新；AiCode 配置里的 Authorization 需同步更新并新开会话"
+                    },
+                )
+            }
             watchMcpStartup()
         }
     }

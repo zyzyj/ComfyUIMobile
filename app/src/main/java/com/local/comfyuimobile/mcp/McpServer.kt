@@ -36,24 +36,29 @@ internal class McpServer(
     private val port: Int,
     private val token: String,
     /**
-     * 是否启用 Bearer 鉴权（v0.2.97，用户决策 F1：默认免鉴权）。
+     * 是否对**局域网来源**启用 Bearer 鉴权（v0.3.20）。
+     *
+     * 鉴权模型（v0.3.20 重构）：
+     *  - **本机 loopback（127.0.0.1 / ::1）永远免鉴权**——loopback 只有本机 App 能连，
+     *    这是整套方案的安全前提，没必要让同机 AiCode 也带 token。
+     *  - **局域网来源（非 loopback）才看本开关**：true = 要 token，false = 免鉴权但降级
+     *    为「只许出图 + 取图」的受限权限（禁终端/GPU/账号，见 [McpToolRegistry]）。
      *
      * 刻意用**显式参数**而不是"token 为空即免鉴权"：后者会在"忘了生成 token"
      * 时意外开一个无凭证入口，而错误与正常两种意图无法区分。
-     *
-     * 免鉴权的前提是**只绑 127.0.0.1**（本机其他 App 可访问，局域网不可）。
      */
     private val requireAuth: Boolean,
     /**
      * 绑定地址（v0.3.15）。默认 `127.0.0.1`（仅本机）；局域网模式传 `0.0.0.0`。
-     *
-     * 安全约束：绑 `0.0.0.0` 时必须 [requireAuth] = true——否则同一 WiFi 下任何人都
-     * 能调 `terminal_exec`（任意命令执行）/`start_gpu`（烧算力卡）。这个不变量由
-     * [com.local.comfyuimobile.mcp.McpServerManager.start] 统一校验，本类不重复判。
      */
     private val bindAddress: String = "127.0.0.1",
     private val tools: McpToolRegistry,
     private val files: McpFileStore,
+    /**
+     * 判断客户端是否本机 loopback（v0.3.20，测试注入点）。
+     * 默认用真实 socket 地址的 `isLoopbackAddress`；测试可注入假判断以模拟局域网来源。
+     */
+    private val isLoopbackClient: (InetAddress) -> Boolean = { it.isLoopbackAddress },
 ) {
 
     private var serverSocket: ServerSocket? = null
@@ -140,6 +145,8 @@ internal class McpServer(
             s.soTimeout = READ_TIMEOUT_MILLIS
             val input = s.getInputStream()
             val output = BufferedOutputStream(s.getOutputStream())
+            // v0.3.20：记录客户端来源地址，用于 loopback/局域网鉴权与权限分级。
+            val clientAddress = (s.inetAddress ?: InetAddress.getLoopbackAddress())
             when (val read = McpHttp.readRequest(input)) {
                 is HttpReadResult.Bad -> output.write(
                     McpHttp.jsonResponse(
@@ -147,13 +154,13 @@ internal class McpServer(
                         status = read.status,
                     ),
                 )
-                is HttpReadResult.Ok -> route(read.request, output)
+                is HttpReadResult.Ok -> route(read.request, clientAddress, output)
             }
             output.flush()
         }
     }
 
-    private suspend fun route(request: HttpRequest, output: BufferedOutputStream) {
+    private suspend fun route(request: HttpRequest, clientAddress: InetAddress, output: BufferedOutputStream) {
         val path = request.path
         if (request.method == "GET" && path.startsWith("/files/")) {
             serveFile(path.removePrefix("/files/"), output)
@@ -171,24 +178,34 @@ internal class McpServer(
             output.write(McpHttp.jsonResponse("""{"error":"use POST"}""", status = 405))
             return
         }
-        if (!authorized(request)) {
+        if (!authorized(request, clientAddress)) {
             output.write(McpHttp.jsonResponse("""{"error":"unauthorized"}""", status = 401))
             return
         }
-        handleRpc(request, output)
+        handleRpc(request, clientAddress, output)
     }
 
     /**
-     * Bearer 鉴权。token 为空时**不放行**（防配置疏漏导致无鉴权裸奔）——
-     * 宁可服务起不来，也不给一个无凭证入口。
+     * Bearer 鉴权（v0.3.20 重构）。
+     *
+     * 规则：
+     *  - 本机 loopback 来源 → 永远放行（免鉴权）。
+     *  - 局域网来源 → 看 [requireAuth]：true 校验 token，false 放行（但权限降级）。
      */
-    private fun authorized(request: HttpRequest): Boolean {
-        // 免鉴权模式（F1）：只绑 loopback，本机其他 App 可访问、局域网不可。
+    private fun authorized(request: HttpRequest, clientAddress: InetAddress): Boolean {
+        if (isLoopbackClient(clientAddress)) return true
         if (!requireAuth) return true
         if (token.isBlank()) return false
         val header = request.headers["authorization"].orEmpty()
         return header == "Bearer $token"
     }
+
+    /**
+     * 判断当前连接是否受限（v0.3.20）：局域网来源 + 免鉴权。
+     * 这类客户端只能出图/取图，禁止终端、GPU、账号管理等高危操作。
+     */
+    private fun restricted(clientAddress: InetAddress): Boolean =
+        !isLoopbackClient(clientAddress) && !requireAuth
 
     /**
      * 发送出图文件。
@@ -221,7 +238,7 @@ internal class McpServer(
             .onFailure { AppLogger.warn("MCP 发送文件失败：${entry.file.name}", it) }
     }
 
-    private suspend fun handleRpc(request: HttpRequest, output: BufferedOutputStream) {
+    private suspend fun handleRpc(request: HttpRequest, clientAddress: InetAddress, output: BufferedOutputStream) {
         val rpc = McpProtocol.parseRequest(request.body)
         if (rpc == null) {
             output.write(
@@ -240,7 +257,8 @@ internal class McpServer(
             .orEmpty()
 
         val startedAt = System.currentTimeMillis()
-        val result = tools.dispatch(rpc.method, rpc.params, rpc.id)
+        // v0.3.20：权限分级——局域网免鉴权的连接只能出图/取图，禁终端/GPU/账号。
+        val result = tools.dispatch(rpc.method, rpc.params, rpc.id, restricted = restricted(clientAddress))
         val elapsed = System.currentTimeMillis() - startedAt
         if (result == null) {
             // 通知：无 id，回 202 空体（AiCode 按 spec 期望这个形态）。通知不进日志

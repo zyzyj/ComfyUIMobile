@@ -178,23 +178,24 @@ class McpServerService : Service() {
             return
         }
         val resolvedToken = token.ifBlank { stored?.mcpServerToken.orEmpty() }
-        // 免鉴权模式下不需要 token（F1）；只有开启鉴权时才要求必须有。
+        // v0.3.20：鉴权只对**局域网来源**生效；本机 loopback 永远免鉴权。
+        // 所以即使 requireAuth=true 但 token 为空，服务也能起——本机照样用，
+        // 只有局域网连不上（会回 401）。不再因 token 为空拒绝启动。
         val requireAuth = stored?.mcpServerRequireAuth == true
         // v0.3.18（产品决策）：局域网**不再强制鉴权**。
         //
-        // 旧版在这里挡一道「LAN=true 且 auth=false 就拒绝启动」，但那是用户可自选的
-        // 低安全配置（同一 WiFi 下任何人能调 terminal_exec）。真实风险由 UI 警告兜底，
-        // 服务不再替用户掐死启动——否则滑动后台重进后，存量脏数据会让自动拉起失败。
+        // v0.3.20 进一步：局域网免鉴权时，局域网设备降级为「只许出图 + 取图」，
+        // 禁终端/GPU/账号（在 McpServer/McpToolRegistry 层做权限分级）。
         val lanEnabled = stored?.mcpServerLanEnabled == true
         if (lanEnabled && !requireAuth) {
             AppLogger.warn(
-                "MCP 以「局域网 + 免鉴权」启动：同一 WiFi 下任何设备都能执行任意命令。",
+                "MCP 以「局域网 + 免鉴权」启动：局域网设备只许出图/取图（终端/GPU/账号已禁用）。",
             )
         }
         if (requireAuth && resolvedToken.isBlank()) {
-            AppLogger.warn("MCP 前台服务启动被拒：已开启鉴权但没有令牌")
-            stopServer(StopReason.AUTH)
-            return
+            // v0.3.20：不再拒绝启动。本机 loopback 免鉴权仍可用；局域网会 401。
+            // 只提醒用户：局域网要 token 但当前是空，局域网设备连不上。
+            AppLogger.warn("MCP 已开启鉴权但令牌为空：本机可用，局域网将因缺 token 无法连接")
         }
         // 用**服务自己的** ComfyClient：baseUrl / Cookie 从偏好里恢复。
         // 它只被 MCP 工具调用，不与界面里的那份共享状态，避免两边互相改 baseUrl。

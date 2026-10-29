@@ -1,3 +1,32 @@
+# v0.3.20 — 鉴权模型重构：本机免鉴权 + 局域网权限分级
+
+> 用户反馈：走 127.0.0.1 也要 token 不合理；关局域网后走 127 还要 token、需重启才生效；
+> 多设备连接会互相干扰（终端/GPU 被局域网设备操控）。
+
+## 核心重构：本机永远免鉴权
+
+- **本机 loopback（127.0.0.1 / ::1）永远免鉴权**——只有本机 App 能连，这是方案的安全前提。
+- **鉴权开关只对局域网来源生效**：开 = 局域网设备要 token；关 = 局域网设备免鉴权但权限降级。
+- 移除「鉴权开启但 token 为空则拒绝启动」的硬约束：本机免鉴权，token 空也能起。
+
+## 多设备权限分级
+
+局域网免鉴权时，同一 WiFi 下的设备**只能出图 + 取图**：
+- 可用：list_models / list_workflows / describe_workflow / validate_workflow /
+  generate / job_status / list_my_jobs / wait_for_comfy / cancel_jobs
+- **禁用**：终端（terminal_*）、GPU（start/stop/list_*）、账号（list/switch_account）
+
+## 顺带修复
+
+- configSnippet 只在局域网+鉴权时带 Authorization 头（本机 loopback 不带）
+- UI 文案全部反映新语义，不再误导「本机也要 token」
+
+## 边界（如实说）
+
+- 本版未经真机验证；权限分级需两台设备连同一 WiFi 实测。
+
+---
+
 # v0.3.19 — 自定义 token + AiCode 配置区 UI 重构
 
 > 用户反馈：鉴权无法关闭（实为 0.3.17 旧版本，0.3.18 已修）；无法自定义 token；

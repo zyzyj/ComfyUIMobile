@@ -4302,11 +4302,17 @@ private fun McpScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            ConfigFieldRow("名称", "comfy") { "comfy" }
-            ConfigFieldRow("服务器地址", url) { url }
-            if (state.mcpServerRequireAuth && token.isNotBlank()) {
-                ConfigFieldRow("请求头 Key", "Authorization") { "Authorization" }
-                ConfigFieldRow("请求头 Value", "Bearer $token") { "Bearer $token" }
+            // v0.3.20：本机 loopback 永远免鉴权，所以"请求头"只在**局域网需鉴权**时才需要。
+            if (state.mcpServerRequireAuth && state.mcpServerLanEnabled) {
+                ConfigFieldRow("名称", "comfy") { "comfy" }
+                ConfigFieldRow("服务器地址", url) { url }
+                if (token.isNotBlank()) {
+                    ConfigFieldRow("请求头 Key", "Authorization") { "Authorization" }
+                    ConfigFieldRow("请求头 Value", "Bearer $token") { "Bearer $token" }
+                }
+            } else {
+                ConfigFieldRow("名称", "comfy") { "comfy" }
+                ConfigFieldRow("服务器地址", url) { url }
             }
             // 一行按钮：复制 URL / 复制鉴权头 / 复制完整 JSON。
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -4385,25 +4391,25 @@ private fun McpScreen(
                 )
             }
             // 开启鉴权（F1 默认关）。
-            // v0.3.18：鉴权独立于局域网，不再联动/禁用。
+            // v0.3.20：鉴权只对局域网来源生效，本机 loopback 永远免鉴权。
             SettingsToggleRow(
                 title = "要求鉴权（Bearer token）",
                 subtitle = if (state.mcpServerRequireAuth) {
-                    "已开启：AiCode 必须带 token 才能调用"
+                    "已开启：局域网设备必须带 token 才能调用；本机 App 不受影响"
                 } else {
-                    "默认关闭。仅本机可访问时可保持关闭；开启局域网后强烈建议打开"
+                    "默认关闭。本机永远免鉴权；开启后局域网设备也免鉴权，但会被降级为只许出图/取图"
                 },
                 checked = state.mcpServerRequireAuth,
                 onCheckedChange = viewModel::setMcpServerRequireAuth,
             )
-            // v0.3.15：局域网访问。v0.3.18：鉴权可选，但免鉴权 + 局域网给醒目警告。
+            // v0.3.15：局域网访问。v0.3.20：鉴权可选，免鉴权时局域网设备降级为只许出图。
             SettingsToggleRow(
                 title = "允许局域网访问",
                 subtitle = when {
                     state.mcpServerLanEnabled && !state.mcpServerRequireAuth -> {
                         val ip = LocalNetwork.primaryIpv4()
-                        "⚠ 已开启且未鉴权：同一 WiFi 下任何设备都能执行任意命令（terminal_exec）。" +
-                            "建议打开上方「要求鉴权」。" +
+                        "已开启且未鉴权：局域网设备只能出图/取图（终端、GPU、账号管理已禁用）。" +
+                            "建议打开上方「要求鉴权」获取完整权限。" +
                             (ip?.let { "连接地址 http://$it:${state.mcpServerPort.takeIf { it > 0 } ?: effectivePort(state)}/mcp" } ?: "")
                     }
                     state.mcpServerLanEnabled -> {
@@ -4414,16 +4420,16 @@ private fun McpScreen(
                             "已开启：但没读到本机 IPv4 地址，局域网可能连不上（请确认已连 WiFi）"
                         }
                     }
-                    else -> "关闭：仅本机可连。开启后同一 WiFi 下其它设备也能连"
+                    else -> "关闭：仅本机可连（本机永远免鉴权）。开启后同一 WiFi 下其它设备也能连"
                 },
                 checked = state.mcpServerLanEnabled,
                 onCheckedChange = viewModel::setMcpServerLanEnabled,
             )
-            // v0.3.18：局域网 + 免鉴权的醒目风险提示（独立于开关副标题，红色强调）。
+            // v0.3.20：局域网 + 免鉴权的权限分级提示（红色强调，但不再说"任意命令"）。
             if (state.mcpServerLanEnabled && !state.mcpServerRequireAuth) {
                 Text(
-                    "⚠ 当前局域网访问未开启鉴权，同一 WiFi 下任何设备都能通过 terminal_exec 执行任意命令。" +
-                        "仅在可信网络（如家里 WiFi）使用，或打开上方「要求鉴权」。",
+                    "⚠ 当前局域网访问未开启鉴权：同一 WiFi 下的设备只能出图/取图，" +
+                        "终端、GPU、账号管理已禁用。如需完整权限，请打开上方「要求鉴权」并设置 token。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )

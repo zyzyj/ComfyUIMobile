@@ -73,22 +73,19 @@ internal class McpServerManager(
         if (isRunning) return port
         // v0.3.18（产品决策）：局域网**不再强制鉴权**。
         //
-        // 早期（v0.3.15~v0.3.17）把「局域网 + 免鉴权」当硬约束拒绝启动，结果反而
-        // 造成两个更糟的问题：① 用户关鉴权时服务拒绝启动、UI 卡死横跳；② 存量脏数据
-        // （LAN=true + auth=false）让滑动后台重进后自动拉起失败。
-        //
-        // 现在的边界：局域网 + 免鉴权 = 同一 WiFi 下任何人可调 terminal_exec（任意命令
-        // 执行）。这是真实风险，但属用户自担的设备/局域网场景；UI 上会给出醒目警告，
-        // 把选择权交给用户，而不是替用户把服务掐死。
+        // v0.3.20：鉴权只对**局域网来源**生效，本机 loopback 永远免鉴权。
+        // 所以 token 为空也不拒绝启动（本机可用，局域网 401）。
         val lan = bindAddress == LAN_ALL
         if (lan && !requireAuth) {
             AppLogger.warn(
-                "MCP 以「局域网 + 免鉴权」启动：同一 WiFi 下任何设备都能调 terminal_exec 执行任意命令。" +
-                    "这是用户明确选择的低安全配置。",
+                "MCP 以「局域网 + 免鉴权」启动：局域网设备只许出图/取图（终端/GPU/账号已禁用）。",
             )
         }
-        // 启用鉴权时才必须有 token；免鉴权模式不需要（也就不该因缺 token 而拒绝启动）。
-        require(!requireAuth || token.isNotBlank()) { "已开启鉴权，请先生成访问令牌" }
+        // v0.3.20：不再因 token 为空拒绝启动。
+        // 本机 loopback 免鉴权仍可用；局域网开启鉴权时缺 token 会回 401（而非起不来）。
+        if (requireAuth && token.isBlank()) {
+            AppLogger.warn("MCP 已开启鉴权但令牌为空：本机可用，局域网将因缺 token 无法连接")
+        }
         // 每次启动都重建（连同文件登记）：stop 会清掉临时文件，重启后不该还指着它们。
         val store = McpFileStore(cacheDir = File(cacheDir, "mcp_files"))
         val registry = McpToolRegistry(
@@ -198,7 +195,9 @@ internal class McpServerManager(
             appendLine("  \"mcpServers\": {")
             appendLine("    \"comfy\": {")
             appendLine("      \"url\": \"http://$host:$port/mcp\",")
-            if (requireAuth && token.isNotBlank()) {
+            // v0.3.20：只有**局域网 + 鉴权**才带 headers。本机 loopback 永远免鉴权，
+            // 所以走 127.0.0.1 的客户端（哪怕 requireAuth=true）也不需要 token。
+            if (requireAuth && token.isNotBlank() && lanHost != null) {
                 appendLine("      \"headers\": { \"Authorization\": \"Bearer $token\" },")
             }
             appendLine("      \"enabled\": true")

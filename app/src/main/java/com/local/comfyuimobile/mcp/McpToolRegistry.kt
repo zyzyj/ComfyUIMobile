@@ -226,20 +226,41 @@ internal class McpToolRegistry(
 
     /**
      * 处理一个 JSON-RPC 请求。返回 null 表示这是**通知**（无 id），调用方回 202 空体。
+     *
+     * @param restricted v0.3.20：true = 局域网免鉴权的受限连接，只能出图/取图，
+     *        禁终端/GPU/账号/切换账号/停止 GPU 等。由 [McpServer] 根据来源地址传入。
      */
-    suspend fun dispatch(method: String, params: JSONObject, id: String?): JSONObject? {
+    suspend fun dispatch(
+        method: String,
+        params: JSONObject,
+        id: String?,
+        restricted: Boolean = false,
+    ): JSONObject? {
         if (id == null && method.startsWith("notifications/")) return null
         return when (method) {
             "initialize" -> McpProtocol.success(id, McpProtocol.initializeResult(SERVER_INSTRUCTIONS))
-            "tools/list" -> McpProtocol.success(id, JSONObject().put("tools", toolList()))
-            "tools/call" -> handleToolCall(id, params)
+            "tools/list" -> McpProtocol.success(id, JSONObject().put("tools", toolList(restricted)))
+            "tools/call" -> handleToolCall(id, params, restricted)
             "ping" -> McpProtocol.success(id, JSONObject())
             else -> McpProtocol.error(id, McpProtocol.ErrorCode.METHOD_NOT_FOUND, "未知方法：$method")
         }
     }
 
-    private suspend fun handleToolCall(id: String?, params: JSONObject): JSONObject {
+    private suspend fun handleToolCall(id: String?, params: JSONObject, restricted: Boolean): JSONObject {
         val name = params.optString("name")
+        // v0.3.20：受限连接调用高危工具时，直接回明确提示（不让它以为工具不存在，
+        // 也不让它猜到完整工具清单）。
+        if (restricted && name in RESTRICTED_TOOLS) {
+            return McpProtocol.success(
+                id,
+                McpProtocol.textResult(
+                    "当前连接是局域网免鉴权模式（受限）：只允许出图/取图，" +
+                        "禁止调用 $name（终端、GPU、账号管理等操作）。" +
+                        "如需完整权限，请在手机 App 的 MCP 服务页打开「要求鉴权」并用 token 连接。",
+                    isError = true,
+                ),
+            )
+        }
         val args = params.optJSONObject("arguments") ?: JSONObject()
         val result = try {
             invoke(name, args)
@@ -460,7 +481,165 @@ internal class McpToolRegistry(
         }
     }
 
-    private fun toolList(): JSONArray = JSONArray().apply {
+    /**
+     * 受限连接禁用的工具（v0.3.20）：终端、GPU、账号管理。
+     * 局域网免鉴权时，同一 WiFi 下的设备只能出图 + 取图，不能操控终端/烧算力卡/换账号。
+     */
+    private val RESTRICTED_TOOLS = setOf(
+        TOOL_LIST_PROJECTS,
+        TOOL_LIST_ACCOUNTS,
+        TOOL_SWITCH_ACCOUNT,
+        TOOL_GPU_STATUS,
+        TOOL_LIST_GPU_OPTIONS,
+        TOOL_START_GPU,
+        TOOL_STOP_GPU,
+        TOOL_TERMINAL_LIST,
+        TOOL_TERMINAL_EXEC,
+        TOOL_TERMINAL_READ,
+        TOOL_TERMINAL_INTERRUPT,
+    )
+
+    private fun toolList(restricted: Boolean = false): JSONArray {
+        if (restricted) {
+            // v0.3.20：受限连接只暴露出图相关工具，不把高危工具列给它——
+            // 让模型看不到就不会试图调用，比调用后再拒绝更省 token。
+            return JSONArray().apply {
+                putTool(
+                    TOOL_LIST_MODELS,
+                    "列出当前 ComfyUI 服务器可用的模型文件名（checkpoint / LoRA）。" +
+                        "数据来自 ComfyUI 的 /object_info，是服务器自己认识的权威清单。",
+                    schema(
+                        JSONObject().put(
+                            "type",
+                            JSONObject()
+                                .put("type", "string")
+                                .put("enum", JSONArray().put("checkpoint").put("lora"))
+                                .put("description", "限定类型；省略则全部列出"),
+                        ),
+                    ),
+                )
+                putTool(
+                    TOOL_LIST_WORKFLOWS,
+                    "列出服务器上可用的 ComfyUI 工作流（名称、路径，以及是否为 API 格式）。" +
+                        "generate 只能执行标记为 [可直用] 的工作流。",
+                    schema(JSONObject()),
+                )
+                putTool(
+                    TOOL_DESCRIBE_WORKFLOW,
+                    "查看一个工作流里有哪些可调参数（field key、当前值、可选值），并给出每个字段的用途说明。" +
+                        "出图前先调它，才能用 generate 的 params 改 steps / cfg / 采样器 / 尺寸 / 种子等。" +
+                        "可传 workflow_json 内联（与 generate 同一份判定）。",
+                    schema(
+                        JSONObject()
+                            .put("workflow", JSONObject().put("type", "string").put("description", "工作流路径；缺省用 App 当前打开的工作流"))
+                            .put("workflow_json", JSONObject().put("type", "string").put("description", "内联的 API 格式工作流 JSON；给了它就忽略 workflow")),
+                        required = JSONArray(),
+                    ),
+                )
+                putTool(
+                    TOOL_VALIDATE_WORKFLOW,
+                    "提交前预检工作流：检查格式、节点是否已安装、连线引用是否有效、是否有输出节点。" +
+                        "**建议在 generate 前先调它**——错误提交要等在服务器侧报错，那段时间在 AI Studio 上是在烧算力卡。" +
+                        "可传 workflow_json 内联（内联提交也能预检）。",
+                    schema(
+                        JSONObject()
+                            .put("workflow", JSONObject().put("type", "string").put("description", "工作流路径；缺省用 App 当前打开的工作流"))
+                            .put("workflow_json", JSONObject().put("type", "string").put("description", "内联的 API 格式工作流 JSON；给了它就忽略 workflow")),
+                    ),
+                )
+                putTool(
+                    TOOL_GENERATE,
+                    "用指定工作流出图。默认**异步**（wait=false）：提交完立即返回 job_id，" +
+                        "验收用 job_status（省 token）。传 wait=true 才同步等（反代下可能等超时）。" +
+                        "工作流可传 workflow 路径，或直接传 workflow_json 内联（需 API 格式）。" +
+                        "返回的图片以 URL 给出，需自行下载后查看。",
+                    schema(
+                        JSONObject()
+                            .put("prompt", JSONObject().put("type", "string").put("description", "正向提示词"))
+                            .put("negative", JSONObject().put("type", "string").put("description", "负向提示词（可选）"))
+                            .put("workflow", JSONObject().put("type", "string").put("description", "工作流路径（可选，见 list_workflows）"))
+                            .put(
+                                "workflow_json",
+                                JSONObject()
+                                    .put("type", "string")
+                                    .put("description", "内联的 API 格式工作流 JSON（可选）；给了它就忽略 workflow 路径"),
+                            )
+                            .put("checkpoint", JSONObject().put("type", "string").put("description", "模型文件名（可选）"))
+                            .put("lora", JSONObject().put("type", "string").put("description", "LoRA 文件名（可选）"))
+                            .put("count", JSONObject().put("type", "integer").put("description", "出图张数，1-8，默认 1"))
+                            .put("wait", JSONObject().put("type", "boolean").put("description", "是否同步等待完成，默认 false"))
+                            .put(
+                                "params",
+                                JSONObject()
+                                    .put("type", "object")
+                                    .put("description", "按 field key 注入任意参数（steps/cfg/sampler/seed/尺寸等）。先用 describe_workflow 拿到 key"),
+                            ),
+                        required = JSONArray().put("prompt"),
+                    ),
+                )
+                putTool(
+                    TOOL_JOB_STATUS,
+                    "查询一次生成任务的状态，返回 queued / running / done / failed。" +
+                        "可传 job_id（单个）或 job_ids（数组，最多 16 个）一次查多个；完成时给图片 URL。" +
+                        "**推荐传 wait_seconds（如 60）一次等到终态**，不要短间隔反复查——" +
+                        "每次调用都占一轮对话，轮询既慢又费。",
+                    schema(
+                        JSONObject()
+                            .put("job_id", JSONObject().put("type", "string").put("description", "generate 返回的 job_id"))
+                            .put(
+                                "job_ids",
+                                JSONObject()
+                                    .put("type", "array")
+                                    .put("description", "一次查多个任务的 id")
+                                    .put("items", JSONObject().put("type", "string")),
+                            )
+                            .put(
+                                "wait_seconds",
+                                JSONObject().put("type", "integer")
+                                    .put("description", "可选。同步等到终态或超时（上限 300），省去反复轮询；省略则立即返回当前状态"),
+                            ),
+                    ),
+                )
+                putTool(
+                    TOOL_LIST_MY_JOBS,
+                    "列出本 MCP 会话近期提交过的出图任务（含提交时间、当前状态、是否已取图）。" +
+                        "**丢了 job_id、或不确定某批任务跑到哪时，先调这个——不要重新提交**：" +
+                        "重新 generate 会再出一张图、再烧一次算力卡。" +
+                        "状态是实时查的，不用再自己拼 job_status 逐个查。",
+                    schema(
+                        JSONObject()
+                            .put("state", JSONObject().put("type", "string")
+                                .put("enum", JSONArray().put("all").put("running").put("done").put("failed"))
+                                .put("description", "按状态筛选，默认 all"))
+                            .put("limit", JSONObject().put("type", "integer").put("description", "最多返回多少条，默认 20，最大 50")),
+                    ),
+                )
+                putTool(
+                    TOOL_WAIT_FOR_COMFY,
+                    "等待 ComfyUI 就绪（轮询探测 8188）。启动云端环境/跑完启动脚本后调用，" +
+                        "别用重复调 list_models 来试探。超时会返回明确的结论。",
+                    schema(
+                        JSONObject().put(
+                            "timeout_seconds",
+                            JSONObject().put("type", "integer").put("description", "最多等多少秒，默认 120（5-900）"),
+                        ),
+                    ),
+                )
+                putTool(
+                    TOOL_CANCEL,
+                    "紧急刹车：中止已提交的任务。不传 job_id 则只会取消**本 App 提交的**任务" +
+                        "（默认不碰用户自己或网页端提交的）；确实要一起清才传 all=true。" +
+                        "注意：关闭 MCP 服务不会停任务，它们已在远端 ComfyUI 队列里。",
+                    schema(
+                        JSONObject()
+                            .put("job_id", JSONObject().put("type", "string").put("description", "要中止的任务 id；省略则清理本 App 提交的任务"))
+                            .put("all", JSONObject().put("type", "boolean").put("description", "省略 job_id 时是否连非本 App 提交的任务一起清，默认 false")),
+                    ),
+                )
+            }
+        }
+        // 完整权限（本机 loopback 或已鉴权局域网）。
+        return JSONArray().apply {
         put(
             McpProtocol.toolDescriptor(
                 TOOL_LIST_MODELS,
@@ -736,12 +915,23 @@ internal class McpToolRegistry(
                 ),
             ),
         )
+        }
     }
 
     private fun projectIdSchema(): JSONObject = JSONObject().put(
         "project_id",
         JSONObject().put("type", "string").put("description", "项目 ID，取自 list_projects"),
     )
+
+    /**
+     * 受限连接专用：只暴露单数工具（v0.3.20）。
+     *
+     * 与主分支的 `put(McpProtocol.toolDescriptor(...))` 等价，但参数直接传
+     * name/description/schema 三个原始值，避免受限分支复制整个 toolDescriptor 结构。
+     */
+    private fun JSONArray.putTool(name: String, description: String, inputSchema: JSONObject) {
+        put(McpProtocol.toolDescriptor(name, description, inputSchema))
+    }
 
     private fun schema(properties: JSONObject, required: JSONArray = JSONArray()): JSONObject =
         JSONObject()

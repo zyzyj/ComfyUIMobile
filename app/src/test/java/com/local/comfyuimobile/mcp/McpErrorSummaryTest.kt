@@ -68,8 +68,17 @@ class McpConfigSnippetTest {
 
     @Test
     fun authModeIncludesBearerHeader() {
-        val snippet = McpServerManager.configSnippet("tok123", 23456, requireAuth = true)
+        // v0.3.20：本机 loopback 永远免鉴权，只有**局域网 + 鉴权**才带 headers。
+        val snippet = McpServerManager.configSnippet("tok123", 23456, requireAuth = true, lanHost = "192.168.0.5")
         assertTrue(snippet.contains("Bearer tok123"))
+        assertTrue(snippet.contains("http://192.168.0.5:23456/mcp"))
+    }
+
+    @Test
+    fun loopbackAuthOmitsHeadersEvenWithRequireAuth() {
+        // v0.3.20：走 127.0.0.1 即使 requireAuth=true 也不需要 token（本机免鉴权）。
+        val snippet = McpServerManager.configSnippet("tok123", 23456, requireAuth = true)
+        assertFalse("本机 loopback 免鉴权，不带 Authorization", snippet.contains("Authorization"))
     }
 
     @Test
