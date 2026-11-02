@@ -41,7 +41,8 @@ class McpPromptPlannerTest {
         count: Int = 1,
         params: Map<String, String> = emptyMap(),
         wait: Boolean = false,
-    ) = GenerateRequest(prompt, negative, workflow, workflowJson, checkpoint, lora, count, params, wait)
+        promptOverride: Boolean = true,
+    ) = GenerateRequest(prompt, negative, workflow, workflowJson, checkpoint, lora, count, params, wait, promptOverride)
 
     // ===== v0.2.91：任意参数注入 =====
 
@@ -254,6 +255,61 @@ class McpPromptPlannerTest {
         val result = ok(McpPromptPlanner.plan(noSampler, request(prompt = "new")))
         assertEquals(
             "new",
+            JSONObject(result.promptJson).getJSONObject("6").getJSONObject("inputs").getString("text"),
+        )
+    }
+
+    @Test
+    fun defaultDoesNotOverrideNonEmptyWorkflowText() {
+        // v0.3.22（二轮 Bug1）：prompt_override 默认 false，工作流里文本非空时
+        // 必须保留原文（prompt 只当 fallback）。否则 layout JSON 会被 9 字节 prompt 覆盖。
+        val result = ok(
+            McpPromptPlanner.plan(
+                apiWorkflow(),
+                GenerateRequest(
+                    prompt = "manga page",
+                    negative = "",
+                    workflow = null,
+                    workflowJson = null,
+                    checkpoint = null,
+                    lora = null,
+                    count = 1,
+                    params = emptyMap(),
+                    wait = false,
+                    promptOverride = false,
+                ),
+            ),
+        )
+        val prompt = JSONObject(result.promptJson)
+        assertEquals(
+            "old positive",
+            prompt.getJSONObject("6").getJSONObject("inputs").getString("text"),
+        )
+        assertTrue("应说明 prompt 未覆盖", result.applied.any { it.contains("未覆盖") || it.contains("保留工作流原文") })
+    }
+
+    @Test
+    fun overrideWritesEvenWhenTextNonEmpty() {
+        // prompt_override=true 保持旧行为：无条件覆盖。
+        val result = ok(
+            McpPromptPlanner.plan(
+                apiWorkflow(),
+                GenerateRequest(
+                    prompt = "new prompt",
+                    negative = "",
+                    workflow = null,
+                    workflowJson = null,
+                    checkpoint = null,
+                    lora = null,
+                    count = 1,
+                    params = emptyMap(),
+                    wait = false,
+                    promptOverride = true,
+                ),
+            ),
+        )
+        assertEquals(
+            "new prompt",
             JSONObject(result.promptJson).getJSONObject("6").getJSONObject("inputs").getString("text"),
         )
     }

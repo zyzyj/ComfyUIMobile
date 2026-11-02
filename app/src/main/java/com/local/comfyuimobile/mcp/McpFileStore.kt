@@ -41,6 +41,14 @@ internal class McpFileStore(
 
     private val entries = ConcurrentHashMap<String, Entry>()
 
+    /**
+     * 业务 key → 文件 id（v0.3.22，修二轮 Bug2：同一 job_id 反复 job_status 时 URL 变号）。
+     *
+     * 键形如 `job:{promptId}`。命中且未过期时直接复用旧文件，不重新下载——
+     * 这样 URL 稳定、旧 URL 不会因重新下载而失效。
+     */
+    private val aliases = ConcurrentHashMap<String, String>()
+
     init {
         runCatching { cacheDir.mkdirs() }
         // v0.3.15：启动时**无条件扫一次孤儿**。
@@ -80,6 +88,27 @@ internal class McpFileStore(
         entries[id] = Entry(file, contentType, file.length(), now() + ttlMillis)
         enforceLimits()
         return id
+    }
+
+    /**
+     * 按业务 key 查找已登记的文件 id（v0.3.22，修二轮 Bug2）。
+     *
+     * 命中且未过期时返回 id，调用方直接复用、不重新下载——URL 稳定，
+     * 旧 URL 不会因重新下载而失效。未命中或已过期返回 null。
+     */
+    fun lookupByKey(key: String): String? {
+        val id = aliases[key] ?: return null
+        return get(id)?.let { id }
+    }
+
+    /** 登记业务 key → 文件 id 的映射（v0.3.22）。 */
+    fun rememberKey(key: String, fileId: String) {
+        aliases[key] = fileId
+    }
+
+    /** 清掉某业务 key 的映射（文件本身过期时同步清理，避免悬空引用）。 */
+    fun forgetKey(key: String) {
+        aliases.remove(key)
     }
 
     /** 取文件；不存在、已过期或文件已被删除返回 null（调用方回 404）。 */
@@ -137,8 +166,13 @@ internal class McpFileStore(
     fun size(): Int = entries.size
 
     internal companion object {
-        /** 1 小时：足够 AI 走完"生成 → 取图 → 看图"，又不会长期留着一个可读 URL。 */
-        const val DEFAULT_TTL_MILLIS = 60 * 60 * 1000L
+        /**
+         * 24 小时（v0.3.22 从 1 小时延长）。
+         *
+         * 二轮 Bug2：URL 1 小时过期太短，AI 稍后想再取图就 404。24 小时足够跨会话，
+         * 且配合 [aliases] 复用后，同一 job_id 反复查不会变号、旧 URL 也不会失效。
+         */
+        const val DEFAULT_TTL_MILLIS = 24 * 60 * 60 * 1000L
         const val DEFAULT_MAX_ENTRIES = 64
 
         /** 总字节上限 128MB：宁可淘汰旧的，也不让这个目录无限吃磁盘。 */

@@ -102,8 +102,15 @@ internal class ComfyMcpHost(
                 lines += "${ref.label}:"
                 lines += names.map { "  $it" }
             }
+        } else if (wanted != null) {
+            // v0.3.22（二轮 Bug6）：非法 type 明确报错并列合法值，而不是
+            // 静默返回全部类型（那会让人误以为 type 生效了）。
+            throw IllegalArgumentException(
+                "未知的 type=\"$wanted\"。合法值：checkpoint, lora, unet, diffusion_models, vae, clip。" +
+                    "省略 type 则全部列出。",
+            )
         } else {
-            // 未指定或未知 type：全部合并输出（checkpoint / lora / unet / vae / clip）。
+            // 未指定 type：全部合并输出（checkpoint / lora / unet / vae / clip）。
             for (ref in listOf(
                 ModelRef("CheckpointLoaderSimple", "ckpt_name", "checkpoints"),
                 ModelRef("LoraLoader", "lora_name", "loras"),
@@ -693,7 +700,12 @@ internal class ComfyMcpHost(
     private fun requireConnected() {
         if (client.serverUrl().isBlank()) {
             throw IllegalStateException(
-                "App 尚未连接 ComfyUI：请先打开 ComfyUIMobile 连接服务器（账号页或设置），然后重试",
+                // v0.3.22（二轮报告）：原文说"请先打开 ComfyUIMobile 连接服务器"是误导——
+                // ComfyUI 明明在跑，App 也连着，真实原因是 MCP 服务端还没建立连接句柄。
+                // 正确动作是调 wait_for_comfy 预热（它会自动接入运行中的项目 api_serving）。
+                "MCP 尚未连接到 ComfyUI：请先调 wait_for_comfy 预热" +
+                    "（它会自动接入正在运行的项目 api_serving）。\n" +
+                    "如果 wait_for_comfy 也报「未连接」，再回 App 确认 ComfyUI 已连接。",
             )
         }
     }
@@ -784,6 +796,22 @@ internal class ComfyMcpHost(
         val result = mutableListOf<McpMedia>()
         for (item in images) {
             val extension = item.filename.substringAfterLast('.', "png").lowercase()
+            // v0.3.22（二轮 Bug2）：按 job+filename 复用已下载的文件——
+            // 同一 job_id 反复 job_status 不再重新下载，URL 稳定不变号。
+            val cacheKey = "job:$promptId:${item.filename}"
+            val cached = files.lookupByKey(cacheKey)
+            if (cached != null) {
+                val cachedEntry = files.get(cached)
+                if (cachedEntry != null) {
+                    result += McpMedia(
+                        filename = item.filename,
+                        extension = extension,
+                        contentType = McpFileStore.contentTypeOf(extension),
+                        file = cachedEntry.file,
+                    )
+                    continue
+                }
+            }
             val target = files.newFile(extension)
             val ok = runCatching {
                 target.outputStream().use { client.downloadTo(item.url, it) }

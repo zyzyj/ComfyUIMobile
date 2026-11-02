@@ -155,6 +155,17 @@ internal data class GenerateRequest(
      * （即"提交/验收分离"，实测省 82% token）。
      */
     val wait: Boolean = false,
+    /**
+     * 是否用 [prompt] 覆盖工作流里已有的文本节点（v0.3.22）。
+     *
+     * 默认 **false**（不覆盖）——真机报告（二轮 Bug1）：把 15KB layout JSON 写在工作流
+     * 文本节点里，却顺手传了 prompt: "manga page"，结果整段 layout 被 9 字节覆盖，
+     * 出图内容完全错误且不报错。这是最危险的一类：静默、结果错、难发现。
+     *
+     * false = 工作流里文本节点非空时保留原文，prompt 仅当文本为空时才写入；
+     * true  = 保持旧行为，prompt 无条件覆盖文本节点。
+     */
+    val promptOverride: Boolean = false,
 )
 
 internal sealed interface GenerateOutcome {
@@ -393,7 +404,13 @@ internal class McpToolRegistry(
 
     private fun parseGenerate(args: JSONObject): GenerateRequest {
         val prompt = args.optString("prompt").trim()
-        if (prompt.isBlank()) throw IllegalArgumentException("缺少 prompt")
+        // v0.3.22（真机报告二轮 Bug3）：prompt 允许为空——当工作流里已经写好文本时，
+        // 不该强制要求 prompt。空 prompt + 有 workflow 是合法组合（prompt 作为 fallback）。
+        val hasWorkflow = args.optString("workflow_json").trim().isNotBlank() ||
+            args.optString("workflow").trim().isNotBlank()
+        if (prompt.isBlank() && !hasWorkflow) {
+            throw IllegalArgumentException("缺少 prompt（工作流里也没有文本节点可回退时，必须传 prompt）")
+        }
         // count 夹在 1..8：批量出图会让同步等待成倍拉长，而上限过低又没意义。
         val count = args.optInt("count", 1).coerceIn(1, 8)
         return GenerateRequest(
@@ -405,6 +422,12 @@ internal class McpToolRegistry(
             lora = args.optString("lora").trim().takeIf { it.isNotBlank() },
             count = count,
             params = parseParams(args),
+            // v0.3.22：prompt_override 默认 false（不覆盖工作流文本）。
+            promptOverride = when (val raw = args.opt("prompt_override")) {
+                null -> false
+                is Boolean -> raw
+                else -> raw.toString().equals("true", ignoreCase = true)
+            },
         )
     }
 
@@ -469,6 +492,9 @@ internal class McpToolRegistry(
             val arr = JSONArray()
             for (media in outcome.media) {
                 val fileId = files.register(media.file, media.extension, media.contentType)
+                // v0.3.22（二轮 Bug2）：记住 job+filename 映射，下次同 job 查状态直接复用，
+                // URL 稳定不变号。
+                files.rememberKey("job:${outcome.jobId}:${media.filename}", fileId)
                 arr.put(
                     JSONObject()
                         .put("filename", media.filename)
@@ -560,7 +586,8 @@ internal class McpToolRegistry(
                         "返回的图片以 URL 给出，需自行下载后查看。",
                     schema(
                         JSONObject()
-                            .put("prompt", JSONObject().put("type", "string").put("description", "正向提示词"))
+                            .put("prompt", JSONObject().put("type", "string")
+                                .put("description", "正向提示词。当工作流里文本节点已有内容且 prompt_override=false（默认）时，此参数会被忽略，保留工作流原文"))
                             .put("negative", JSONObject().put("type", "string").put("description", "负向提示词（可选）"))
                             .put("workflow", JSONObject().put("type", "string").put("description", "工作流路径（可选，见 list_workflows）"))
                             .put(
@@ -574,12 +601,16 @@ internal class McpToolRegistry(
                             .put("count", JSONObject().put("type", "integer").put("description", "出图张数，1-8，默认 1"))
                             .put("wait", JSONObject().put("type", "boolean").put("description", "是否同步等待完成，默认 false"))
                             .put(
+                                "prompt_override",
+                                JSONObject().put("type", "boolean")
+                                    .put("description", "是否强制用 prompt 覆盖工作流里的文本节点。默认 false（不覆盖，保留原文）"),
+                            )
+                            .put(
                                 "params",
                                 JSONObject()
                                     .put("type", "object")
                                     .put("description", "按 field key 注入任意参数（steps/cfg/sampler/seed/尺寸等）。先用 describe_workflow 拿到 key"),
                             ),
-                        required = JSONArray().put("prompt"),
                     ),
                 )
                 putTool(
@@ -678,7 +709,8 @@ internal class McpToolRegistry(
                     "返回的图片以 URL 给出，需自行下载后查看。",
                 schema(
                     JSONObject()
-                        .put("prompt", JSONObject().put("type", "string").put("description", "正向提示词"))
+                        .put("prompt", JSONObject().put("type", "string")
+                            .put("description", "正向提示词。当工作流里文本节点已有内容且 prompt_override=false（默认）时，此参数会被忽略，保留工作流原文"))
                         .put("negative", JSONObject().put("type", "string").put("description", "负向提示词（可选）"))
                         .put("workflow", JSONObject().put("type", "string").put("description", "工作流路径（可选，见 list_workflows）"))
                         .put(
@@ -692,12 +724,16 @@ internal class McpToolRegistry(
                         .put("count", JSONObject().put("type", "integer").put("description", "出图张数，1-8，默认 1"))
                         .put("wait", JSONObject().put("type", "boolean").put("description", "是否同步等待完成，默认 false"))
                         .put(
+                            "prompt_override",
+                            JSONObject().put("type", "boolean")
+                                .put("description", "是否强制用 prompt 覆盖工作流里的文本节点。默认 false（不覆盖，保留原文）"),
+                        )
+                        .put(
                             "params",
                             JSONObject()
                                 .put("type", "object")
                                 .put("description", "按 field key 注入任意参数（steps/cfg/sampler/seed/尺寸等）。先用 describe_workflow 拿到 key"),
                         ),
-                    required = JSONArray().put("prompt"),
                 ),
             ),
         )

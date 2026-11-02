@@ -1,3 +1,37 @@
+# v0.3.22 — 二轮报告修复 + moss 兼容 + prompt 覆盖保护
+
+> 二轮实测报告 8 个新 Bug，修 6 个；moss image 的 UNETLoader 字段名兼容。
+
+## P0：prompt 覆盖保护（最危险）
+
+新增 `prompt_override` 参数，默认 **false**：
+- 工作流里文本节点非空时**保留原文**，prompt 只当 fallback
+- 想覆盖需显式传 `prompt_override=true`
+- `prompt` 允许为空（当工作流已有文本时）
+
+修复了「15KB layout JSON 被 9 字节 prompt 静默覆盖」的事故。
+
+## P1：图片 URL 稳定化 + TTL 延长
+
+- 同一 job_id 反复查状态不再重新下载，URL 稳定不变号
+- TTL 从 1 小时延长到 24 小时
+
+## P2
+
+- 预热提示：改为「先调 wait_for_comfy」，不再误导去折腾 App
+- heredoc 提前拒绝 + base64 规避提示
+
+## moss 兼容
+
+`checkpoint` 注入按节点类型选字段：UNETLoader → unet_name，CheckpointLoaderSimple → ckpt_name。
+
+## 边界（如实说）
+
+- Bug7（gpu_status 档位读不到）与 Bug8（终端改名）未修：边缘，需真机确认平台返回结构。
+- prompt_override 默认 false 是行为变更，老脚本若依赖覆盖要显式传 true。
+
+---
+
 # v0.3.21 — 按电脑 agent 实测 Bug 报告修 11 项
 
 > 测试对象：局域网 MCP，后端百度 AI Studio。报告 11 项，逐条核实全部属实并修复。

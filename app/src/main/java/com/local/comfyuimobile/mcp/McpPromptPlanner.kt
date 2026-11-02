@@ -148,10 +148,26 @@ internal object McpPromptPlanner {
                     "请确认导出的是 API 格式且包含提示词节点",
             )
         }
-        if (!writeText(prompt, positiveId, "text", request.prompt)) {
-            return Result.Failure("无法写入正向提示词：节点 $positiveId 没有 text 输入")
+        // v0.3.22（真机报告二轮 Bug1/Bug3）：prompt_override=false 时，
+        // 若工作流里文本节点**已有非空内容**，保留原文（prompt 仅当原文为空才写）。
+        // 默认不再静默覆盖——那会吞掉 layout JSON 这类长文本，出图内容全错还不报错。
+        val existingText = prompt.optJSONObject(positiveId)
+            ?.optJSONObject("inputs")
+            ?.optString("text")
+            .orEmpty()
+        val shouldWritePrompt = request.prompt.isNotBlank() &&
+            (request.promptOverride || existingText.isBlank())
+        if (shouldWritePrompt) {
+            if (!writeText(prompt, positiveId, "text", request.prompt)) {
+                return Result.Failure("无法写入正向提示词：节点 $positiveId 没有 text 输入")
+            }
+            applied += "prompt"
         }
-        applied += "prompt"
+        // 覆盖被跳过时要告诉调用方：否则 AI 以为 prompt 生效了，实际用的是工作流原文。
+        val promptSkipped = request.prompt.isNotBlank() && !shouldWritePrompt
+        if (promptSkipped) {
+            applied += "prompt（保留工作流原文，未覆盖；要覆盖传 prompt_override=true）"
+        }
 
         // 负向：优先采样器的 negative 连线；没有就跳过（不是所有工作流都有负向）。
         if (request.negative.isNotBlank()) {
@@ -164,10 +180,17 @@ internal object McpPromptPlanner {
 
         // 2. 模型：只在显式指定时改，避免把用户精心挑的模型换掉。
         request.checkpoint?.let { name ->
-            val id = parsed.nodes.firstOrNull { it.classType in CHECKPOINT_TYPES }?.id
+            val loaderNode = parsed.nodes.firstOrNull { it.classType in CHECKPOINT_TYPES }
                 ?: return Result.Failure("工作流里没有模型加载节点，无法指定 checkpoint")
-            if (!writeText(prompt, id, "ckpt_name", name)) {
-                return Result.Failure("无法写入模型名：节点 $id 没有 ckpt_name 输入")
+            // v0.3.22（moss 兼容）：UNETLoader 的字段是 unet_name，不是 ckpt_name。
+            // moss image 用 UNETLoader（unet_name），传统 SD 用 CheckpointLoaderSimple（ckpt_name），
+            // 写错字段名会静默失败（ComfyUI 忽略未知字段，模型没换掉还不报错）。
+            val fieldName = when (loaderNode.classType) {
+                "UNETLoader" -> "unet_name"
+                else -> "ckpt_name"
+            }
+            if (!writeText(prompt, loaderNode.id, fieldName, name)) {
+                return Result.Failure("无法写入模型名：节点 ${loaderNode.id} (${loaderNode.classType}) 没有 $fieldName 输入")
             }
             applied += "checkpoint"
         }

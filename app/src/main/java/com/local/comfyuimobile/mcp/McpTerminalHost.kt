@@ -115,6 +115,10 @@ internal class McpTerminalHost(
         if (cmd.isBlank()) throw IllegalArgumentException("命令为空。")
 
         safetyCheck(cmd)
+        // v0.3.22（二轮 Bug4）：heredoc 会把终端卡在续行提示符（`>`）——
+        // 命令被 `{ ... }` 包裹后，heredoc 正文的换行语义丢失，结束符永远不到。
+        // 提前拒绝并给 base64 规避方案，而不是等 30 秒超时再让 AI 手动中断。
+        rejectHeredoc(cmd)
         // 命令留痕（清单 §八）：AI 完全控制终端后，必须能事后追溯"跑过什么"。
         // 只记命令与终端名，不记输出（输出可能很长，且已在缓冲区里）。
         AppLogger.info(
@@ -246,6 +250,23 @@ internal class McpTerminalHost(
                     "确认真的不需要了再自己清空 ~/.trash。（只删无关紧要的临时目录不受此限。）",
             )
         }
+    }
+
+    /**
+     * 检测 heredoc（v0.3.22，二轮 Bug4）。
+     *
+     * heredoc 命令（`python3 - <<'PY' ... PY`）在被 `{ ... }` 包裹后，
+     * 正文的换行语义丢失，shell 会停在 `>` 续行提示符等结束符——永远等不到，
+     * 只能 30 秒超时再手动中断。提前拒绝并给 base64 规避方案。
+     */
+    private fun rejectHeredoc(cmd: String) {
+        if (!cmd.contains("<<")) return
+        AppLogger.warn("MCP 终端拒绝 heredoc 命令：${cmd.take(200)}")
+        throw IllegalStateException(
+            "已拒绝：这条命令用了 heredoc（`<<`），在 MCP 终端里会卡在续行提示符等不到结束。\n" +
+                "请改用 base64 传脚本（一条命令、无引号无换行问题）：\n" +
+                "  echo <base64> | base64 -d > /tmp/s.py && python3 /tmp/s.py",
+        )
     }
 
     /**
