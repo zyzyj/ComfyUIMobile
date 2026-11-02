@@ -303,6 +303,23 @@ class AiStudioKernelClient {
     private suspend fun enterNotebook(account: AiStudioAccount, projectId: String): String =
         gatewayCall(account, "进入 notebook") { acct -> enterNotebookOnce(acct, projectId) }
 
+    /**
+     * 保活：向平台报「项目仍在被使用」（v0.3.24）。
+     *
+     * 云端 GPU 项目在**无操作约 5 分钟**后会被平台闲置回收（真机日志 19:15:41 终端
+     * 全部断开 → 19:39:56 项目被判停止）。而 App 侧的前台服务只能保进程不死，
+     * 保不住云端项目。必须周期性调 enterNotebook——这是平台判定"项目在用"的关键动作
+     * （浏览器进 notebook 页就是它）。
+     *
+     * 失败静默：保活是尽力而为，一次失败（风控/网络抖动）不该打断正在跑的出图。
+     * 连续多次失败才记警告日志。
+     */
+    suspend fun keepAlive(account: AiStudioAccount, projectId: String): Boolean =
+        runCatching { enterNotebook(account, projectId) }.onFailure { error ->
+            if (error is CancellationException) throw error
+            AppLogger.warn("项目保活 enterNotebook 失败（不影响出图）：${error.message.orEmpty().take(120)}")
+        }.isSuccess
+
     private fun enterNotebookOnce(account: AiStudioAccount, projectId: String): String {
         val body = AiStudioProtocol.formEncode(mapOf("projectId" to projectId))
         val request = Request.Builder()

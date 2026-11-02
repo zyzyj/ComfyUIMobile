@@ -29,6 +29,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -62,6 +63,18 @@ class McpServerService : Service() {
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var manager: McpServerManager? = null
+
+    /**
+     * 项目保活协程（v0.3.24）。
+     *
+     * 云端 GPU 项目无操作约 5 分钟被平台闲置回收（真机日志 19:15:41 终端全断开 →
+     * 19:39:56 项目被判停止），而 App 前台服务只能保进程、保不住云端项目。
+     * 这个协程周期向运行中的项目发 enterNotebook 报活，阻止平台闲置回收。
+     */
+    private var keepAliveJob: kotlinx.coroutines.Job? = null
+
+    /** 保活用的桥接层（startServer 里创建，stopServer 里置空）。 */
+    @Volatile private var keepAliveBridge: AiStudioBridge? = null
 
     /**
      * 息屏保活锁（v0.3.0，清单 P0-1）。
@@ -285,6 +298,9 @@ class McpServerService : Service() {
         // 否则用户关了 MCP 仍在白白耗电。
         holdBackgroundLocks()
         observePreferences(created, bound)
+        // v0.3.24：启动项目保活——周期向运行中的云端项目发 enterNotebook 报活，
+        // 防止平台 5 分钟无操作闲置回收（真机日志 19:15:41 终端断开 → 19:39:56 项目停止）。
+        startProjectKeepAlive(aiStudioBridge)
     }
 
     /**
@@ -424,9 +440,40 @@ class McpServerService : Service() {
      */
     @Volatile private var lastStopReason: StopReason? = null
 
+    /**
+     * 启动项目保活协程（v0.3.24）。
+     *
+     * 每隔 [PROJECT_KEEPALIVE_INTERVAL_MILLIS]（2 分钟）向运行中的云端项目发一次
+     * enterNotebook 报活。平台闲置回收阈值约 5 分钟，2 分钟留足余量、又不至于
+     * 太频繁触发风控。保活失败静默（只记日志），不打断正在跑的出图。
+     */
+    private fun startProjectKeepAlive(bridge: AiStudioBridge) {
+        stopProjectKeepAlive()
+        keepAliveBridge = bridge
+        keepAliveJob = scope.launch {
+            while (true) {
+                delay(PROJECT_KEEPALIVE_INTERVAL_MILLIS)
+                val current = keepAliveBridge ?: break
+                val ok = runCatching { current.keepAliveRunningProjects() }
+                    .onFailure { AppLogger.warn("项目保活失败：${it.message.orEmpty().take(120)}") }
+                    .getOrDefault(0)
+                if (ok > 0) {
+                    AppLogger.info("项目保活：已向 $ok 个运行中项目报活")
+                }
+            }
+        }
+    }
+
+    private fun stopProjectKeepAlive() {
+        keepAliveJob?.cancel()
+        keepAliveJob = null
+        keepAliveBridge = null
+    }
+
     private fun stopServer(reason: StopReason = StopReason.USER) {
         runCatching { manager?.stop() }
         manager = null
+        stopProjectKeepAlive()
         McpServiceState.markStopped()
         // 只有「用户主动关 / 紧急停止」才改开关。其余都是系统或内部行为，
         // 不代表用户意愿——写成 false 会悄悄关掉用户的开关，并（见上）形成自锁。
@@ -448,6 +495,7 @@ class McpServerService : Service() {
     override fun onDestroy() {
         runCatching { manager?.stop() }
         manager = null
+        stopProjectKeepAlive()
         McpServiceState.markStopped()
         // 锁必须在 onDestroy 释放：stopServer 只覆盖"用户主动关"，
         // 系统回收服务（swipe/低内存）走的是 onDestroy。漏了就一直持有到进程死。
@@ -563,6 +611,14 @@ class McpServerService : Service() {
          */
         const val ACTION_RESTART = "com.local.comfyuimobile.mcp.RESTART"
         const val EXTRA_TOKEN = "mcp_token"
+
+        /**
+         * 项目保活间隔（v0.3.24）：2 分钟。
+         *
+         * 平台闲置回收阈值约 5 分钟（真机日志 19:15 终端断开 → 19:39 项目停止），
+         * 2 分钟留足余量；再密就接近"高频访问"（风控风险）。
+         */
+        private const val PROJECT_KEEPALIVE_INTERVAL_MILLIS = 2 * 60 * 1000L
 
         /**
          * v0.3.9 删除了这里的 `isRunning()`。

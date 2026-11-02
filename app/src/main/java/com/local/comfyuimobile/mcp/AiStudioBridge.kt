@@ -216,6 +216,31 @@ internal class AiStudioBridge(
         return account to running
     }
 
+    /**
+     * 保活：向平台报「运行中的项目仍在被使用」（v0.3.24）。
+     *
+     * 云端 GPU 项目无操作约 5 分钟被平台闲置回收；App 前台服务只能保进程、
+     * 保不住云端项目。本方法由 [com.local.comfyuimobile.service.McpServerService]
+     * 周期调用，对每个运行中的项目发 enterNotebook 报活。
+     *
+     * @return 成功保活的项目数（0 = 没有运行中的项目，或保活失败）。
+     */
+    suspend fun keepAliveRunningProjects(): Int {
+        val account = activeAccount() ?: return 0
+        val page = runCatching { client.listProjects(account, page = 1, pageSize = 30) }
+            .getOrNull() ?: return 0
+        val running = page.projects.filter { it.running }
+        if (running.isEmpty()) return 0
+        var ok = 0
+        for (project in running) {
+            val kernel = boundKernel
+            if (kernel != null && kernel.keepAlive(account, project.projectId)) {
+                ok++
+            }
+        }
+        return ok
+    }
+
     /** 列出项目，返回给模型的文本（**不含**任何凭据）。 */
     suspend fun listProjects(): String {
         val account = requireAccount()
