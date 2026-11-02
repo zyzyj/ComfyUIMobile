@@ -464,6 +464,7 @@ internal class ComfyMcpHost(
         }
         val deadline = System.currentTimeMillis() + timeoutSeconds * 1000L
         var attempts = 0
+        var backoffIndex = 0
         val startedAt = System.currentTimeMillis()
         while (true) {
             attempts++
@@ -485,7 +486,10 @@ internal class ComfyMcpHost(
                     "再调本工具；命令还在跑就用 terminal_read 看日志。\n" +
                     "其他可能：登录态失效（回 App 重新登录）。"
             }
-            delay(WAIT_FOR_COMFY_POLL_MILLIS)
+            // v0.3.23：退避探测（2s→4s→8s→10s）。ComfyUI 冷启动动辄几十秒，
+            // 2 秒密集探测只会白烧平台请求（封 IP 风险），退避后最多多等一个间隔。
+            delay(mcpPollBackoffMillis(backoffIndex))
+            backoffIndex++
         }
     }
 
@@ -629,43 +633,47 @@ internal class ComfyMcpHost(
      */
     override suspend fun jobStatusBatch(ids: List<String>, waitSeconds: Int): String {
         requireConnected()
+        val targetIds = ids.take(MAX_BATCH_IDS).map { it.trim() }.filter { it.isNotBlank() }.distinct()
         // v0.3.2：waitSeconds > 0 时先等一轮（任一任务到终态就继续），再统一查。
         // 批量等待的结束条件是「全部到终态或超时」——逐个等会放大耗时。
         if (waitSeconds > 0) {
             val deadline = System.currentTimeMillis() + waitSeconds.coerceIn(0, MAX_WAIT_SECONDS) * 1000L
             // v0.3.8（P1-2）：与 finishOrRunning 同一套早退——连续读不到就别干等。
             var unreachableStreak = 0
+            var backoffIndex = 0
             while (System.currentTimeMillis() < deadline) {
-                delay(WAIT_POLL_MILLIS)
+                // v0.3.23：退避轮询（2s→4s→8s→10s）——批量等待场景更该退避，
+                // 因为任务通常几十秒起，密集轮询只会烧平台请求。
+                delay(mcpPollBackoffMillis(backoffIndex))
+                backoffIndex++
                 val queue = runCatching { client.queue() }.getOrNull()
-                val anyHistory = ids.take(MAX_BATCH_IDS).filter { it.isNotBlank() }
-                    .any { runCatching { client.history(it) }.getOrNull() != null }
-                unreachableStreak = if (queue == null && !anyHistory) unreachableStreak + 1 else 0
+                // v0.3.23：一次拉全量 history 共享快照，而不是对每个 id 各发一次
+                // history(id)——N 个任务 × M 轮 = N×M 次请求，改为每轮 1 次全量。
+                val historyAll = runCatching { client.history() }.getOrNull()
+                unreachableStreak = if (queue == null && historyAll == null) unreachableStreak + 1 else 0
                 if (unreachableStreak >= UNREACHABLE_TOLERANCE) {
                     return "读不到任何任务状态（连续 $unreachableStreak 次队列与历史都请求失败）：" +
                         "大概率是 ComfyUI 未启动或网络断了。先用 wait_for_comfy 确认环境再重试。"
                 }
-                val allSettled = ids.take(MAX_BATCH_IDS).filter { it.isNotBlank() }.all { id ->
-                    val history = runCatching { client.history(id) }.getOrNull()
-                    val hasOutputs = history?.optJSONObject(id)
-                        ?.optJSONObject("outputs")?.keys()?.hasNext() == true
-                    val verdict = McpJobState.resolve(id, queue, history, hasOutputs)
+                val allSettled = targetIds.all { id ->
+                    val entry = historyAll?.optJSONObject(id)
+                    val hasOutputs = entry?.optJSONObject("outputs")?.keys()?.hasNext() == true
+                    val verdict = McpJobState.resolve(id, queue, historyAll, hasOutputs)
                     verdict.phase == McpJobState.Phase.DONE || verdict.phase == McpJobState.Phase.FAILED
                 }
                 if (allSettled) break
             }
         }
         val queue = runCatching { client.queue() }.getOrNull()
+        // v0.3.23：最终渲染也共享一份全量 history 快照，不再逐 id 单查。
+        val historyAll = runCatching { client.history() }.getOrNull()
         val lines = mutableListOf<String>()
         var anySettled = false
         var anyUnsettled = false
-        for (id in ids.take(MAX_BATCH_IDS)) {
-            val trimmed = id.trim()
-            if (trimmed.isBlank()) continue
-            val history = runCatching { client.history(trimmed) }.getOrNull()
-            val hasOutputs = history?.optJSONObject(trimmed)
-                ?.optJSONObject("outputs")?.keys()?.hasNext() == true
-            val verdict = McpJobState.resolve(trimmed, queue, history, hasOutputs)
+        for (id in targetIds) {
+            val entry = historyAll?.optJSONObject(id)
+            val hasOutputs = entry?.optJSONObject("outputs")?.keys()?.hasNext() == true
+            val verdict = McpJobState.resolve(id, queue, historyAll, hasOutputs)
             // 终态：done / failed。用来决定"整批都结束了"——凭 phase 判断，
             // 不去匹配展示文案（那种写法一改文案就静默失效）。
             when (verdict.phase) {
@@ -673,7 +681,7 @@ internal class ComfyMcpHost(
                 else -> anyUnsettled = true
             }
             val detail = StringBuilder()
-                .append(trimmed.take(8))
+                .append(id.take(8))
                 .append("  ")
                 .append(verdict.phase.label)
             verdict.position?.let { detail.append(" · 位置 $it") }
@@ -722,6 +730,13 @@ internal class ComfyMcpHost(
         // 还没进队列、history 里也没它，resolve 同样返回 UNKNOWN——那是**正常**的。
         // 真正的"环境没了"是 queue() 与 history() **两个请求都失败**。
         var unreachableStreak = 0
+        // v0.3.23（性能）：轮询指数退避——2s→4s→8s→10s 封顶。
+        //
+        // 为什么必须做：旧实现固定 2 秒轮询，每轮发 2 个请求（queue+history），
+        // 102 秒的任务要 51 轮 × 2 = 100+ 次平台请求——既是"慢"的根源，
+        // 也是"短时间频繁访问被平台封 IP"的风险点。退避后 102 秒只约 15 轮，
+        // 请求数砍 70%，而最坏只多等一次退避间隔（任务本身要 100 秒，多等 10 秒可忽略）。
+        var backoffIndex = 0
         while (true) {
             // 统一判据：先队列后历史，两处信号源必须走同一个 resolve，
             // 否则"排队中"会被 history 缺失误判成运行中/失败。
@@ -783,7 +798,9 @@ internal class ComfyMcpHost(
                     }
                 }
             }
-            delay(POLL_INTERVAL_MILLIS)
+            // 退避：每轮间隔递增，封顶 POLL_MAX_INTERVAL_MILLIS。
+            delay(mcpPollBackoffMillis(backoffIndex))
+            backoffIndex++
         }
     }
 
@@ -871,8 +888,19 @@ internal class ComfyMcpHost(
     }
 
     private companion object {
-        /** 轮询间隔。ComfyUI 单图几十秒，2 秒粒度足够且不会把服务器问烦。 */
+        /**
+         * 轮询起步间隔（v0.3.23 前固定 2 秒，现在只作退避序列的起点）。
+         * 首次轮询仍要快——任务可能秒级完成（缓存命中 / 短任务）。
+         */
         const val POLL_INTERVAL_MILLIS = 2_000L
+
+        /**
+         * 轮询退避封顶（v0.3.23）：10 秒。
+         *
+         * 退避序列 2s→4s→8s→10s→10s…。102 秒任务约 15 轮（旧 51 轮），
+         * 请求数砍 70%，最坏多等 10 秒。10 秒是"不封 IP"与"不牺牲快"的平衡点。
+         */
+        const val POLL_MAX_INTERVAL_MILLIS = 10_000L
 
         /** 单次取回的最大图片数（批量出图时不让内存爆掉）。 */
         const val MAX_IMAGES = 8
@@ -886,7 +914,7 @@ internal class ComfyMcpHost(
          */
         const val MAX_WAIT_SECONDS = 300
 
-        /** 批量等待时的轮询间隔。 */
+        /** 批量等待时的轮询间隔（v0.3.23 起用退避，此常量仅作起步间隔）。 */
         const val WAIT_POLL_MILLIS = 2_000L
 
         /** describe_workflow 一次最多列多少字段（太长会挤爆模型上下文）。 */
@@ -912,4 +940,16 @@ internal class ComfyMcpHost(
         /** wait_for_comfy 的探测间隔：2 秒足够密，又不会把服务器问烦。 */
         const val WAIT_FOR_COMFY_POLL_MILLIS = 2_000L
     }
+}
+
+/**
+ * 轮询退避间隔（v0.3.23）：2s、4s、8s、10s、10s…
+ *
+ * 顶层函数便于单测；第 0 次返回起步间隔，之后每次翻倍，封顶 10 秒。
+ * 与 [ComfyMcpHost] 内的轮询循环共用同一套序列。
+ */
+internal fun mcpPollBackoffMillis(index: Int): Long {
+    if (index < 0) return 2_000L
+    val doubled = 2_000L shl index.coerceAtMost(3)
+    return doubled.coerceAtMost(10_000L)
 }

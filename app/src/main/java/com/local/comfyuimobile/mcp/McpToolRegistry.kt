@@ -476,7 +476,13 @@ internal class McpToolRegistry(
                 .put("elapsed_sec", outcome.elapsedSec)
                 .apply { outcome.position?.let { put("position", it) } }
                 .put("message", outcome.message)
-                .put("hint", "排队中（第 ${outcome.position ?: "?"} 位）。可传 wait_seconds（如 60）一次等到终态，不要短间隔反复查")
+                .put(
+                    "hint",
+                    // v0.3.23：明确"多久查一次"，避免 AI 自己写 while 循环每 2 秒查——
+                    // 那会烧平台请求、可能封 IP、还费 token。
+                    "排队中（第 ${outcome.position ?: "?"} 位）。**不要自己写循环密集轮询**：" +
+                        "用 job_status(job_id, wait_seconds=120) 一次等到终态，省往返省 token。",
+                )
                 .toString(),
         )
         is GenerateOutcome.Running -> ToolResult(
@@ -485,7 +491,12 @@ internal class McpToolRegistry(
                 .put("job_id", outcome.jobId)
                 .put("elapsed_sec", outcome.elapsedSec)
                 .put("message", outcome.message)
-                .put("hint", "运行中。可传 wait_seconds（如 60）一次等到终态，不要短间隔反复查")
+                .put(
+                    "hint",
+                    // v0.3.23：同上——显式引导用 wait_seconds，别自己轮询。
+                    "运行中。**不要自己写循环密集轮询**：用 job_status(job_id, wait_seconds=120) " +
+                        "一次等到终态，省往返省 token；若仍 running 就再等一次。",
+                )
                 .toString(),
         )
         is GenerateOutcome.Done -> {

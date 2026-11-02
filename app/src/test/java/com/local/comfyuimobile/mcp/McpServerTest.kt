@@ -611,6 +611,32 @@ class McpServerTest {
         assertEquals("count 必须夹到 1..8", 8, request.count)
     }
 
+    // ===== 轮询退避（v0.3.23）=====
+
+    @Test
+    fun pollBackoffSequenceIs2s4s8s10s() {
+        // 退避序列：2s → 4s → 8s → 10s → 10s（封顶）。
+        // 锁住它，防止将来有人把封顶改回 2 秒密集轮询（那会烧平台请求、封 IP 风险）。
+        assertEquals(2_000L, mcpPollBackoffMillis(0))
+        assertEquals(4_000L, mcpPollBackoffMillis(1))
+        assertEquals(8_000L, mcpPollBackoffMillis(2))
+        assertEquals(10_000L, mcpPollBackoffMillis(3))
+        assertEquals(10_000L, mcpPollBackoffMillis(4))
+        assertEquals(10_000L, mcpPollBackoffMillis(100))
+    }
+
+    @Test
+    fun pollBackoffNeverExceedsCap() {
+        // 任何 index（包括极值）都不超过 10 秒封顶。
+        for (index in 0..1000) {
+            assertTrue(
+                "退避间隔不能超封顶，index=$index",
+                mcpPollBackoffMillis(index) <= 10_000L,
+            )
+            assertTrue("退避间隔必须为正", mcpPollBackoffMillis(index) > 0L)
+        }
+    }
+
     private companion object {
         const val TOKEN = "test-token-123"
 
