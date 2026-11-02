@@ -120,7 +120,10 @@ internal object McpHttp {
     ): ByteArray = response(
         status,
         reasonFor(status),
-        "application/json",
+        // v0.3.21（真机报告 Bug9）：明确 charset=utf-8，否则部分客户端在
+        // Content-Type 缺 charset 时会把超长 JSON（如 instructions）按 Latin-1 解码，
+        // 产生 mojibake。tools/list 短、instructions 长，恰好触发差异。
+        "application/json; charset=utf-8",
         body.toByteArray(Charsets.UTF_8),
         extraHeaders,
     )

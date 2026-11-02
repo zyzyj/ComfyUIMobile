@@ -79,38 +79,58 @@ internal class ComfyMcpHost(
     override suspend fun listModels(type: String?): String {
         requireConnected()
         val info = client.objectInfo()
-        val wanted = type?.lowercase()
+        val wanted = type?.lowercase()?.trim()
         val lines = mutableListOf<String>()
-        if (wanted == null || wanted == "checkpoint") {
-            val names = readNameList(info, "CheckpointLoaderSimple", "ckpt_name")
+        // v0.3.21：type 入参按 ComfyUI 节点 input 映射，不再只认 checkpoint/lora。
+        // 真机报告 Bug2：传 unet/vae/clip 等返回与 loras 完全一致——因为旧实现
+        // 只匹配 checkpoint 和 lora，其它全部落到 else 分支走默认逻辑。
+        val aliases = mapOf(
+            "checkpoint" to ModelRef("CheckpointLoaderSimple", "ckpt_name", "checkpoints"),
+            "checkpoints" to ModelRef("CheckpointLoaderSimple", "ckpt_name", "checkpoints"),
+            "lora" to ModelRef("LoraLoader", "lora_name", "loras"),
+            "loras" to ModelRef("LoraLoader", "lora_name", "loras"),
+            "unet" to ModelRef("UNETLoader", "unet_name", "unet"),
+            "diffusion_models" to ModelRef("UNETLoader", "unet_name", "unet"),
+            "diffusion_model" to ModelRef("UNETLoader", "unet_name", "unet"),
+            "vae" to ModelRef("VAELoader", "vae_name", "vae"),
+            "clip" to ModelRef("CLIPLoader", "clip_name", "clip"),
+        )
+        if (wanted != null && wanted in aliases) {
+            val ref = aliases.getValue(wanted)
+            val names = readNameList(info, ref.nodeType, ref.inputName)
             if (names.isNotEmpty()) {
-                lines += "checkpoints:"
+                lines += "${ref.label}:"
                 lines += names.map { "  $it" }
             }
-        }
-        if (wanted == null || wanted == "lora") {
-            val names = readNameList(info, "LoraLoader", "lora_name")
-            if (names.isNotEmpty()) {
-                lines += "loras:"
-                lines += names.map { "  $it" }
+        } else {
+            // 未指定或未知 type：全部合并输出（checkpoint / lora / unet / vae / clip）。
+            for (ref in listOf(
+                ModelRef("CheckpointLoaderSimple", "ckpt_name", "checkpoints"),
+                ModelRef("LoraLoader", "lora_name", "loras"),
+                ModelRef("UNETLoader", "unet_name", "unet"),
+                ModelRef("VAELoader", "vae_name", "vae"),
+                ModelRef("CLIPLoader", "clip_name", "clip"),
+            )) {
+                val names = readNameList(info, ref.nodeType, ref.inputName)
+                if (names.isNotEmpty()) {
+                    lines += "${ref.label}:"
+                    lines += names.map { "  $it" }
+                }
             }
         }
         if (lines.isEmpty()) {
-            val label = when (wanted) {
-                "checkpoint" -> "checkpoint"
-                "lora" -> "LoRA"
-                else -> "模型"
-            }
-            return "服务器上没有可用的 $label（或该节点类型未被安装）。"
+            val label = wanted ?: "模型"
+            return "服务器上没有可用的 $label（或对应节点类型未被安装）。"
         }
         // v0.2.99（计划书 2.1 ③）：下载完模型/LoRA 后**必须重启 ComfyUI**，
         // 否则它不会重新扫目录、新文件不会出现在这份列表里。
-        // 实机最容易错的就是这一步：AI 会以为下载失败、或生成时报"找不到 LoRA"。
         return lines.joinToString("\n") +
             "\n提示：以上列表来自 ComfyUI 启动时扫描的结果。若刚下载过模型/LoRA 但这里没看到，" +
             "**需要重启 ComfyUI**（否则它不会重新扫目录）：在跑 ComfyUI 的那条终端上" +
             "先 terminal_interrupt 发 Ctrl+C，再重跑启动脚本，然后 wait_for_comfy。"
     }
+
+    private data class ModelRef(val nodeType: String, val inputName: String, val label: String)
 
     /**
      * 从 `/object_info` 里取某个节点某个输入的候选文件名。
@@ -148,7 +168,7 @@ internal class ComfyMcpHost(
                     "继续出图的两种做法：\n" +
                     "  1. 直接传 workflow_json 内联（需 API 格式，推荐）——用 validate_workflow 预检后再 generate\n" +
                     "  2. 传 workflow 路径（如果你知道服务器上确切的文件路径）\n" +
-                    "需要看服务器上有哪些工作流时，可用 terminal_exec 自己列目录。"
+                    "本平台不支持自动列出，请优先用 workflow_json 内联。"
             }
             .filter { !it.isDirectory && it.path.endsWith(".json", ignoreCase = true) }
         if (entries.isEmpty()) return "服务器上没有可用的工作流。"
@@ -183,10 +203,18 @@ internal class ComfyMcpHost(
                 ?.let { WorkflowSource(INLINE_WORKFLOW_PATH, raw, it) }
         }
         if (request.workflowJson != null && inline == null) {
+            // v0.3.21（真机报告 Bug11）：区分"JSON 本身坏了"和"不是 API 格式"，
+            // 并带具体解析错误（行列信息），而不是笼统说"不是合法 API 格式"。
+            val parseError = runCatching { JSONObject(request.workflowJson!!) }
+                .exceptionOrNull()?.message
+            val detail = if (parseError != null) {
+                "\nJSON 解析失败：$parseError"
+            } else {
+                "\nJSON 能解析，但不是 API 格式（{{节点id: {{class_type, inputs}}}} 结构）"
+            }
             return GenerateOutcome.Failed(
-                "传入的 workflow_json 不是合法的 API 格式工作流。" +
-                    "请确认它是 {{节点id: {{class_type, inputs}}}} 结构（ComfyUI 的 Export (API)），" +
-                    "或先用 validate_workflow 预检",
+                "传入的 workflow_json 无效。" + detail +
+                    "请确认它是 ComfyUI 的 Export (API) 导出的 JSON，且是 UTF-8 字符串（不是对象）",
             )
         }
         val source = inline ?: readApiWorkflow(request.workflow)
@@ -206,9 +234,19 @@ internal class ComfyMcpHost(
         // 静默忽略会让模型以为改了其实没改。
         val params = McpPromptPlanner.applyParams(JSONObject(planned.promptJson), request.params)
         if (params.unknownKeys.isNotEmpty()) {
+            // v0.3.21（真机报告 Bug6）：key 必须带「节点ID::字段名」前缀，
+            // 裸 key（如 width）会找不到。报错里直接给出可用 key 样例，
+            // 不再只甩一句"先用 describe_workflow"——那会陷入死循环。
+            val availableKeys = McpPromptPlanner.fields(JSONObject(planned.promptJson))
+                .map { it.key }
+                .take(20)
+            val sample = if (availableKeys.isNotEmpty()) {
+                "\n可用 key（形如 节点ID::字段名）：${availableKeys.joinToString(", ")}"
+            } else ""
             return GenerateOutcome.Failed(
                 "以下参数在工作流里找不到：${params.unknownKeys.joinToString(", ")}。" +
-                    "请先用 describe_workflow 查看可用的 key",
+                    "key 需写成「节点ID::字段名」形式，例如 19::steps、154::width。" +
+                    sample,
             )
         }
         val finalPrompt = params.promptJson
@@ -230,7 +268,17 @@ internal class ComfyMcpHost(
                 refreshAuthCookie = refreshCookie,
             )
         } catch (error: Exception) {
-            return GenerateOutcome.Failed("提交生成失败：${error.message}")
+            // v0.3.21（真机报告 Bug4）：PromptSubmissionException 里已经解析了
+            // node_errors（节点 id + 输入名 + 值域问题），必须透传给模型——
+            // 否则只有一句"请查看标红的部件"，MCP 场景没有 UI 可看。
+            val detail = if (error is com.local.comfyuimobile.network.PromptSubmissionException &&
+                error.nodeProblems.isNotEmpty()
+            ) {
+                "\n" + error.nodeProblems.entries.joinToString("\n") { (nodeId, problems) ->
+                    "  节点 $nodeId：${problems.joinToString("；")}"
+                }
+            } else ""
+            return GenerateOutcome.Failed("提交生成失败：${error.message}$detail")
         }
         // 入队成功后交给上层纳入跟踪（界面任务列表/通知进度）。失败只记日志：
         // 跟踪是锦上添花，不能因为它失败就让已经入队的任务在模型那边变成失败。
@@ -254,11 +302,12 @@ internal class ComfyMcpHost(
         }
         // 节点清单拿不到时不报错（catalog = null → 跳过节点存在性校验），
         // 否则网络抖动会被误报成"工作流有问题"。
-        val catalog = runCatching { client.objectInfo() }
-            .onFailure { AppLogger.warn("预检时读 /object_info 失败，跳过节点存在性校验", it) }
+        // v0.3.21：同时保留完整 object_info 用于 COMBO 值域校验（真机报告 Bug3）。
+        val objectInfo = runCatching { client.objectInfo() }
+            .onFailure { AppLogger.warn("预检时读 /object_info 失败，跳过节点存在性与值域校验", it) }
             .getOrNull()
-            ?.let { NodeAvailability.parseCatalog(it.toString()) }
-        val report = McpWorkflowValidator.validate(source.json, catalog)
+        val catalog = objectInfo?.let { NodeAvailability.parseCatalog(it.toString()) }
+        val report = McpWorkflowValidator.validate(source.json, catalog, objectInfo)
         AppLogger.info(
             "MCP 工作流预检：${source.path}，结果=${if (report.ok) "通过" else "${report.errors.size} 项错误"}",
         )
@@ -274,6 +323,15 @@ internal class ComfyMcpHost(
      */
     override suspend fun describeWorkflow(workflow: String?, workflowJson: String?): String {
         requireConnected()
+        // v0.3.21（真机报告 Bug11）：workflowJson 传了但 JSON 解析失败时，
+        // 明确报解析错误，而不是笼统说"没有可用工作流"（让人误以为参数没传）。
+        workflowJson?.takeIf { it.isNotBlank() }?.let { raw ->
+            if (runCatching { JSONObject(raw) }.isFailure) {
+                val err = runCatching { JSONObject(raw) }.exceptionOrNull()?.message
+                return "workflow_json 解析失败：${err ?: "未知错误"}。" +
+                    "请确认它是 UTF-8 字符串（不是对象），且是合法的 ComfyUI Export (API) JSON。"
+            }
+        }
         val source = resolveWorkflowSource(workflow, workflowJson)
             ?: return "当前没有可用的 API 格式工作流（可传 workflow_json 内联，或传 workflow 路径，" +
                 "或先在 App 里打开一个）"
@@ -539,13 +597,16 @@ internal class ComfyMcpHost(
         val max = (limit ?: DEFAULT_JOB_LIST_LIMIT).coerceIn(1, McpJobListFormatter.MAX_SHOWN)
 
         val queue = runCatching { client.queue() }.getOrNull()
+        // v0.3.21（真机报告 Bug7/Bug8）：改用**一次拉全量 history**，所有记录共享
+        // 同一份快照，避免逐条单查时反代行为不稳定导致"这条 done、那条查不到"的
+        // 自相矛盾。全量 history 对已完成任务的覆盖比单条查询稳定（反代更常缓存它）。
+        val historyAll = runCatching { client.history() }.getOrNull()
         val entries = mutableListOf<McpJobListFormatter.Entry>()
         for (record in ordered) {
             if (entries.size >= max) break
-            val history = runCatching { client.history(record.jobId) }.getOrNull()
-            val hasOutputs = history?.optJSONObject(record.jobId)
-                ?.optJSONObject("outputs")?.keys()?.hasNext() == true
-            val verdict = McpJobState.resolve(record.jobId, queue, history, hasOutputs)
+            val entry = historyAll?.optJSONObject(record.jobId)
+            val hasOutputs = entry?.optJSONObject("outputs")?.keys()?.hasNext() == true
+            val verdict = McpJobState.resolve(record.jobId, queue, historyAll, hasOutputs)
             val label = verdict.phase.label
             if (wanted != null && !label.equals(wanted, ignoreCase = true)) continue
             entries += McpJobListFormatter.Entry(record = record, stateLabel = label, hasImages = hasOutputs)
@@ -672,7 +733,14 @@ internal class ComfyMcpHost(
                 McpJobState.Phase.DONE -> {
                     val media = collectMedia(promptId, history ?: JSONObject())
                     if (media.isEmpty()) {
-                        return GenerateOutcome.Failed("任务 $promptId 已结束但没有取到图片")
+                        // v0.3.21：取不到图时**带上 /history 原始 JSON 的前缀**，
+                        // 否则"success 但无图"这种反代 /view 不通的坑，对端完全无从排查。
+                        val rawHistory = history?.optJSONObject(promptId)?.toString()
+                        val snippet = rawHistory?.take(1200)?.let { "\nhistory 原始：$it" }.orEmpty()
+                        return GenerateOutcome.Failed(
+                            "任务 $promptId 已完成但没有取到图片（/view 可能被反代阻断，或 outputs 结构异常）。" +
+                                snippet,
+                        )
                     }
                     return GenerateOutcome.Done(promptId, media)
                 }
@@ -685,9 +753,21 @@ internal class ComfyMcpHost(
                         return GenerateOutcome.Queued(promptId, elapsedSec, verdict.position, verdict.message)
                     }
                 }
-                McpJobState.Phase.RUNNING, McpJobState.Phase.UNKNOWN -> {
+                McpJobState.Phase.RUNNING -> {
                     if (System.currentTimeMillis() >= deadline) {
                         return GenerateOutcome.Running(promptId, elapsedSec, verdict.message)
+                    }
+                }
+                McpJobState.Phase.UNKNOWN -> {
+                    // v0.3.21（真机报告 Bug7）：UNKNOWN 不能套 Running 返回——
+                    // 否则 status=running 却带"查不到该任务"，自相矛盾。
+                    // 查不到就是查不到，如实报 unknown。
+                    if (System.currentTimeMillis() >= deadline) {
+                        return GenerateOutcome.Unreachable(
+                            promptId,
+                            elapsedSec,
+                            "队列与历史里都查不到该任务（可能已被清理或 job_id 有误）",
+                        )
                     }
                 }
             }
@@ -739,7 +819,15 @@ internal class ComfyMcpHost(
 
     private fun errorSummary(job: JSONObject?): String {
         val status = job?.optJSONObject("status") ?: return "无输出"
-        val messages = status.optJSONArray("messages") ?: return status.optString("status_str", "无输出")
+        val statusStr = status.optString("status_str", "无输出")
+        // v0.3.21：status_str 为 success/正常终态但 outputs 为空时，
+        // 把"success"当失败原因输出是误导（真机报告 Bug1）——改为明确说
+        // "任务成功但 outputs 为空"，并提示可能是反代截断了 /history 的 outputs。
+        if (statusStr.equals("success", ignoreCase = true)) {
+            return "任务在 ComfyUI 侧已成功（status=success），但 /history 未返回 outputs。" +
+                "通常是反代对 /history/{id} 做了截断或缓存，图片可能已生成但无法经 MCP 取回。"
+        }
+        val messages = status.optJSONArray("messages") ?: return statusStr
         val text = buildString {
             for (i in 0 until messages.length()) {
                 val pair = messages.optJSONArray(i) ?: continue
@@ -751,7 +839,7 @@ internal class ComfyMcpHost(
         // v0.2.97：这里是 Python 完整 traceback（几千字符），原样返回既费 token、
         // 又把真正有用的异常行淹没。摘要化到末尾几行（见 McpErrorSummary）。
         val summarized = McpErrorSummary.summarize(text)
-        return summarized.ifBlank { status.optString("status_str", "无输出") }
+        return summarized.ifBlank { statusStr }
     }
 
     private companion object {

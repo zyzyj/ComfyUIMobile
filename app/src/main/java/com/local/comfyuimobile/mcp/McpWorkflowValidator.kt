@@ -75,8 +75,14 @@ internal object McpWorkflowValidator {
      * @param prompt 已确认是 API 格式的工作流
      * @param catalog 服务器已注册的节点类型（[NodeAvailability.parseCatalog] 的结果）；
      *        null 表示这次没查到——此时跳过节点存在性校验，**不能**因此报错
+     * @param objectInfo 服务器 /object_info 完整 JSON（v0.3.21，用于 COMBO 值域校验）；
+     *        null 表示没查到，跳过值域校验
      */
-    fun validate(prompt: JSONObject, catalog: Set<String>?): Report {
+    fun validate(
+        prompt: JSONObject,
+        catalog: Set<String>?,
+        objectInfo: JSONObject? = null,
+    ): Report {
         val errors = mutableListOf<String>()
         val warnings = mutableListOf<String>()
 
@@ -97,12 +103,18 @@ internal object McpWorkflowValidator {
                 "请改用已安装的节点，或先在服务器上安装对应插件"
         }
 
+        // 1.5（v0.3.21，真机报告 Bug3）：COMBO 值域校验——模型名等字符串值
+        // 是否在服务器可选列表里。以前只做结构检查，模型名填错提交后必失败、
+        // 直接烧算力卡。现在对照 object_info 白名单。
+        if (objectInfo != null) {
+            val valueErrors = validateComboValues(prompt, parsed, objectInfo)
+            if (valueErrors.isNotEmpty()) {
+                errors += valueErrors.take(8)
+                if (valueErrors.size > 8) errors += "…还有 ${valueErrors.size - 8} 处值域问题"
+            }
+        }
+
         // 2. 连线引用了不存在的上游节点（手改 JSON 的头号错误）。
-        //
-        // 这里**不能**用 parsed.links——[ApiPromptParser.asLink] 会把"首元素不在
-        // 节点表里"的数组直接判为非连线（返回 null），于是它落入 widgetValues，
-        // 悬空引用在校验器里永远不可见。必须直接扫原始 JSON。
-        //（这个风险很实在：悬空引用会被当成字面量发给 ComfyUI，服务器侧才报错。）
         val knownIds = parsed.nodes.map { it.id }.toSet()
         val dangling = findDanglingLinks(prompt, knownIds)
         if (dangling.isNotEmpty()) {
@@ -122,5 +134,48 @@ internal object McpWorkflowValidator {
         }
 
         return Report(errors.isEmpty(), errors, warnings)
+    }
+
+    /**
+     * 校验 COMBO 型 input 的值是否在服务器可选列表里（v0.3.21）。
+     *
+     * 覆盖模型加载类节点：CheckpointLoaderSimple.ckpt_name、UNETLoader.unet_name、
+     * VAELoader.vae_name、CLIPLoader.clip_name、LoraLoader.lora_name 等。
+     */
+    private fun validateComboValues(
+        prompt: JSONObject,
+        parsed: com.local.comfyuimobile.data.ApiPromptParser.ParseResult,
+        objectInfo: JSONObject,
+    ): List<String> {
+        // 节点类型 → 需要校验的 COMBO 输入名（模型名最易填错，且错一次就烧卡）。
+        val targets = mapOf(
+            "CheckpointLoaderSimple" to listOf("ckpt_name"),
+            "UNETLoader" to listOf("unet_name", "weight_dtype"),
+            "VAELoader" to listOf("vae_name"),
+            "CLIPLoader" to listOf("clip_name", "type"),
+            "LoraLoader" to listOf("lora_name"),
+            "LoraLoaderModelOnly" to listOf("lora_name"),
+        )
+        val errors = mutableListOf<String>()
+        for (node in parsed.nodes) {
+            val inputsToCheck = targets[node.classType] ?: continue
+            val inputs = prompt.optJSONObject(node.id)?.optJSONObject("inputs") ?: continue
+            for (inputName in inputsToCheck) {
+                val current = inputs.opt(inputName) ?: continue
+                val currentStr = current.toString()
+                if (currentStr.isBlank()) continue
+                // comboOptions 需要完整 object_info + nodeType + inputName
+                val options = NodeAvailability.comboOptions(objectInfo, node.classType, inputName) ?: continue
+                // 值不在列表里才报；列表为空（罕见）不误报。
+                if (options.isEmpty()) continue
+                if (currentStr !in options) {
+                    val shown = options.take(8).joinToString(", ")
+                    val more = if (options.size > 8) " …共 ${options.size} 个" else ""
+                    errors += "节点 ${node.id} (${node.classType}).$inputName = \"$currentStr\" 不在可选列表：" +
+                        "$shown$more"
+                }
+            }
+        }
+        return errors
     }
 }

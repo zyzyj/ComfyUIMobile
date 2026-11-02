@@ -164,4 +164,36 @@ class McpWorkflowValidatorTest {
         assertFalse(report.ok)
         assertTrue("错误说明应截断展示", report.errors.first().length < 400)
     }
+
+    // ===== COMBO 值域校验（v0.3.21，真机报告 Bug3）=====
+
+    @Test
+    fun comboValueNotInListIsAnError() {
+        // 模型名填错（不存在的模型）必须在预检时拦住，而不是提交后烧卡。
+        val objectInfo = JSONObject(
+            """{"CheckpointLoaderSimple":{"input":{"required":{"ckpt_name":[["real.safetensors"],{}]}}}}""",
+        )
+        val report = McpWorkflowValidator.validate(validWorkflow(), fullCatalog, objectInfo)
+        assertFalse("模型名不存在应报错", report.ok)
+        assertTrue(
+            "应指出 ckpt_name 不在可选列表",
+            report.errors.any { it.contains("ckpt_name") && it.contains("sd.safetensors") },
+        )
+    }
+
+    @Test
+    fun comboValueInListPasses() {
+        val objectInfo = JSONObject(
+            """{"CheckpointLoaderSimple":{"input":{"required":{"ckpt_name":[["sd.safetensors","other.safetensors"],{}]}}}}""",
+        )
+        val report = McpWorkflowValidator.validate(validWorkflow(), fullCatalog, objectInfo)
+        assertTrue("模型名在列表里应通过，实际错误：${report.errors}", report.ok)
+    }
+
+    @Test
+    fun nullObjectInfoSkipsComboValidation() {
+        // 没查到 object_info 时不误报值域问题（与节点存在性校验同一条原则）。
+        val report = McpWorkflowValidator.validate(validWorkflow(), fullCatalog, null)
+        assertTrue("object_info 缺失时不该报值域错误", report.ok)
+    }
 }

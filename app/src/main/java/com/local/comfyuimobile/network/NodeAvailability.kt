@@ -42,6 +42,27 @@ object NodeAvailability {
     }
 
     /**
+     * 抽取某个节点某个 COMBO 输入的可选值（v0.3.21，供 validate_workflow 值域校验）。
+     *
+     * `/object_info` 形状：
+     * `{"UNETLoader":{"input":{"required":{"unet_name":[["a.safetensors","b.safetensors"],{}]}}}}`
+     * ——候选值是该输入规格数组的第 0 项。路径任一环缺失都返回 null（区分"没查到"与"空列表"）。
+     */
+    fun comboOptions(info: JSONObject, nodeType: String, inputName: String): List<String>? {
+        val spec = info.optJSONObject(nodeType)
+            ?.optJSONObject("input")
+            ?.optJSONObject("required")
+            ?.optJSONArray(inputName)
+            ?: return null
+        val values = spec.optJSONArray(0) ?: return null
+        return buildList {
+            for (i in 0 until values.length()) {
+                values.optString(i).takeIf { it.isNotBlank() }?.let { add(it) }
+            }
+        }
+    }
+
+    /**
      * 找出工作流里用到、但服务器上没注册的节点类型。
      *
      * @param usedTypes 工作流里出现的节点类型（可含重复，会被去重）

@@ -1,3 +1,39 @@
+# v0.3.21 — 按电脑 agent 实测 Bug 报告修 11 项
+
+> 测试对象：局域网 MCP，后端百度 AI Studio。报告 11 项，逐条核实全部属实并修复。
+
+## P0（阻断）
+
+1. **图片取不回**：失败信息带 /history 原始 JSON；区分「success 但 outputs 空」。
+   根因是反代 /view 可能不通，本版改进诊断，未做 base64 代理（待真机确认）。
+2. **list_models type 无效**：type 按 ComfyUI 节点 input 映射，支持 checkpoint/unet/vae/clip/lora。
+
+## P1
+
+3. **validate 不校模型名**：对照 object_info 做 COMBO 白名单校验（值域检查）。
+4. **失败信息无诊断**：透传 node_errors（节点 id + 输入名 + 值域问题）。
+5. **instructions 误导**：受限连接用精简 instructions，不提被过滤的 terminal/gpu 工具。
+
+## P2
+
+6. **params key 矛盾**：报错明确「节点ID::字段名」格式 + 给可用 key 样例。
+7. **状态矛盾**：UNKNOWN 不再套 running，改回 unknown。
+8. **历史丢失**：list_my_jobs 一次拉全量 history 共享快照。
+
+## P3
+
+9. **instructions 乱码**：Content-Type 加 charset=utf-8（缺 charset 导致超长 JSON 被 Latin-1 解码）。
+10. **list_workflows 不可用**：失败引导移除 terminal_exec 建议。
+11. **解析提示误导**：workflow_json 解析失败带具体行列错误。
+
+## 边界（如实说）
+
+- Bug1 根因（反代 /view 不通）本版只改进诊断，未做服务端 base64 代理。
+- Bug9 若客户端仍乱码，则属客户端对超长 instructions 的处理问题。
+- 本版未经真机验证。
+
+---
+
 # v0.3.20 — 鉴权模型重构：本机免鉴权 + 局域网权限分级
 
 > 用户反馈：走 127.0.0.1 也要 token 不合理；关局域网后走 127 还要 token、需重启才生效；

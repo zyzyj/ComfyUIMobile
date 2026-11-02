@@ -238,7 +238,12 @@ internal class McpToolRegistry(
     ): JSONObject? {
         if (id == null && method.startsWith("notifications/")) return null
         return when (method) {
-            "initialize" -> McpProtocol.success(id, McpProtocol.initializeResult(SERVER_INSTRUCTIONS))
+            // v0.3.21（真机报告 Bug5）：受限连接用精简 instructions，
+            // 不再提到 terminal_exec / start_gpu 等被过滤掉的工具。
+            "initialize" -> McpProtocol.success(
+                id,
+                McpProtocol.initializeResult(if (restricted) RESTRICTED_INSTRUCTIONS else SERVER_INSTRUCTIONS),
+            )
             "tools/list" -> McpProtocol.success(id, JSONObject().put("tools", toolList(restricted)))
             "tools/call" -> handleToolCall(id, params, restricted)
             "ping" -> McpProtocol.success(id, JSONObject())
@@ -1028,6 +1033,24 @@ internal class McpToolRegistry(
                 "批量出图（多张/多个提示词）时，在云端 work 目录写一个 batch.json 记进度" +
                 "（每条：提示词 / job_id / 状态），每完成一张就更新它。" +
                 "中断或会话重启后先读 batch.json 接着跑，不要从头重提——重提会重复出图、重复烧卡。"
+
+        /**
+         * 受限连接（局域网免鉴权）的 instructions（v0.3.21，真机报告 Bug5）。
+         *
+         * 只提及受限工具清单里真实存在的工具，绝不提 terminal_exec / start_gpu 等
+         * 被过滤掉的能力——否则就是在给不存在的操作路径。
+         */
+        const val RESTRICTED_INSTRUCTIONS =
+            "直接使用本服务的工具，不要自己写 bash/python/curl 脚本绕过它们去 HTTP 调本服务" +
+                "（封装你自己的出图流程、写辅助脚本是合理的，不在此限）。\n" +
+                "本连接是局域网免鉴权模式（受限）：只提供出图相关工具，" +
+                "不含终端、GPU、账号管理等能力。如需完整能力，请在手机 App 的 MCP 服务页" +
+                "打开「要求鉴权」并用 token 重新连接。\n" +
+                "如果工具调用持续失败（Connection refused / Unable to resolve host 等），" +
+                "说明手机上的 MCP 服务已停止或网络被系统掐断：请停止重试，告知用户回到 App 重新开启 MCP 服务。\n" +
+                "出图流程：提交后用 job_status(wait_seconds=150) 一次等到终态，不要短间隔反复查；" +
+                "若仍 running 就再等一次，不要退回轮询。**丢了 job_id 先调 list_my_jobs**，不要重新提交" +
+                "（重提会再出一张图、再烧一次算力卡）。"
 
         /** 所有工具名（供启动期自检命名约束）。 */
         val TOOL_NAMES = listOf(

@@ -129,4 +129,24 @@ class NodeAvailabilityTest {
         val text = NodeAvailability.describe(exact)!!
         assertTrue(!text.contains("等 5 个"))
     }
+
+    // ===== COMBO 可选值提取（v0.3.21）=====
+
+    @Test
+    fun `comboOptions 取到候选值列表`() {
+        val info = JSONObject(
+            """{"UNETLoader":{"input":{"required":{"unet_name":[["a.safetensors","b.safetensors"],{}]}}}}""",
+        )
+        assertEquals(
+            listOf("a.safetensors", "b.safetensors"),
+            NodeAvailability.comboOptions(info, "UNETLoader", "unet_name"),
+        )
+    }
+
+    @Test
+    fun `comboOptions 路径缺失返回 null 而不是空列表`() {
+        val info = JSONObject("""{"UNETLoader":{"input":{"required":{}}}}""")
+        assertNull(NodeAvailability.comboOptions(info, "UNETLoader", "unet_name"))
+        assertNull(NodeAvailability.comboOptions(info, "NoSuchNode", "unet_name"))
+    }
 }
