@@ -1,3 +1,37 @@
+# v0.3.25 — 修 generate(wait=true) 120 秒硬上限静默退化成 running
+
+> 外部诊断报告：130 秒的双采任务被静默切成 `status=running`，使用者误判为失败。
+
+## 根因
+
+`DEFAULT_GENERATE_AWAIT_MILLIS = 120_000L` 是 `wait=true` 的硬上限，超过就返回
+`status=running` + `job_id` 且**不报错**。实测边界在 68.6s 与 130s 之间。
+
+陷阱：代码只判 `status == "done"` 时，running 的 `images` 是空数组 → 静默拿到空列表 → 误判失败。
+
+## 修复
+
+| 项 | 改动 |
+|---|---|
+| wait=true 默认上限 | 120 → **300 秒**（与 job_status 的 MAX_WAIT_SECONDS 对齐） |
+| 新增参数 | `wait_seconds`（1~600），schema 已暴露 |
+| running 的 hint | 明确「**任务仍在正常执行**（这只是等待上限，不是失败）」+ job_status 收尾路径 |
+| done 的 hint | 加「建议立刻下载（URL 有有效期）」 |
+| 死代码 | 删除 `generateAwaitMillis`（改常量后无调用方） |
+
+## 效果
+
+130 秒的双采任务一次 `wait=true` 就能拿到 done，省掉「占满 120s 再轮询一轮」的约 **100 秒浪费**
+（报告实测每张图 230 秒里约 100 秒是等待浪费）。
+
+## 未改（核实后判定不是 bug）
+
+- **URL 用内网 IP**（报告问题 3）：局域网模式本就绑 `0.0.0.0` 给内网 IP，使用方需同网段。
+- **`/files/` 无 token**（报告问题 4）：有意设计——32 位随机 hash 不可猜 + 24h TTL，
+  且 AI 下载不便加 Authorization。风险可接受。
+
+---
+
 # v0.3.24 — 修复项目 5 分钟无操作被平台闲置回收
 
 > 用户反馈：5 分钟没操作 GPU 项目就被停了。

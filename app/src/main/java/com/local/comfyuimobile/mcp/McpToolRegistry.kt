@@ -232,9 +232,6 @@ internal class McpToolRegistry(
     private val fileUrlBase: () -> String,
 ) {
 
-    /** `generate` 同步等待上限：覆盖多数单图场景，重任务走 job_status（规划书 §5.2）。 */
-    var generateAwaitMillis: Long = DEFAULT_GENERATE_AWAIT_MILLIS
-
     /**
      * 处理一个 JSON-RPC 请求。返回 null 表示这是**通知**（无 id），调用方回 202 空体。
      *
@@ -327,7 +324,12 @@ internal class McpToolRegistry(
                 parseGenerate(args),
                 // wait=false（默认）时不给等待窗口：提交完立即返回 job_id，
                 // 验收交给 job_status（提交/验收分离）。
-                awaitMillis = if (parseWait(args)) generateAwaitMillis else 0L,
+                // v0.3.25：wait=true 的等待上限改为可显式指定（wait_seconds），
+                // 默认 300 秒——旧值 120 秒会把 130 秒的双采任务误切成 running（真机报告）。
+                awaitMillis = if (parseWait(args)) {
+                    (args.opt("wait_seconds")?.let { args.optInt("wait_seconds") } ?: DEFAULT_GENERATE_AWAIT_SECONDS)
+                        .coerceIn(1, MAX_GENERATE_AWAIT_SECONDS) * 1000L
+                } else 0L,
             ),
         )
         TOOL_JOB_STATUS -> {
@@ -481,7 +483,7 @@ internal class McpToolRegistry(
                     // v0.3.23：明确"多久查一次"，避免 AI 自己写 while 循环每 2 秒查——
                     // 那会烧平台请求、可能封 IP、还费 token。
                     "排队中（第 ${outcome.position ?: "?"} 位）。**不要自己写循环密集轮询**：" +
-                        "用 job_status(job_id, wait_seconds=120) 一次等到终态，省往返省 token。",
+                        "用 job_status(job_id, wait_seconds=150) 一次等到终态，省往返省 token。",
                 )
                 .toString(),
         )
@@ -493,9 +495,12 @@ internal class McpToolRegistry(
                 .put("message", outcome.message)
                 .put(
                     "hint",
-                    // v0.3.23：同上——显式引导用 wait_seconds，别自己轮询。
-                    "运行中。**不要自己写循环密集轮询**：用 job_status(job_id, wait_seconds=120) " +
-                        "一次等到终态，省往返省 token；若仍 running 就再等一次。",
+                    // v0.3.25（真机报告 P0）：wait=true 超时返回 running 时必须说清
+                    // “这是等待上限，不是失败”，否则使用者会把 running 误当失败。
+                    // 同时给出明确的下一步（job_status + wait_seconds）。
+                    "**任务仍在正常执行**（已等 ${outcome.elapsedSec}s，这只是本次等待上限，不是失败）。" +
+                        "下一步：用 job_status(job_id, wait_seconds=150) 一次等到终态，" +
+                        "不要自己写循环密集轮询（会烧平台请求、可能封 IP、还费 token）。",
                 )
                 .toString(),
         )
@@ -517,7 +522,13 @@ internal class McpToolRegistry(
                     .put("status", "done")
                     .put("job_id", outcome.jobId)
                     .put("images", arr)
-                    .put("hint", "图片已给出 URL，用 curl 下载到容器本地后，用你自己的查看图片工具（如 viewImage）查看。下载图片是该用脚本的唯一场景；调用本服务请始终用原生工具")
+                    // v0.3.25：给使用者的行动指引更完整——拿到 URL 后立刻下载（URL 有有效期），
+                    // 并提醒不要等太久才下。
+                    .put(
+                        "hint",
+                        "图片已给出 URL（**建议立刻下载**，URL 有有效期）。" +
+                            "用 curl 或 urllib 下载到本地后用 viewImage 查看；下载图片是该用脚本的唯一场景。",
+                    )
                     .toString(),
             )
         }
@@ -610,7 +621,14 @@ internal class McpToolRegistry(
                             .put("checkpoint", JSONObject().put("type", "string").put("description", "模型文件名（可选）"))
                             .put("lora", JSONObject().put("type", "string").put("description", "LoRA 文件名（可选）"))
                             .put("count", JSONObject().put("type", "integer").put("description", "出图张数，1-8，默认 1"))
-                            .put("wait", JSONObject().put("type", "boolean").put("description", "是否同步等待完成，默认 false"))
+                            .put("wait", JSONObject().put("type", "boolean")
+                                .put("description", "是否同步等待完成，默认 false。" +
+                                    "传 true 时最多等 wait_seconds 秒（默认 300），超时返回 status=running 且 job_id 仍有效（不是失败）"))
+                            .put(
+                                "wait_seconds",
+                                JSONObject().put("type", "integer")
+                                    .put("description", "wait=true 时的等待上限（秒），默认 300，范围 1-600"),
+                            )
                             .put(
                                 "prompt_override",
                                 JSONObject().put("type", "boolean")
@@ -733,7 +751,14 @@ internal class McpToolRegistry(
                         .put("checkpoint", JSONObject().put("type", "string").put("description", "模型文件名（可选）"))
                         .put("lora", JSONObject().put("type", "string").put("description", "LoRA 文件名（可选）"))
                         .put("count", JSONObject().put("type", "integer").put("description", "出图张数，1-8，默认 1"))
-                        .put("wait", JSONObject().put("type", "boolean").put("description", "是否同步等待完成，默认 false"))
+                        .put("wait", JSONObject().put("type", "boolean")
+                                .put("description", "是否同步等待完成，默认 false。" +
+                                    "传 true 时最多等 wait_seconds 秒（默认 300），超时返回 status=running 且 job_id 仍有效（不是失败）"))
+                            .put(
+                                "wait_seconds",
+                                JSONObject().put("type", "integer")
+                                    .put("description", "wait=true 时的等待上限（秒），默认 300，范围 1-600"),
+                            )
                         .put(
                             "prompt_override",
                             JSONObject().put("type", "boolean")
@@ -1018,10 +1043,19 @@ internal class McpToolRegistry(
         const val TOOL_TERMINAL_INTERRUPT = "terminal_interrupt"
 
         /**
-         * 120 秒。60 秒太短（SDXL 单图常见 20-60 秒，带高清修复就超），
-         * 600 秒太长（无进度通知，界面会静默干等）——见规划书 §5.2。
+         * `generate(wait=true)` 的默认等待上限（秒，v0.3.25）。
+         *
+         * 旧实现固定 120 秒（DEFAULT_GENERATE_AWAIT_MILLIS）——真机报告：130 秒的双采
+         * 任务被静默切成 running，使用者以为失败。提到 300 秒（与 job_status 同上限），
+         * 覆盖绝大多数单图与双采；更长的任务仍可用 wait=false + job_status 验收。
          */
-        const val DEFAULT_GENERATE_AWAIT_MILLIS = 120_000L
+        const val DEFAULT_GENERATE_AWAIT_SECONDS = 300
+
+        /** `generate(wait=true)` 等待上限的硬顶（秒）。超过就该用异步 + job_status。 */
+        const val MAX_GENERATE_AWAIT_SECONDS = 600
+
+        /** 兼容旧引用（单测注入用）；不再作为 wait=true 的默认值。 */
+        const val DEFAULT_GENERATE_AWAIT_MILLIS = DEFAULT_GENERATE_AWAIT_SECONDS * 1000L
 
         /** 批量 job_status 一次最多查多少个 id（与 host 侧同一上限）。 */
         const val MAX_BATCH_IDS = 16

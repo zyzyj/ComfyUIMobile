@@ -537,6 +537,27 @@ class McpServerTest {
         val payload = JSONObject(text)
         assertEquals("running", payload.getString("status"))
         assertEquals("job-run", payload.getString("job_id"))
+        // v0.3.25（真机报告 P0）：wait=true 超时返回 running 时必须说清"不是失败"，
+        // 否则使用者会把 running 误当失败（真机上就静默拿到空 images 列表）。
+        val hint = payload.getString("hint")
+        assertTrue("running 的 hint 必须明确不是失败：$hint", hint.contains("不是失败"))
+        assertTrue("running 的 hint 必须给出 job_status 收尾路径：$hint", hint.contains("job_status"))
+    }
+
+    @Test
+    fun generateSchemaExposesWaitSeconds() = withServer { port, _ ->
+        // v0.3.25：wait=true 的等待上限可显式指定，schema 里必须有这个参数，
+        // 否则模型不知道能调（只能被动接受默认值）。
+        val (_, body) = postMcp(
+            port,
+            """{"jsonrpc":"2.0","id":20,"method":"tools/list"}""",
+        )
+        val tools = JSONObject(body).getJSONObject("result").getJSONArray("tools")
+        val generate = (0 until tools.length())
+            .map { tools.getJSONObject(it) }
+            .first { it.getString("name") == "generate" }
+        val props = generate.getJSONObject("inputSchema").getJSONObject("properties")
+        assertTrue("generate schema 必须暴露 wait_seconds", props.has("wait_seconds"))
     }
 
     @Test
