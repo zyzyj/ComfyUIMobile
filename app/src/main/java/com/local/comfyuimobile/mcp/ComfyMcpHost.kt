@@ -619,7 +619,14 @@ internal class ComfyMcpHost(
                 },
             )
         }
-        if (size != null && size > limit) return RemoteFetchResult.Text(bigFileHint(target, size, limit))
+        if (size != null && size > limit) {
+            // v0.3.27：大文件**自动代下**，不再让 AI 自己拼 curl + Cookie。
+            //
+            // 真机前测的教训：AI 拿不到项目级 Cookie（ide-proxy / user-<uid>-<pid>），
+            // 它按提示自己跑 curl 必然 302 到登录页。而手机侧本来就有这个 Cookie——
+            // 所以正确分工是：AI 只发一条命令起 HTTP 服务，剩下的手机自己做。
+            return downloadViaApiServing(terminalHost, target, size, limit)
+        }
 
         // 用 base64 单行输出：终端是文本协议，二进制直接输出会被截断/乱码。
         // base64 -w0 保证不折行（折行会引入换行符，解码时得先去掉）。
@@ -665,6 +672,78 @@ internal class ComfyMcpHost(
         appendLine("   terminal_exec: split -b ${limit} \"$path\" /tmp/chunk_")
         appendLine("   然后逐个 fetch_remote /tmp/chunk_xx，本地拼接。")
         append("3) 若只是取回结果，建议改为让出图直接写 ComfyUI output，走 generate/job_status 那条已有通道。")
+    }
+
+    /**
+     * 大文件自动代下（v0.3.27）。
+     *
+     * 分工：AI 不需要做任何事（连命令都不用发），本方法在云端起临时 HTTP 服务，
+     * 手机自己带项目级 Cookie 下载，下完关掉服务、删除临时目录。
+     *
+     * 为什么不让 AI 自己拼 curl：它拿不到项目级 Cookie（ide-proxy / user-<uid>-<pid>），
+     * 硬试必然 302 到登录页。而手机侧本来就有——这个能力不该外包给 AI。
+     *
+     * 失败时降级成 [bigFileHint]（给可执行的替代路径），不直接报错。
+     */
+    private suspend fun downloadViaApiServing(
+        terminalHost: McpTerminalHost,
+        path: String,
+        size: Long,
+        limit: Long,
+    ): RemoteFetchResult {
+        val ctx = runCatching { terminalHost.projectContextForDownload() }.getOrNull()
+            ?: return RemoteFetchResult.Text(
+                "$path 有 ${size / 1024 / 1024}MB，需要代下但**拿不到当前项目上下文**" +
+                    "（未启动项目 / 未连上终端 / 无项目级 Cookie）。\n" + bigFileHint(path, size, limit),
+            )
+
+        // 端口选 9100：避开 ComfyUI 的 8188（很可能正占着），也避开常见冲突。
+        val port = DOWNLOAD_SERVING_PORT
+        val dir = path.substringBeforeLast('/', path).ifBlank { "/tmp" }
+        val fileName = path.substringAfterLast('/')
+        val url = ctx.baseUrl.trimEnd('/') + "/api_serving/$port/$fileName"
+
+        // 起服务：绑定 0.0.0.0 才能被反代转发；--directory 限定目录，不暴露其他路径。
+        val startCmd = "pkill -f 'http.server $port' 2>/dev/null; " +
+            "(cd \"$dir\" && nohup python3 -m http.server $port --bind 0.0.0.0 >/tmp/mcp_dl_$port.log 2>&1 &); " +
+            "sleep 2; curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:$port/$fileName"
+        val started = runCatching {
+            terminalHost.exec(startCmd, terminal = null, timeoutSeconds = 25)
+        }.getOrNull()
+        if (started == null || !started.contains("200")) {
+            return RemoteFetchResult.Text(
+                "$path 有 ${size / 1024 / 1024}MB，代下失败：云端 HTTP 服务未能启动（端口 $port）。\n" +
+                    "云端日志：/tmp/mcp_dl_$port.log\n" + bigFileHint(path, size, limit),
+            )
+        }
+
+        // 手机侧下载（ComfyClient 的拦截器会自动带 Cookie）。
+        val extension = fileName.substringAfterLast('.', "bin").lowercase()
+        val target = files.newFile(extension)
+        val ok = runCatching {
+            target.outputStream().use { out -> client.downloadTo(url, out) }
+        }.onFailure { error ->
+            AppLogger.warn("代下 $path 失败（$url）", error)
+        }.isSuccess
+        // 无论成败都关掉云端服务：临时端口开着等于多一个对外暴露面。
+        runCatching {
+            terminalHost.exec(
+                "pkill -f 'http.server $port' 2>/dev/null; rm -f /tmp/mcp_dl_$port.log",
+                terminal = null,
+                timeoutSeconds = 10,
+            )
+        }
+
+        if (!ok || target.length() == 0L) {
+            runCatching { target.delete() }
+            return RemoteFetchResult.Text(
+                "$path 有 ${size / 1024 / 1024}MB，代下失败：云端服务起来了（端口 $port 回 200），" +
+                    "但手机侧下载没成功。最可能原因：平台没放行非 8188 端口（反代可能只白名单 8188）。\n" +
+                    "可试：先停 ComfyUI 再把端口改成 8188，或改用切片分批。\n" + bigFileHint(path, size, limit),
+            )
+        }
+        val id = files.register(target, extension, McpFileStore.contentTypeOf(extension))
+        return RemoteFetchResult.Saved(id, target.length(), path)
     }
 
     override suspend fun jobStatus(jobId: String, waitSeconds: Int): GenerateOutcome {
@@ -1042,6 +1121,14 @@ internal class ComfyMcpHost(
          * 更大的文件给指引（云端起 HTTP + api_serving 代理，或切片分批）。
          */
         const val FETCH_REMOTE_MAX_BYTES = 8L * 1024 * 1024
+
+        /**
+         * 大文件代下时云端临时 HTTP 服务的端口（v0.3.27）。
+         *
+         * 选 9100 而不是 8188：后者是 ComfyUI 默认端口，很可能正占着。
+         * 反代是否放行非 8188 端口未验证——代下失败时返回里会提示改成 8188。
+         */
+        const val DOWNLOAD_SERVING_PORT = 9100
     }
 }
 

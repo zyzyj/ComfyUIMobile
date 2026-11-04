@@ -1,3 +1,40 @@
+# v0.3.27 — 大文件自动代下：AI 不再需要碰 Cookie
+
+## 问题
+
+v0.3.26 的 `fetch_remote` 对 >8MB 文件只给**文字指引**（让 AI 自己拼 curl + 项目级 Cookie）。
+
+但 AI **拿不到项目级 Cookie**：`api_serving` 反代校验的是 `ide-proxy` + `user-<uid>-<pid>`，
+账号级 BDUSS 不够。AI 按指引自己跑 curl 必然 302 到登录页，且它无法自行拿到这个 Cookie。
+
+**根因：这个能力不该外包给 AI——手机侧本来就有 Cookie。**
+
+## 修法：手机代下，AI 零操作
+
+```
+fetch_remote(/home/aistudio/persist_multi/multi.tar.gz)
+  → 云端起临时 HTTP（端口 9100，避开 8188）
+  → 手机侧带项目级 Cookie 自己下载（ComfyClient 拦截器自动带）
+  → 下完关服务 + 删日志
+  → 返回本地 URL
+```
+
+AI 只需一次工具调用，不需要发任何终端命令、不需要碰 Cookie。
+
+## 新增能力
+
+- `McpTerminalHost.projectContextForDownload()`：项目 + endpoint + 已预热项目级 Cookie
+- `ComfyMcpHost.downloadViaApiServing()`：上述全流程
+- instructions 明说「你不需要也不需要尝试拼 curl + Cookie，那必然 302」
+- 代下失败降级成可执行替代路径（改成 8188 / 切片分批），不直接报错
+
+## 未验证（如实说）
+
+**`api_serving` 非 8188 端口是否放行**——这是本次唯一未知数。
+平台可能有端口白名单。代下失败时返回文案会明确说「先停 ComfyUI 再把端口改成 8188」。
+
+---
+
 # v0.3.26 — GPU 误报 / 日志不重置 / 云端取文件
 
 ## 一、误报「环境已就绪」（真机日志确证）

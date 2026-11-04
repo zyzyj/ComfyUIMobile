@@ -336,6 +336,37 @@ internal class McpTerminalHost(
     /** 导出已捕获的 Cookie（含项目级）给 ComfyClient 用。 */
     fun exportCookies(): String = kernel.exportCookies()
 
+    /**
+     * 拿"当前项目 + 账号 + 已预热的项目级 Cookie"（v0.3.27）。
+     *
+     * 供 `fetch_remote` 走 api_serving 代下大文件用：手机侧本来就有项目级 Cookie，
+     * 不该把这个负担丢给 AI（它拿不到，硬试必然 302 到登录页）。
+     *
+     * 拿不到项目/endpoint 时返回 null（不抛）——代下只是可选路径，失败要能退回普通提示。
+     */
+    suspend fun projectContextForDownload(): DownloadContext? {
+        val (account, project) = runningProjectOrNull() ?: return null
+        val endpoint = endpointFor(account, project.projectId) ?: return null
+        if (endpoint.baseUrl.isBlank()) return null
+        // 项目级 Cookie 不是一直有的：要先像浏览器那样访问一次 Codelab 页才会下发。
+        // 失败不阻断——没有 ide-proxy 时下载会 302，那时再报错让用户重连。
+        runCatching { warmUpCookies(account, endpoint) }
+        val cookie = exportCookies()
+        if (cookie.isBlank()) return null
+        return DownloadContext(
+            baseUrl = endpoint.baseUrl,
+            projectId = project.projectId,
+            cookie = cookie,
+        )
+    }
+
+    /** 代下所需的最小上下文（不含账号昵称等无关信息）。 */
+    data class DownloadContext(
+        val baseUrl: String,
+        val projectId: String,
+        val cookie: String,
+    )
+
     private suspend fun requireContext(): Pair<AiStudioAccount, AiStudioProject> =
         activeProject() ?: throw IllegalStateException(
             "还没有可用的 AI Studio 项目。请先 login（App 的「账号」页）并 start_gpu 启动一个项目，" +
