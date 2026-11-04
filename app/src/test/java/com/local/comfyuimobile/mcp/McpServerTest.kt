@@ -107,6 +107,9 @@ class McpServerTest {
         override suspend fun terminalRead(terminal: String?, maxLines: Int?): String = "暂无输出"
         override suspend fun terminalInterrupt(terminal: String?): String = "已发送 Ctrl+C"
 
+        override suspend fun fetchRemote(path: String, maxBytes: Long?): RemoteFetchResult =
+            RemoteFetchResult.Text("假实现：不取云端文件（$path）")
+
         override suspend fun listMyJobs(state: String?, limit: Int?): String = "没有已提交的任务记录。"
 
         override suspend fun listAccounts(): String = "App 里已登录 1 个 AI Studio 账号：\n- id=a1  tester"
@@ -689,6 +692,8 @@ class McpServerTest {
         "account_id",
         // v0.3.22：generate 的新参数名。
         "prompt_override",
+        // v0.3.26：fetch_remote 的参数名与返回字段，以及 api_serving 端口代理（非工具名）。
+        "max_bytes", "size_bytes", "api_serving", "persist_multi",
     )
 
     private fun toolNameTokens(text: String): List<String> =

@@ -2341,7 +2341,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 平台分配 GPU 需要 1-2 分钟，刚提交完那一瞬项目仍是「已停止」——
      * 用户会以为启动没生效。这里自动盯一会儿，状态一变就刷新界面。
      */
-    private fun pollProjectRunning(projectId: String) = pollProjectState(projectId, wantRunning = true)
+    private fun pollProjectRunning(projectId: String, scheduleName: String = "") =
+        pollProjectState(projectId, wantRunning = true, scheduleName = scheduleName)
 
     /**
      * 轮询项目状态，直到它达到期望的运行状态（或超时）。
@@ -2356,7 +2357,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * projectState=300202。以前只看 running，于是 App 早早宣布"环境已就绪"，
      * 用户接着点连接就撞上"平台没有返回环境地址"。
      */
-    private fun pollProjectState(projectId: String, wantRunning: Boolean) {
+    private fun pollProjectState(
+        projectId: String,
+        wantRunning: Boolean,
+        scheduleName: String = "",
+    ) {
         // v0.2.47：轮询开始时就锁定发起时的账号快照，贯穿全程。
         // 以前每轮重读 activeAccount()，切账号后旧轮询会改用新账号的凭据去打平台、
         // 拿旧账号的 projectId 在新账号的项目里找不到，一路空转到 40 轮超时。
@@ -2364,7 +2369,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (wantRunning) {
             aiStudioStartPollJob?.cancel()
             aiStudioStartPollJob = viewModelScope.launch {
-                runPollProjectState(account, projectId, wantRunning = true)
+                runPollProjectState(account, projectId, wantRunning = true, scheduleName = scheduleName)
             }
         } else {
             // v0.2.47：停止方向也用可取消的 Job（以前是裸 launch，切账号时无法取消）。
@@ -2375,7 +2380,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun runPollProjectState(account: AiStudioAccount, projectId: String, wantRunning: Boolean) {
+    private suspend fun runPollProjectState(
+        account: AiStudioAccount,
+        projectId: String,
+        wantRunning: Boolean,
+        scheduleName: String = "",
+    ) {
         // 累计实际等待时长：前 5 轮 4 秒、之后 8 秒，文案必须跟真实退避一致
         // （以前固定按每轮 4 秒算，等了 60 秒却显示 24 秒）。
         var waitedSeconds = 0
@@ -2420,8 +2430,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 轮询里不调 notebook/enter，免得每几秒给平台下发一次启动动作。
                 // v0.2.34：running 已确认，清掉 startingProjectId——后面交给 project.running
                 // 驱动（显示“正在启动环境…”），否则会一直停在“正在启动…”。
+                // v0.3.26（真机误报）：请求 GPU 档位时必须校验节点真是 GPU 节点。
+                // 平台在 GPU 排不上队时会先给 `bj-cpu-01` 占位，旧代码只看 baseUrl 非空
+                // 就报「环境已就绪」，用户以为 GPU 好了，实际几小时后平台退回 running=false。
+                val wantsGpu = AiStudioSchedules.requiresGpuNode(scheduleName)
                 val ready = runCatching {
-                    kernelClient.peekEndpoint(account, projectId)
+                    kernelClient.peekEndpoint(account, projectId, requireGpu = wantsGpu)
                 }.getOrNull() != null
                 if (!ready) {
                     _state.update {
@@ -2439,7 +2453,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     return@repeat
                 }
-                AppLogger.info("AI Studio 项目状态已更新：$projectId running=${project.running} 环境已就绪")
+                AppLogger.info(
+                    "AI Studio 项目状态已更新：$projectId running=${project.running} 环境已就绪" +
+                        (if (wantsGpu) "（GPU 节点）" else ""),
+                )
                 _state.update {
                     it.copy(
                         aiStudio = it.aiStudio.copy(
@@ -2608,7 +2625,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                     aiStudioLoadProjects(silent = true)
-                    pollProjectRunning(projectId)
+                    pollProjectRunning(projectId, scheduleName)
                 }
                 .onFailure { error -> failAiStudio("启动失败", error) { it.copy(startingProjectId = null) } }
         }

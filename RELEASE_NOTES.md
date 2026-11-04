@@ -1,3 +1,55 @@
+# v0.3.26 — GPU 误报 / 日志不重置 / 云端取文件
+
+## 一、误报「环境已就绪」（真机日志确证）
+
+时间线（2026-11-04）：
+```
+14:33:52  提交启动（算力=resourceCardVGpuSchedule，即 V100）
+14:34:14  平台返回 baseUrl = bj-cpu-01   ← CPU 节点！
+14:34:14  App 报「running=true 环境已就绪」 ← 误报
+16:15:47  平台把 running 退回 false（未能分配机器）
+```
+
+**根因**：`peekEndpoint` 只看 baseUrl 非空（含 `/user/`），不校验节点类型。
+平台在 GPU 排不上队时会先给 CPU 节点占位，App 就以为好了。
+
+**修法**：
+- `KernelEndpoint.isGpuNode()`（从 baseUrl 抠出 `bj-cpu-01` / `bj-gpu-03`）
+- `peekEndpoint(requireGpu)`：GPU 档位拿到 CPU 节点时返回 null（视为未就绪）
+- `AiStudioSchedules.requiresGpuNode(scheduleName)`：判断档位是否必须 GPU 节点
+
+## 二、日志 1.8MB 从不重置
+
+**根因**：日志首行是 8 天前、版本 0.3.14。覆盖安装十几个版本，`AppLogger` 从未清空。
+
+**修法**：`initialize` 里比对上次启动的版本名（存 SharedPreferences），变了就删日志文件 + 清队列。
+同版本内重启（进程被杀）保留——那是同一批问题。
+
+## 三、报告缺口（取云端已存在的任意文件）
+
+**新增工具 `fetch_remote(path, max_bytes)`**：走终端通道 base64 读回，登记后返回 URL。
+
+| 情况 | 行为 |
+|---|---|
+| 单文件 ≤ 8MB | 直接取回，返回 URL |
+| 目录 | 给两种做法（先 tar 再取 / 逐个取） |
+| > 8MB | 给三条路（api_serving 代理 / split 切片 / 改写出图流程） |
+| 不存在 | 明确报「云端不存在该文件」 |
+
+**为什么是 8MB**：走终端 base64，数据翻倍且终端输出有长度限制。8MB ≈ 16MB base64 文本，是能稳定取回的边界。
+
+**容量上限**：`DEFAULT_MAX_ENTRIES` 64→256，`DEFAULT_MAX_TOTAL_BYTES` 128MB→512MB。
+（报告实测 182 张/179MB 撞上限，先取的 URL 会被静默淘汰。）
+
+**404 文案修正**：原写「1 小时有效期」，实际早已是 24 小时——错误的有效期会把排查带偏。
+
+## 未做（如实说）
+
+- **打包批量下载**（缺口 B）：需流式直通或云端 tar + 端口代理，工作量大，先给指引。
+- **`api_serving/{非8188}` 是否放行未验证**：报告说路径结构支持，但可能有端口白名单，需真机试。
+
+---
+
 # v0.3.25 — 修 generate(wait=true) 120 秒硬上限静默退化成 running
 
 > 外部诊断报告：130 秒的双采任务被静默切成 `status=running`，使用者误判为失败。

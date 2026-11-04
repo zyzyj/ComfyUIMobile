@@ -2,6 +2,7 @@ package com.local.comfyuimobile.mcp
 
 import com.local.comfyuimobile.model.AiStudioSchedule
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -215,5 +216,25 @@ class AiStudioSchedulesTest {
         val note = AiStudioSchedules.unavailableNote(schedule("X", available = false))
         assertTrue(note.contains("不可用"))
         assertTrue("不该编造原因：$note", !note.contains("算力不足") && !note.contains("无货"))
+    }
+
+    // ===== requiresGpuNode（v0.3.26，真机误报）=====
+
+    @Test
+    fun gpuSchedulesRequireGpuNode() {
+        // 真机：14:33 请求 resourceCardVGpuSchedule（V100），14:34 平台给 bj-cpu-01，
+        // 旧代码报「环境已就绪」——GPU 根本没排上队。这几个档位必须要求 GPU 节点。
+        assertTrue(AiStudioSchedules.requiresGpuNode("resourceCardVGpuSchedule"))
+        assertTrue(AiStudioSchedules.requiresGpuNode("V100 32GB"))
+        assertTrue(AiStudioSchedules.requiresGpuNode("A100"))
+        assertTrue(AiStudioSchedules.requiresGpuNode("DCU"))
+    }
+
+    @Test
+    fun freeCpuScheduleDoesNotRequireGpuNode() {
+        // 基础版（DEV）落到 CPU 节点是正常的，不能因此判"未就绪"。
+        assertFalse(AiStudioSchedules.requiresGpuNode("resourceCardDevSchedule"))
+        assertFalse(AiStudioSchedules.requiresGpuNode("基础版"))
+        assertFalse(AiStudioSchedules.requiresGpuNode(""))
     }
 }

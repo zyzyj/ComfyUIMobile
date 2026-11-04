@@ -114,6 +114,18 @@ internal interface McpToolHost {
     suspend fun terminalInterrupt(terminal: String?): String
 
     /**
+     * 取云端已存在的任意文件（v0.3.26）。
+     *
+     * 外部报告缺口 A：`/files/{id}` 只服务 generate/job_status 下载下来的图，
+     * 云端持久盘里脚本自己生成的文件（如 `persist_multi` 下的 png）根本没有 id。
+     * 本方法通过终端通道读文件（base64），登记到 McpFileStore 后返回 URL。
+     *
+     * 大文件不现实走 base64（179MB 会卡死终端），超阈值时返回明确指引
+     * （云端打 tar + 走 api_serving 端口代理，或分批取）。
+     */
+    suspend fun fetchRemote(path: String, maxBytes: Long?): RemoteFetchResult
+
+    /**
      * 紧急刹车（v0.2.91；v0.2.93 收窄范围）：中止任务。
      *
      * 关掉 MCP 服务**不会**停任务——它们已经在远端 ComfyUI 的队列里了。
@@ -167,6 +179,21 @@ internal data class GenerateRequest(
      */
     val promptOverride: Boolean = false,
 )
+
+/**
+ * `fetch_remote` 的结果（v0.3.26）。
+ *
+ * 分两种：真取到文件（给 id 让 registry 拼 URL），或只能给提示（目录/不存在/太大）。
+ * 用 sealed 而不是纯字符串，是因为“取到文件”和“只是建议”对调用方意义完全不同——
+ * 前者能直接拼 URL，后者没有 URL。
+ */
+internal sealed interface RemoteFetchResult {
+    /** 已落盘并登记；[fileId] 给 [McpToolRegistry] 拼下载 URL。 */
+    data class Saved(val fileId: String, val sizeBytes: Long, val path: String) : RemoteFetchResult
+
+    /** 没有文件可取：直接返回这段可操作的文本（不存在 / 是目录 / 超过上限）。 */
+    data class Text(val message: String) : RemoteFetchResult
+}
 
 internal sealed interface GenerateOutcome {
     /** 完成，附带可下载的图片。 */
@@ -385,7 +412,31 @@ internal class McpToolRegistry(
         TOOL_TERMINAL_INTERRUPT -> ToolResult(
             host.terminalInterrupt(args.optString("terminal").trim().takeIf { it.isNotBlank() }),
         )
+        TOOL_FETCH_REMOTE -> renderFetchRemote(
+            host.fetchRemote(
+                args.optString("path").trim(),
+                args.opt("max_bytes")?.let { args.optLong("max_bytes") },
+            ),
+        )
         else -> throw IllegalArgumentException("未知工具：$name")
+    }
+
+    /** fetch_remote 的结果渲染（v0.3.26）：真取到文件才拼 URL。 */
+    private fun renderFetchRemote(outcome: RemoteFetchResult): ToolResult = when (outcome) {
+        is RemoteFetchResult.Text -> ToolResult(outcome.message, isError = true)
+        is RemoteFetchResult.Saved -> ToolResult(
+            JSONObject()
+                .put("path", outcome.path)
+                .put("size_bytes", outcome.sizeBytes)
+                .put("url", fileUrlBase() + outcome.fileId)
+                .put(
+                    "hint",
+                    "已取回云端文件（**建议立刻下载**，URL 有效期 24 小时，服务重启会清空）。" +
+                        "用 curl 或 urllib 下载；批量取图请逐个调用本工具，单个上限 8MB，" +
+                        "更大文件改用 api_serving 端口代理或切片分批。",
+                )
+                .toString(),
+        )
     }
 
     /** job_id 支持单个字符串或数组。缺参数时明确报错，不要静默当空。 */
@@ -992,6 +1043,23 @@ internal class McpToolRegistry(
                 ),
             ),
         )
+        put(
+            McpProtocol.toolDescriptor(
+                TOOL_FETCH_REMOTE,
+                "取云端已存在的**任意文件**（不限于 ComfyUI 出图）。" +
+                    "走终端通道 base64 读回，登记后返回可下载 URL。单个文件上限 8MB；" +
+                    "目录 / 超大文件会返回可操作的替代方案（打包、api_serving 代理、切片分批）。" +
+                    "典型用途：取脚本批量生成到持久盘的图、训练产物、日志。",
+                schema(
+                    JSONObject()
+                        .put("path", JSONObject().put("type", "string")
+                            .put("description", "云端文件绝对路径，如 /home/aistudio/persist_multi/3Lora/xxx.png"))
+                        .put("max_bytes", JSONObject().put("type", "integer")
+                            .put("description", "本次允许取回的上限（字节，可选，最大 8MB）")),
+                    required = JSONArray().put("path"),
+                ),
+            ),
+        )
         }
     }
 
@@ -1042,6 +1110,8 @@ internal class McpToolRegistry(
         const val TOOL_TERMINAL_READ = "terminal_read"
         const val TOOL_TERMINAL_INTERRUPT = "terminal_interrupt"
 
+        /** 取云端已存在的任意文件（v0.3.26，外部报告缺口 A）。 */
+        const val TOOL_FETCH_REMOTE = "fetch_remote"
         /**
          * `generate(wait=true)` 的默认等待上限（秒，v0.3.25）。
          *

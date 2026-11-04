@@ -218,11 +218,12 @@ internal class McpServer(
         if (entry == null) {
             McpCallLog.log("GET /files/${id.take(8)}…", ok = false, detail = "不存在或已过期")
             // 清单 §九 N1：过期要说明白，不能只给一个 404 让人以为是路径写错了。
-            // 图片有 1 小时 TTL（进程重启也会清空），AI 该做的是重新提交出图，
-            // 而不是反复重试同一个 URL。
+            // v0.3.26（外部报告 3.4）：文案原来写「1 小时」，而 TTL 早已在 v0.3.22 改为
+            // 24 小时——错误的有效期会把排查带偏（以为是过期，实际是进程重启清空）。
+            // 两种真实失效原因都写进去：过期 24h / 服务重启被 clear()。
             output.write(
                 McpHttp.jsonResponse(
-                    """{"error":"not found or expired","hint":"文件不存在或已超过 1 小时有效期。请用 generate 重新生成，不要重复请求同一 URL。"}""",
+                    """{"error":"not found or expired","hint":"文件不存在或已失效（URL 有效期 24 小时；MCP 服务重启会清空全部已发出 URL）。请重新 generate 或重新取图，不要重复请求同一 URL。"}""",
                     status = 404,
                 ),
             )

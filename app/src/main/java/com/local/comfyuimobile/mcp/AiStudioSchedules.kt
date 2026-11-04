@@ -60,6 +60,26 @@ internal object AiStudioSchedules {
             "。请先用 list_gpu_options 确认。"
 
     /**
+     * 这个档位是否**必须落到 GPU 节点**（v0.3.26）。
+     *
+     * 用于修一个真机误报：2026-11-04 14:33 请求 `resourceCardVGpuSchedule`（V100），
+     * 平台 14:34 返回的是 `bj-cpu-01`（免费 CPU 节点占位）——GPU 根本没排上队，
+     * 而 App 只看 baseUrl 非空就报「环境已就绪」，用户以为好了，几小时后平台退回
+     * running=false。
+     *
+     * 判据：档位名含 `gpu`（如 resourceCardVGpuSchedule），或配额池是 V100/A100/DCU。
+     * `DEV`（基础版/免费 CPU）与空档位返回 false——它们落到 CPU 节点是正常的。
+     */
+    fun requiresGpuNode(scheduleName: String): Boolean {
+        val name = scheduleName.trim()
+        if (name.isEmpty()) return false
+        if (name.contains("gpu", ignoreCase = true)) return true
+        // 平台档位名与配额池命名不完全统一，两个都看；DEV 是免费 CPU 档。
+        if (name.contains("dev", ignoreCase = true)) return false
+        return listOf("v100", "a100", "dcu", "v150", "异构").any { name.contains(it, ignoreCase = true) }
+    }
+
+    /**
      * 项目当前处于哪种状态（v0.2.97）。纯函数，可单测。
      *
      * 清单 §3.1 要求 `gpu_status` 必须区分这四种——因为它们对应的**下一步完全不同**：

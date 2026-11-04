@@ -171,6 +171,27 @@ class AiStudioKernelClient {
         val hubBaseUrl: String = "",
     ) {
         fun isUsable(): Boolean = baseUrl.isNotBlank() && token.isNotBlank()
+
+        /**
+         * 平台分配到的节点区（如 `bj-cpu-01` / `bj-gpu-03`），从 baseUrl 里取。
+         * 取不到返回空串。
+         */
+        fun zone(): String = ZONE_PATTERN.find(baseUrl)?.groupValues?.getOrNull(1).orEmpty()
+
+        /**
+         * 是否分到了 **GPU 节点**（v0.3.26）。
+         *
+         * 真机日志（2026-11-04 14:34）：请求 GPU 档位（resourceCardVGpuSchedule），
+         * 平台给的却是 `bj-cpu-01`（免费 CPU 节点占位）——GPU 实际没排上队。
+         * 旧代码只看 baseUrl 非空就报「环境已就绪」，于是用户以为 GPU 好了，
+         * 实际几小时后平台退回 running=false（未分配机器）。
+         */
+        fun isGpuNode(): Boolean = zone().contains("gpu", ignoreCase = true)
+
+        private companion object {
+            /** 从 `http://aistudio.baidu.com/bj-cpu-01/user/...` 里抠出节点区。 */
+            val ZONE_PATTERN = Regex("aistudio\\.baidu\\.com/([^/]+)/")
+        }
     }
 
     /**
@@ -275,18 +296,36 @@ class AiStudioKernelClient {
      *
      * 轮询期间每几秒跑一次，若用 [fetchEndpoint] 会顺带下发 enter + 重试，既加重平台
      * 负担也刷屏日志（真机一轮启动就多出十几条）。这里只问一次 baseinfo，够判断了。
+     *
+     * @param requireGpu v0.3.26：请求 GPU 档位时必须校验平台给的节点真是 GPU 节点。
+     *   真机日志（2026-11-04 14:34）：请求 resourceCardVGpuSchedule，平台给 `bj-cpu-01`，
+     *   旧代码只看 baseUrl 非空就报「环境已就绪」——GPU 根本没排上队，几小时后平台退回
+     *   running=false。传 true 时若节点不是 GPU 节点，返回 null（视为「还没就绪」）。
      */
-    suspend fun peekEndpoint(account: AiStudioAccount, projectId: String): KernelEndpoint? {
+    suspend fun peekEndpoint(
+        account: AiStudioAccount,
+        projectId: String,
+        requireGpu: Boolean = false,
+    ): KernelEndpoint? {
         seedCookies(account.cookie)
         return withContext(Dispatchers.IO) {
             val info = runCatching { fetchBaseInfo(account, projectId) }.getOrNull() ?: return@withContext null
             val baseUrl = validBaseUrl(info.optString("baseUrl")) ?: return@withContext null
-            KernelEndpoint(
+            val endpoint = KernelEndpoint(
                 baseUrl = baseUrl,
                 basePath = baseUrl.substringAfter(".com", "").ifBlank { baseUrl },
                 token = info.optString("token"),
                 hubBaseUrl = info.optString("hubBaseUrl"),
-            ).takeIf { it.isUsable() }
+            )
+            if (!endpoint.isUsable()) return@withContext null
+            if (requireGpu && !endpoint.isGpuNode()) {
+                AppLogger.info(
+                    "环境探测：请求 GPU 档位但平台给的是 CPU 节点（${endpoint.zone()}），" +
+                        "视为尚未就绪",
+                )
+                return@withContext null
+            }
+            endpoint
         }
     }
 

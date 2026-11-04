@@ -173,10 +173,24 @@ internal class McpFileStore(
          * 且配合 [aliases] 复用后，同一 job_id 反复查不会变号、旧 URL 也不会失效。
          */
         const val DEFAULT_TTL_MILLIS = 24 * 60 * 60 * 1000L
-        const val DEFAULT_MAX_ENTRIES = 64
 
-        /** 总字节上限 128MB：宁可淘汰旧的，也不让这个目录无限吃磁盘。 */
-        const val DEFAULT_MAX_TOTAL_BYTES = 128L * 1024 * 1024
+        /**
+         * 最多登记多少个文件（v0.3.26 从 64 提到 256）。
+         *
+         * 外部报告实测：批量取图时 182 张 > 64 条，先取的 URL 会在后续取图过程中
+         * 被 `enforceLimits()` 静默淘汰，回头再下载就是 404。256 条足以覆盖一次
+         * 批量取图的规模。
+         */
+        const val DEFAULT_MAX_ENTRIES = 256
+
+        /**
+         * 总字节上限（v0.3.26 从 128MB 提到 512MB）。
+         *
+         * 外部报告场景：179 MB 批量产物直接撞上 128MB 上限。提到 512MB 后一次
+         * 批量取图不会因为总量超限而被静默淘汰。淘汰仍是「静默删最旧」，
+         * 所以超大任务（> 512MB）仍应分批取，`fetch_remote` 的返回里会提示。
+         */
+        const val DEFAULT_MAX_TOTAL_BYTES = 512L * 1024 * 1024
 
         /** 按扩展名推断 Content-Type；未知一律 `application/octet-stream`。 */
         fun contentTypeOf(extension: String): String = when (extension.lowercase()) {

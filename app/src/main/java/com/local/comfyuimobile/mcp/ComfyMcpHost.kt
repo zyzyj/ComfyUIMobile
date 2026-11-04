@@ -11,6 +11,7 @@ import com.local.comfyuimobile.network.AiStudioProtocol
 import com.local.comfyuimobile.network.ComfyClient
 import com.local.comfyuimobile.network.NodeAvailability
 import com.local.comfyuimobile.network.ResultParser
+import android.util.Base64
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 import java.io.File
@@ -573,6 +574,99 @@ internal class ComfyMcpHost(
     override suspend fun terminalInterrupt(terminal: String?): String =
         requireTerminal().interrupt(terminal)
 
+    /**
+     * 取云端已存在的任意文件（v0.3.26）。
+     *
+     * 走终端通道把文件 base64 出来，在 App 侧解码登记后返回**文件 id**
+     * （URL 由 [McpToolRegistry] 拼——它才有 fileUrlBase）。
+     *
+     * 不是万能方案：base64 会让数据量翻倍，且终端输出有长度限制。
+     * 所以对超过 [FETCH_REMOTE_MAX_BYTES] 的文件**不做硬试**，而是给可执行的替代方案
+     * （外部报告实测 179MB 批量产物就是撞在这里）。
+     *
+     * @return 成功时返回 `RemoteFetchResult.Saved(fileId, size, path)`，
+     *   不适用时返回 `RemoteFetchResult.Text(提示文本)`。
+     */
+    override suspend fun fetchRemote(path: String, maxBytes: Long?): RemoteFetchResult {
+        val terminalHost = requireTerminal()
+        val target = path.trim()
+        if (target.isBlank()) throw IllegalArgumentException("缺少 path。")
+        val limit = (maxBytes ?: FETCH_REMOTE_MAX_BYTES).coerceIn(1L, FETCH_REMOTE_MAX_BYTES)
+
+        // 先查大小：不存在 / 是目录 / 太大，三种情况都在下载前区分。
+        // 用 `wc -c` 而不是 ls，避免解析 ls 的列格式（文件名含空格会错位）。
+        val probe = runCatching {
+            terminalHost.exec(
+                "if [ -d \"$target\" ]; then echo DIR; elif [ -f \"$target\" ]; then wc -c < \"$target\"; else echo MISSING; fi",
+                terminal = null,
+                timeoutSeconds = 15,
+            )
+        }.getOrElse { error -> throw IllegalStateException("探测云端文件失败：${error.message.orEmpty().take(200)}", error) }
+        val probeText = probe.trim()
+        val missing = probeText.contains("MISSING")
+        val isDir = probeText.contains("DIR")
+        val size = probeText.lines().map { it.trim() }.firstOrNull { it.all(Char::isDigit) }?.toLongOrNull()
+
+        if (missing) return RemoteFetchResult.Text("云端不存在该文件：$target。先用 terminal_exec 的 ls 确认路径。")
+        if (isDir) {
+            return RemoteFetchResult.Text(
+                buildString {
+                    appendLine("$target 是目录，fetch_remote 只取单个文件。两种做法：")
+                    appendLine("1) 云端先打包，再用 fetch_remote 取单个 tar：")
+                    appendLine("   terminal_exec: cd ${target.substringBeforeLast('/', target)} && tar -cf /tmp/pack.tar ${target.substringAfterLast('/')}")
+                    appendLine("2) 逐个取（每个文件一次调用，适合少量文件）：先 ls 拿到文件名再逐个 fetch_remote")
+                    append("注意：tar 体积接近原始总量，若超过 ${limit / 1024 / 1024}MB 同样取不回来，见下方大文件说明。")
+                },
+            )
+        }
+        if (size != null && size > limit) return RemoteFetchResult.Text(bigFileHint(target, size, limit))
+
+        // 用 base64 单行输出：终端是文本协议，二进制直接输出会被截断/乱码。
+        // base64 -w0 保证不折行（折行会引入换行符，解码时得先去掉）。
+        val b64 = runCatching {
+            terminalHost.exec(
+                "base64 -w0 \"$target\"",
+                terminal = null,
+                timeoutSeconds = 60,
+            )
+        }.getOrElse { error -> throw IllegalStateException("读取云端文件失败：${error.message.orEmpty().take(200)}", error) }
+        val payload = b64.filter { it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' }
+        if (payload.length < 16) {
+            return RemoteFetchResult.Text(
+                "读取 $target 失败：终端未返回有效内容（可能输出被截断，或文件为空）。" +
+                    "可改用 terminal_exec 自己处理（如 base64 分块）。",
+            )
+        }
+        val bytes = runCatching { Base64.decode(payload, Base64.DEFAULT) }.getOrElse { error ->
+            throw IllegalStateException("解码失败（输出可能被终端截断）：${error.message.orEmpty().take(120)}", error)
+        }
+        val extension = target.substringAfterLast('.', "bin").lowercase()
+        val file = files.newFile(extension)
+        runCatching { file.writeBytes(bytes) }.getOrElse { error ->
+            throw IllegalStateException("写入本地失败：${error.message.orEmpty().take(120)}", error)
+        }
+        val id = files.register(file, extension, McpFileStore.contentTypeOf(extension))
+        return RemoteFetchResult.Saved(id, bytes.size.toLong(), target)
+    }
+
+    /** 大文件不硬试：给出真正可行的三条路（外部报告已验证方案 2 的路径结构）。 */
+    private fun bigFileHint(path: String, size: Long, limit: Long): String = buildString {
+        appendLine("$path 有 ${size / 1024 / 1024}MB，超过 fetch_remote 单次上限 ${limit / 1024 / 1024}MB。")
+        appendLine("为什么不能直接取：本工具走终端通道读文件，终端是**文本协议**，")
+        appendLine("大文件 base64 会翻倍且会超终端输出长度，硬试只会卡死。")
+        appendLine()
+        appendLine("可行做法（按推荐顺序）：")
+        appendLine("1) 云端起临时 HTTP 服务，走平台已有的 api_serving 端口代理（报告实测路径结构支持）：")
+        appendLine("   terminal_exec: cd ${path.substringBeforeLast('/', path)} && (nohup python3 -m http.server 9000 --bind 0.0.0.0 >/tmp/hs.log 2>&1 &)")
+        appendLine("   下载地址：https://aistudio.baidu.com/<zone>/user/<uid>/<pid>/api_serving/9000/${path.substringAfterLast('/')}")
+        appendLine("   前提：必须带**项目级 Cookie**（ide-proxy + user-<uid>-<pid>），账号级 Cookie 不够（会 302 到登录页）。")
+        appendLine("   注意：非 8188 端口是否放行未验证，先在 App 里连终端拿到 Cookie 再试。")
+        appendLine("2) 云端切片后分批取：")
+        appendLine("   terminal_exec: split -b ${limit} \"$path\" /tmp/chunk_")
+        appendLine("   然后逐个 fetch_remote /tmp/chunk_xx，本地拼接。")
+        append("3) 若只是取回结果，建议改为让出图直接写 ComfyUI output，走 generate/job_status 那条已有通道。")
+    }
+
     override suspend fun jobStatus(jobId: String, waitSeconds: Int): GenerateOutcome {
         requireConnected()
         // 查询时不再长等：已经知道任务在跑了，给一次短窗口即可，避免把 job_status
@@ -939,6 +1033,15 @@ internal class ComfyMcpHost(
 
         /** wait_for_comfy 的探测间隔：2 秒足够密，又不会把服务器问烦。 */
         const val WAIT_FOR_COMFY_POLL_MILLIS = 2_000L
+
+        /**
+         * fetch_remote 单次取回的文件上限（v0.3.26）：8 MB。
+         *
+         * 为什么是 8MB：走终端通道 base64 传输，数据量翻倍；而终端输出本身
+         * 还有长度限制。8MB 原文件 ≈ 16MB base64 文本，已是能稳定取回的边界。
+         * 更大的文件给指引（云端起 HTTP + api_serving 代理，或切片分批）。
+         */
+        const val FETCH_REMOTE_MAX_BYTES = 8L * 1024 * 1024
     }
 }
 

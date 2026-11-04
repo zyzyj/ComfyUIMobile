@@ -21,6 +21,9 @@ object AppLogger {
     private const val PREFS = "diagnostic_logging"
     private const val ENABLED = "enabled"
     private const val LAST_EXIT_TIMESTAMP = "last_exit_timestamp"
+
+    /** 上次启动的版本名（v0.3.26）：用于「版本变了就清日志」。 */
+    private const val LAST_VERSION = "last_version"
     private const val MAX_BYTES = 2L * 1024L * 1024L
     private const val MAX_EXIT_TRACE_BYTES = 128 * 1024
     /** 待落盘行数上限，超出丢最旧（仅在磁盘持续跟不上写入时才可能触发）。 */
@@ -76,14 +79,42 @@ object AppLogger {
         context = value.applicationContext
         enabled = isEnabled(value)
         installCrashHandler()
+        val versionName = runCatching {
+            value.packageManager.getPackageInfo(value.packageName, 0).versionName
+        }.getOrNull() ?: "未知"
+        // v0.3.26：版本变化时清空旧日志。
+        //
+        // 真机反馈：日志涨到 1.8 MB，翻到首行是 8 天前、版本 0.3.14——覆盖安装了
+        // 十几个版本，日志却从没重置过。旧版本的问题记录混在新版本日志里，
+        // 排查时会把"早就修掉的 bug"当成现役问题。
+        // 只在本版本第一次启动时清，同版本内重启（进程被杀）保留——那是同一批问题。
+        if (enabled) resetIfVersionChanged(value, versionName)
         // 版本号写进第一行日志：以前排查用户反馈时无从知道对方装的是哪个版本，
         // 只能靠猜（“你试试新版”这种对话就是它的代价）。
-        info("应用启动，版本=${
-            runCatching {
-                value.packageManager.getPackageInfo(value.packageName, 0).versionName
-            }.getOrNull() ?: "未知"
-        }，日志记录=${if (enabled) "开启" else "关闭"}")
+        info("应用启动，版本=$versionName，日志记录=${if (enabled) "开启" else "关闭"}")
         if (enabled) scheduleHistoricalExits(value)
+    }
+
+    /**
+     * 版本变化时清空日志（v0.3.26）。
+     *
+     * 用 SharedPreferences 记上次启动的版本；不同就删日志文件 + 清内存队列。
+     * 记版本失败也不影响启动（日志不是核心功能）。
+     */
+    private fun resetIfVersionChanged(value: Context, versionName: String) {
+        runCatching {
+            val prefs = value.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val last = prefs.getString(LAST_VERSION, null)
+            if (last != null && last != versionName) {
+                synchronized(lock) {
+                    pending.clear()
+                    val folder = File(value.applicationContext.filesDir, "logs")
+                    File(folder, "comfy-mobile.log").delete()
+                    File(folder, "comfy-mobile.previous.log").delete()
+                }
+            }
+            prefs.edit().putString(LAST_VERSION, versionName).apply()
+        }.onFailure { Log.w(TAG, "日志版本重置失败", it) }
     }
 
     fun isEnabled(value: Context): Boolean =
