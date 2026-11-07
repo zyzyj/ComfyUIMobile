@@ -595,9 +595,19 @@ internal class ComfyMcpHost(
 
         // 先查大小：不存在 / 是目录 / 太大，三种情况都在下载前区分。
         // 用 `wc -c` 而不是 ls，避免解析 ls 的列格式（文件名含空格会错位）。
+        //
+        // v0.3.29（真机反馈）：**必须跟随 symlink**。
+        // 用户报的路径 /home/aistudio/data/np/ComfyUI_v2/output 是指向
+        // /home/aistudio/data/np/output 的符号链接。旧实现用 `-f`（不跟 symlink 到
+        // 普通文件判定链）在某些情况下会判成不存在，且两个路径都报「不存在」，
+        // 提示「先用 ls 确认路径」反而把人带偏。
+        // 现在用 `-e`（存在，跟随链接）+ `readlink -f` 把真实路径一并报出来。
         val probe = runCatching {
             terminalHost.exec(
-                "if [ -d \"$target\" ]; then echo DIR; elif [ -f \"$target\" ]; then wc -c < \"$target\"; else echo MISSING; fi",
+                "if [ -d \"$target\" ]; then echo DIR; " +
+                    "elif [ -e \"$target\" ]; then echo \"SIZE=$(wc -c < \"$target\" 2>/dev/null || echo 0)\"; " +
+                    "echo \"REAL=$(readlink -f \"$target\" 2>/dev/null)\"; " +
+                    "else echo MISSING; fi",
                 terminal = null,
                 timeoutSeconds = 15,
             )
@@ -605,9 +615,17 @@ internal class ComfyMcpHost(
         val probeText = probe.trim()
         val missing = probeText.contains("MISSING")
         val isDir = probeText.contains("DIR")
-        val size = probeText.lines().map { it.trim() }.firstOrNull { it.all(Char::isDigit) }?.toLongOrNull()
+        val size = Regex("SIZE=(\\d+)").find(probeText)?.groupValues?.getOrNull(1)?.toLongOrNull()
+        val realPath = Regex("REAL=(.+)").find(probeText)?.groupValues?.getOrNull(1)?.trim().orEmpty()
 
-        if (missing) return RemoteFetchResult.Text("云端不存在该文件：$target。先用 terminal_exec 的 ls 确认路径。")
+        if (missing) {
+            return RemoteFetchResult.Text(
+                "云端不存在该文件：$target\n" +
+                    "提醒：本工具走 terminal_exec 的**同一个云端文件系统**（不是 App 手机端文件），" +
+                    "路径必须是在云端终端里 `ls` 能看到的那个。若你刚在 terminal_exec 里确认过存在，" +
+                    "把那个完整路径原样传进来（不要用手机侧的路径）。",
+            )
+        }
         if (isDir) {
             return RemoteFetchResult.Text(
                 buildString {
@@ -628,8 +646,26 @@ internal class ComfyMcpHost(
             return downloadViaApiServing(terminalHost, target, size, limit)
         }
 
-        // 用 base64 单行输出：终端是文本协议，二进制直接输出会被截断/乱码。
-        // base64 -w0 保证不折行（折行会引入换行符，解码时得先去掉）。
+        // v0.3.29（真机反馈，比原报告更严重）：**base64 走终端必然被截断**。
+        //
+        // 终端返回给模型的输出上限是 TerminalShell.MAX_OUTPUT_CHARS = 16000 字符，
+        // 而一张 1.3MB 的图 base64 后约 1.8MB 文本。旧代码只在 payload.length < 16
+        // 时报错，于是 16000 字符的**截断结果**会被当成完整数据解码写盘——
+        // 得到一个能写出、但打不开的坏图片，而且报「成功」。
+        //
+        // 这是静默数据损坏，比报错严重得多。现在：
+        //   1. 先用文件大小算出 base64 后长度，超限直接拒绝走 base64；
+        //   2. 拿到的文本长度接近上限时也当截断处理，不写盘。
+        val base64Len = size?.let { (it + 2) / 3 * 4 } ?: Long.MAX_VALUE
+        if (size == null || base64Len > TERMINAL_SAFE_BASE64_CHARS) {
+            // 不知道大小或必然截断：不冒险，走代下（>8MB 也在这条分支）。
+            return downloadViaApiServing(
+                terminalHost,
+                realPath.ifBlank { target },
+                size ?: 0L,
+                limit,
+            )
+        }
         val b64 = runCatching {
             terminalHost.exec(
                 "base64 -w0 \"$target\"",
@@ -638,6 +674,15 @@ internal class ComfyMcpHost(
             )
         }.getOrElse { error -> throw IllegalStateException("读取云端文件失败：${error.message.orEmpty().take(200)}", error) }
         val payload = b64.filter { it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' }
+        // 双重保险：即使预估不超，实际拿到接近上限的文本也按截断处理。
+        if (payload.length >= TERMINAL_SAFE_BASE64_CHARS) {
+            return RemoteFetchResult.Text(
+                "读取 $target 失败：终端输出被截断（base64 长度 ${payload.length} 已到上限），" +
+                    "写下去只会得到坏文件。请改用更小的文件，或先切片：\n" +
+                    "terminal_exec: split -b 4000000 \"$target\" /tmp/chunk_\n" +
+                    "然后逐个 fetch_remote /tmp/chunk_xx，本地拼接。",
+            )
+        }
         if (payload.length < 16) {
             return RemoteFetchResult.Text(
                 "读取 $target 失败：终端未返回有效内容（可能输出被截断，或文件为空）。" +
@@ -1129,6 +1174,17 @@ internal class ComfyMcpHost(
          * 反代是否放行非 8188 端口未验证——代下失败时返回里会提示改成 8188。
          */
         const val DOWNLOAD_SERVING_PORT = 9100
+
+        /**
+         * 走 base64 回读的字符上限（v0.3.29）。
+         *
+         * 必须小于 TerminalShell.MAX_OUTPUT_CHARS（16000），留出命令回显与
+         * 截断提示的余量。超过这个量就改走代下——base64 走终端超限必被截断，
+         * 而截断后的数据解出来是**坏文件**，却会报「成功」。
+         *
+         * 8000 字符 ≈ 6KB 原文件，只适合极小的文本/配置文件。
+         */
+        const val TERMINAL_SAFE_BASE64_CHARS = 8_000L
     }
 }
 

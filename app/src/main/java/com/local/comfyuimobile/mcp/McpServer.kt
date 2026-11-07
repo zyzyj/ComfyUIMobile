@@ -59,6 +59,14 @@ internal class McpServer(
      * 默认用真实 socket 地址的 `isLoopbackAddress`；测试可注入假判断以模拟局域网来源。
      */
     private val isLoopbackClient: (InetAddress) -> Boolean = { it.isLoopbackAddress },
+    /**
+     * 取 ComfyUI 服务器基址（v0.3.29）。空串 = 未连接，此时 /view 返回 503。
+     *
+     * 用于把 ComfyUI 自己的 /view、/history 转发出去——真机反馈：云端终端内
+     * curl 127.0.0.1:8188/view 返回 200 / 1.36MB，但手机侧 23456 的 /view 是 404，
+     * 因为本 server 原本只路由 /mcp 与 /files/。
+     */
+    private val comfyBaseUrl: () -> String = { "" },
 ) {
 
     private var serverSocket: ServerSocket? = null
@@ -166,6 +174,18 @@ internal class McpServer(
             serveFile(path.removePrefix("/files/"), output)
             return
         }
+        // v0.3.29（真机反馈）：转发 ComfyUI 自己的 /view 与 /history。
+        //
+        // 用户实测：云端终端内 curl 127.0.0.1:8188/view 返回 200 / 1.36MB，
+        // 但 http://<手机IP>:23456/view?filename=... 是 404——因为**本 server 只路由
+        // 了 /mcp 与 /files/，其他一律 404**（不是“反代没配”）。
+        //
+        // 转发价值：拿到 ComfyUI 原生原图（字节级一致），不必经过 generate 登记，
+        // 也就不必为了拿图重渲染（用户为此多烧了 5 张算力卡）。
+        if (request.method == "GET" && (path.startsWith("/view") || path.startsWith("/history"))) {
+            proxyToComfy(request, output)
+            return
+        }
         if (request.method == "GET" && (path == "/health" || path == "/")) {
             output.write(McpHttp.jsonResponse("""{"ok":true}"""))
             return
@@ -206,6 +226,65 @@ internal class McpServer(
      */
     private fun restricted(clientAddress: InetAddress): Boolean =
         !isLoopbackClient(clientAddress) && !requireAuth
+
+    /**
+     * 把 ComfyUI 自己的 /view、/history 转发出去（v0.3.29）。
+     *
+     * 为什么需要：真机反馈说手机侧 `/view` 是 404，误以为是反代没配——实际是本
+     * server 只路由了 `/mcp` 与 `/files/`，其余一律 404。ComfyUI 自己的 /view 是好
+     * 的（云端 curl 返回 200 / 1.36MB），只是没被转发。
+     *
+     * 价值：拿到字节级原图，不必经 generate 登记——也就不必为了取图而重渲染
+     * （真机反馈：为此多烧了 5 张算力卡）。
+     */
+    private fun proxyToComfy(request: HttpRequest, output: BufferedOutputStream) {
+        val base = comfyBaseUrl().trimEnd('/')
+        if (base.isBlank()) {
+            output.write(
+                McpHttp.jsonResponse(
+                    """{"error":"comfy not connected","hint":"未连接 ComfyUI，请先在 App 里连接服务器或调 wait_for_comfy"}""",
+                    status = 503,
+                ),
+            )
+            return
+        }
+        // 用客户端原样的 target（含 query），拼到 ComfyUI 基址后面。
+        val url = base + request.target
+        val ok = runCatching {
+            // 复用同一个 OkHttp 实例？不——这里只需要 GET 且要流式写响应，
+            // 直接用 URL 打开即可（ComfyClient 的拦截器还会带 Cookie，但 /view 不需要）。
+            val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 60_000
+            conn.requestMethod = "GET"
+            conn.inputStream.use { input ->
+                val type = conn.contentType ?: "application/octet-stream"
+                output.write(
+                    (
+                        "HTTP/1.1 200 OK\r\n" +
+                            "Content-Type: $type\r\n" +
+                            "Content-Length: ${conn.contentLengthLong}\r\n" +
+                            "Connection: close\r\n\r\n"
+                        ).toByteArray(),
+                )
+                input.copyTo(output, bufferSize = 64 * 1024)
+            }
+            true
+        }.getOrElse { error ->
+            AppLogger.warn("转发 $url 失败", error)
+            false
+        }
+        if (!ok) {
+            runCatching {
+                output.write(
+                    McpHttp.jsonResponse(
+                        """{"error":"proxy failed","hint":"无法从 ComfyUI 取到该资源（服务未就绪或路径不对）"}""",
+                        status = 502,
+                    ),
+                )
+            }
+        }
+    }
 
     /**
      * 发送出图文件。

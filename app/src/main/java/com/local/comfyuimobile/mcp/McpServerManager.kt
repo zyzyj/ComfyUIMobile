@@ -117,6 +117,8 @@ internal class McpServerManager(
             bindAddress = bindAddress,
             tools = registry,
             files = store,
+            // v0.3.29：转发 ComfyUI 自己的 /view、/history，让客户端能直拉原图。
+            comfyBaseUrl = { client.serverUrl() },
         )
         created.start()
         server = created

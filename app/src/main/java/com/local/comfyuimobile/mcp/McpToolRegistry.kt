@@ -1047,13 +1047,14 @@ internal class McpToolRegistry(
             McpProtocol.toolDescriptor(
                 TOOL_FETCH_REMOTE,
                 "取云端已存在的**任意文件**（不限于 ComfyUI 出图）。" +
-                    "走终端通道 base64 读回，登记后返回可下载 URL。单个文件上限 8MB；" +
-                    "目录 / 超大文件会返回可操作的替代方案（打包、api_serving 代理、切片分批）。" +
+                    "路径就是 terminal_exec 里 `ls` 能看到的那个（同一文件系统，支持 symlink）。" +
+                    "小文件（≲6KB）直接 base64 读回；更大的文件自动走云端临时 HTTP + 手机代下，" +
+                    "返回可下载 URL。目录会提示先打包。" +
                     "典型用途：取脚本批量生成到持久盘的图、训练产物、日志。",
                 schema(
                     JSONObject()
                         .put("path", JSONObject().put("type", "string")
-                            .put("description", "云端文件绝对路径，如 /home/aistudio/persist_multi/3Lora/xxx.png"))
+                            .put("description", "云端文件绝对路径（与 terminal_exec 同一文件系统，支持 symlink），如 /home/aistudio/persist_multi/3Lora/xxx.png"))
                         .put("max_bytes", JSONObject().put("type", "integer")
                             .put("description", "本次允许取回的上限（字节，可选，最大 8MB）")),
                     required = JSONArray().put("path"),
@@ -1186,9 +1187,16 @@ internal class McpToolRegistry(
                 "中断或会话重启后先读 batch.json 接着跑，不要从头重提——重提会重复出图、重复烧卡。\n" +
                 // v0.3.27：取云端已存在的文件（脚本直接写持久盘的产物、训练输出、日志）。
                 "要取云端**已存在**的文件（不经过出图流程的产物）用 fetch_remote(path)：" +
-                "≤8MB 直接取回给 URL；目录或更大文件会自动代下（手机侧自己带项目级 Cookie，" +
+                "小文件直接读回，更大的自动代下（手机侧自己带项目级 Cookie，" +
                 "**你不需要也不需要尝试拼 curl + Cookie**，那必然 302）。" +
-                "取回后立刻下载 URL；批量取图逐个调，不要并发。"
+                "取回后立刻下载 URL；批量取图逐个调，不要并发。\n" +
+                // v0.3.29：真机反馈里 AI 直连 /prompt 提交后取不到图，为此重渲染烧了 5 张卡。
+                // 关键是它不知道 job_status 能查任意 prompt_id（不限于本服务提交的）。
+                "**用别的方式（如直接调 ComfyUI /prompt）提交的任务，也能用 job_status(prompt_id) 取图**——" +
+                "它不校验来源，history 里有 outputs 就能取回并登记 URL。" +
+                "所以**绝不要为了拿图而重新渲染**（那会再烧算力卡）。\n" +
+                "服务端已转发 ComfyUI 的 /view 与 /history：" +
+                "http://<本服务地址>/view?filename=xxx&subfolder=&type=output 可直接拿字节级原图。"
 
         /**
          * 受限连接（局域网免鉴权）的 instructions（v0.3.21，真机报告 Bug5）。
