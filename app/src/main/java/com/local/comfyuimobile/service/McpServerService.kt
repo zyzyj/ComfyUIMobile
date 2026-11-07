@@ -454,11 +454,16 @@ class McpServerService : Service() {
             while (true) {
                 delay(PROJECT_KEEPALIVE_INTERVAL_MILLIS)
                 val current = keepAliveBridge ?: break
-                val ok = runCatching { current.keepAliveRunningProjects() }
+                val result = runCatching { current.keepAliveRunningProjects() }
                     .onFailure { AppLogger.warn("项目保活失败：${it.message.orEmpty().take(120)}") }
-                    .getOrDefault(0)
-                if (ok > 0) {
-                    AppLogger.info("项目保活：已向 $ok 个运行中项目报活")
+                    .getOrDefault(AiStudioBridge.KeepAliveResult())
+                when {
+                    result.allFailed ->
+                        // 有项目在跑但一个都没保住：最可能是登录失效（真机 8403）。
+                        // 这条日志必须够显眼——用户就是靠它知道该去重新登录了。
+                        AppLogger.warn("项目保活全部失败（${result.failed} 个）：登录态可能已失效，请回 App 账号页重新登录")
+                    result.succeeded > 0 ->
+                        AppLogger.info("项目保活：已向 ${result.succeeded} 个运行中项目报活")
                 }
             }
         }

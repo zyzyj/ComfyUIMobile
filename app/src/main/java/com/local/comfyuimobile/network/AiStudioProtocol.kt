@@ -236,6 +236,33 @@ object AiStudioProtocol {
     fun environmentGone(fallbackResult: JSONObject): Boolean = !parseRunning(fallbackResult)
 
     /**
+     * 从**响应体**判断登录态是否已失效（v0.3.28）。
+     *
+     * ## 为什么需要这个（真机日志铁证）
+     *
+     * ```
+     * 15:15:26  进入 notebook 响应：{"errorCode":8403,"errorMsg":"未登录",
+     *                              "result":{"loginUrl":".../loginmid?redirectUri=..."}}
+     * 15:15:26  项目保活：已向 1 个运行中项目报活   ← 谎报成功
+     * ```
+     *
+     * 平台在登录失效时**仍回 HTTP 200**，把错误放在 body 的 `errorCode` 里。
+     * 只看 HTTP 状态的调用方（如旧的 keepAlive 用 `runCatching{}.isSuccess`）
+     * 会把失败当成成功：保活空转、项目照样被回收，而用户完全看不出是登录问题。
+     *
+     * 判据：`errorCode` 为 8403（未登录），或 body 里带 `loginUrl` 且指向 loginmid。
+     * 纯函数，便于单测（网络链路上很难构造这个响应）。
+     */
+    fun isLoginWallBody(body: String): Boolean {
+        if (body.isBlank()) return false
+        val trimmed = body.trim()
+        // 正常业务响应必然有 result 且 errorCode=0；这里只在明确是 8403 时判失效，
+        // 避免把“其它错误码”也当登录问题（那会误导用户去重新登录）。
+        if (trimmed.contains("\"errorCode\":8403") || trimmed.contains("\"errorCode\": 8403")) return true
+        return trimmed.contains("loginmid") && trimmed.contains("loginUrl")
+    }
+
+    /**
      * 判断项目是否在运行。
      *
      * 平台真实字段：`running`（布尔，前端直接读它）。其余名字作为兜底。

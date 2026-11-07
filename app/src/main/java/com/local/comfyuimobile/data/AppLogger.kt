@@ -96,24 +96,41 @@ object AppLogger {
     }
 
     /**
-     * 版本变化时清空日志（v0.3.26）。
+     * 版本变化时清空日志（v0.3.28）。
      *
-     * 用 SharedPreferences 记上次启动的版本；不同就删日志文件 + 清内存队列。
-     * 记版本失败也不影响启动（日志不是核心功能）。
+     * ## v0.3.26 为什么没生效（真机实测）
+     *
+     * 旧实现是 `if (last != null && last != versionName)`。而 v0.3.26 是**第一个**带这段
+     * 代码的版本——升级上来时 `LAST_VERSION` 这个键压根不存在，`last == null`，于是
+     * 直接跳过清理，只把版本号写进去。结果：从 0.3.14 装到 0.3.27 一次都没清过，
+     * 日志涨到 3.3MB。
+     *
+     * 正确语义：**只要和上次不同就清，包括「从无到有」**（last == null 也算不同）。
+     * 代价只是升级后第一次启动丢掉一份旧日志，而那份日志本来就属于旧版本。
+     *
+     * ## 另一个隐患：写盘协程的竞态
+     *
+     * 删除后立即 info(...) 会触发 flush，而 writer 是单线程队列——如果删文件时
+     * 队列里还排着一个旧 flush，它会在删除之后把**旧内容**写回去。
+     * 所以这里先同步 flush 清空 pending，再删文件，并同时删掉 `.previous.log`。
      */
     private fun resetIfVersionChanged(value: Context, versionName: String) {
         runCatching {
             val prefs = value.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val last = prefs.getString(LAST_VERSION, null)
-            if (last != null && last != versionName) {
+            // last == null 也要清：那是「本机制上线后第一次启动」，旧日志必然属于旧版本。
+            if (last != versionName) {
                 synchronized(lock) {
                     pending.clear()
                     val folder = File(value.applicationContext.filesDir, "logs")
                     File(folder, "comfy-mobile.log").delete()
                     File(folder, "comfy-mobile.previous.log").delete()
                 }
+                Log.i(TAG, "日志已按版本重置：${last ?: "(无记录)"} -> $versionName")
             }
-            prefs.edit().putString(LAST_VERSION, versionName).apply()
+            // 用 commit 而不是 apply：版本号必须先落盘，否则进程若在 apply 之前
+            // 被杀，下次启动会以为还是旧版本，把刚写的日志再清一遍（丢掉本次内容）。
+            prefs.edit().putString(LAST_VERSION, versionName).commit()
         }.onFailure { Log.w(TAG, "日志版本重置失败", it) }
     }
 

@@ -225,20 +225,30 @@ internal class AiStudioBridge(
      *
      * @return 成功保活的项目数（0 = 没有运行中的项目，或保活失败）。
      */
-    suspend fun keepAliveRunningProjects(): Int {
-        val account = activeAccount() ?: return 0
+    suspend fun keepAliveRunningProjects(): KeepAliveResult {
+        val account = activeAccount() ?: return KeepAliveResult()
         val page = runCatching { client.listProjects(account, page = 1, pageSize = 30) }
-            .getOrNull() ?: return 0
+            .getOrNull() ?: return KeepAliveResult()
         val running = page.projects.filter { it.running }
-        if (running.isEmpty()) return 0
+        if (running.isEmpty()) return KeepAliveResult()
         var ok = 0
+        var failed = 0
         for (project in running) {
-            val kernel = boundKernel
-            if (kernel != null && kernel.keepAlive(account, project.projectId)) {
-                ok++
-            }
+            val kernel = boundKernel ?: continue
+            if (kernel.keepAlive(account, project.projectId)) ok++ else failed++
         }
-        return ok
+        return KeepAliveResult(succeeded = ok, failed = failed)
+    }
+
+    /**
+     * 保活结果（v0.3.28）。
+     *
+     * 之前只返回成功计数，失败被吞掉了——而登录过期时**每一个**都会失败，
+     * 日志却只有一句“已报活”，用户完全看不出是登录问题。
+     */
+    data class KeepAliveResult(val succeeded: Int = 0, val failed: Int = 0) {
+        /** 有项目在跑但一个都没保住——登录失效或网络断了。 */
+        val allFailed: Boolean get() = failed > 0 && succeeded == 0
     }
 
     /** 列出项目，返回给模型的文本（**不含**任何凭据）。 */

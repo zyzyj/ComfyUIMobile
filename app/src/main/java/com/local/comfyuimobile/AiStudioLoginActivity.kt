@@ -234,9 +234,28 @@ class AiStudioLoginActivity : ComponentActivity() {
                     "bdToken=${if (probe.bdToken.isBlank()) "未取到" else "已取到"}，" +
                     "uid=${probe.uid.ifBlank { "未取到" }}，昵称=${probe.nickname.ifBlank { "未取到" }}",
             )
-            AiStudioLoginSession.complete(finalCookie, probe.bdToken, probe.uid, probe.nickname)
-            setResult(Activity.RESULT_OK, Intent())
-            finish()
+            // v0.3.28：拿不到 bdToken / uid 就**不要**保存账号。
+            //
+            // 真机日志铁证（15:47:14）：
+            //   AI Studio 登录完成：Cookie 长度=815，bdToken=未取到，uid=未取到，昵称=未取到
+            //   AI Studio 令牌已刷新（未命名账号）
+            //   环境信息响应：{"errorCode":403,"errorMsg":"没有权限"}   ← 立刻 403
+            //
+            // 原因：WebView 里页面还没跳到 studio 域 / window.aiStudio 还没注入完，
+            // 就读了身份。旧代码不看结果就 complete()，把一个**空令牌账号**存进了
+            // 偏好——用户看到的是「登录成功」，实际接下来每个请求都 403。
+            if (probe.bdToken.isBlank() || probe.uid.isBlank()) {
+                AppLogger.warn(
+                    "登录未完成：页面还没加载出登录信息（bdToken/uid 为空），不保存本次账号。" +
+                        "请在 WebView 里确认已登录并停在 AI Studio 首页后重试。",
+                )
+                setResult(Activity.RESULT_CANCELED, Intent())
+                finish()
+            } else {
+                AiStudioLoginSession.complete(finalCookie, probe.bdToken, probe.uid, probe.nickname)
+                setResult(Activity.RESULT_OK, Intent())
+                finish()
+            }
         }
     }
 

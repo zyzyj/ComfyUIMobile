@@ -475,4 +475,32 @@ class AiStudioProtocolTest {
         val raw = "项目 42 已停止：终端连接已失效"
         assertEquals(raw, AiStudioProtocol.redactCredentials(raw))
     }
+
+    // ===== isLoginWallBody（v0.3.28）=====
+
+    @Test
+    fun detectsLoginExpiredInsideHttp200() {
+        // 真机日志原样：HTTP 200，错误藏在 body 里。只看状态码会把失败当成功。
+        val body = """{"logId":"x","errorCode":8403,"errorMsg":"未登录","timestamp":0,"result":{"loginUrl":"https://aistudio.baidu.com/aistudio/loginmid?redirectUri=x"}}"""
+        assertTrue("8403 必须判定为登录失效", AiStudioProtocol.isLoginWallBody(body))
+    }
+
+    @Test
+    fun detectsLoginUrlWithoutSpacesToo() {
+        // 平台有时会带空格（"errorCode": 8403），两种写法都要认。
+        assertTrue(AiStudioProtocol.isLoginWallBody("""{"errorCode": 8403}"""))
+    }
+
+    @Test
+    fun normalSuccessBodyIsNotLoginWall() {
+        val body = """{"logId":"x","errorCode":0,"errorMsg":"成功","result":{"baseUrl":"http://a/bj-gpu-03/user/1/2/"}}"""
+        assertFalse("正常响应不能误判成登录失效", AiStudioProtocol.isLoginWallBody(body))
+    }
+
+    @Test
+    fun otherErrorCodesAreNotTreatedAsLoginExpiry() {
+        // 只认 8403：把其它错误码也当登录问题会让用户白去重新登录。
+        assertFalse(AiStudioProtocol.isLoginWallBody("""{"errorCode":403,"errorMsg":"没有权限"}"""))
+        assertFalse(AiStudioProtocol.isLoginWallBody(""))
+    }
 }

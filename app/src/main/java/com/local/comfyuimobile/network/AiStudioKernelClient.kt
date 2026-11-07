@@ -343,21 +343,37 @@ class AiStudioKernelClient {
         gatewayCall(account, "进入 notebook") { acct -> enterNotebookOnce(acct, projectId) }
 
     /**
-     * 保活：向平台报「项目仍在被使用」（v0.3.24）。
+     * 保活：向平台报「项目仍在被使用」（v0.3.24；v0.3.28 修假成功）。
      *
-     * 云端 GPU 项目在**无操作约 5 分钟**后会被平台闲置回收（真机日志 19:15:41 终端
-     * 全部断开 → 19:39:56 项目被判停止）。而 App 侧的前台服务只能保进程不死，
-     * 保不住云端项目。必须周期性调 enterNotebook——这是平台判定"项目在用"的关键动作
-     * （浏览器进 notebook 页就是它）。
+     * 云端 GPU 项目在**无操作约 5 分钟**后会被平台闲置回收。本方法由
+     * [com.local.comfyuimobile.service.McpServerService] 周期调用。
      *
-     * 失败静默：保活是尽力而为，一次失败（风控/网络抖动）不该打断正在跑的出图。
-     * 连续多次失败才记警告日志。
+     * ## v0.3.28 修的假成功（真机日志铁证）
+     *
+     * ```
+     * 15:15:26  进入 notebook 响应：errorCode=8403「未登录」
+     * 15:15:26  项目保活：已向 1 个运行中项目报活   ← 谎报成功
+     * ```
+     *
+     * 平台在登录态失效时**仍回 HTTP 200**，只是 body 里 `errorCode=8403`。
+     * 旧实现用 `runCatching{}.isSuccess` 判断——只要不抛异常就算成功，于是：
+     *   1. 保活实际全程空转，项目照样被回收（这就是「5 分钟就被停」的隐藏原因）；
+     *   2. 登录过期完全静默，用户只能靠「莫名其妙被停」察觉。
      */
-    suspend fun keepAlive(account: AiStudioAccount, projectId: String): Boolean =
-        runCatching { enterNotebook(account, projectId) }.onFailure { error ->
-            if (error is CancellationException) throw error
-            AppLogger.warn("项目保活 enterNotebook 失败（不影响出图）：${error.message.orEmpty().take(120)}")
-        }.isSuccess
+    suspend fun keepAlive(account: AiStudioAccount, projectId: String): Boolean {
+        val body = runCatching { enterNotebook(account, projectId) }
+            .onFailure { error ->
+                if (error is CancellationException) throw error
+                AppLogger.warn("项目保活 enterNotebook 失败（不影响出图）：${error.message.orEmpty().take(120)}")
+            }
+            .getOrNull() ?: return false
+        // HTTP 200 不等于成功：登录失效时平台仍在 200 里塞 errorCode=8403。
+        if (AiStudioProtocol.isLoginWallBody(body)) {
+            AppLogger.warn("项目保活失败：登录态已失效（8403 未登录），请回 App 重新登录")
+            return false
+        }
+        return true
+    }
 
     private fun enterNotebookOnce(account: AiStudioAccount, projectId: String): String {
         val body = AiStudioProtocol.formEncode(mapOf("projectId" to projectId))
