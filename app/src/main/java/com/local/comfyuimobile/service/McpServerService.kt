@@ -260,6 +260,10 @@ class McpServerService : Service() {
                 runCatching { AppPreferences(this).markSubmittedJobFetched(promptId) }
                     .onFailure { AppLogger.warn("标记任务已取图失败：$promptId", it) }
             },
+            // v0.3.30：/health 自报版本，排查「装了旧包」时一眼可见。
+            appVersion = runCatching {
+                packageManager.getPackageInfo(packageName, 0).versionName
+            }.getOrNull().orEmpty(),
         )
         this.manager = manager
         // v0.3.15：局域网模式下绑 0.0.0.0，并记下本机 IPv4 供通知/URL 用。

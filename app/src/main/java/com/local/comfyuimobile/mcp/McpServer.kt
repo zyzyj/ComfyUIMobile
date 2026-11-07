@@ -67,6 +67,8 @@ internal class McpServer(
      * 因为本 server 原本只路由 /mcp 与 /files/。
      */
     private val comfyBaseUrl: () -> String = { "" },
+    /** 本 App 版本名（v0.3.30），用于 /health 自报——排查「装了旧包」时一眼可见。 */
+    private val appVersion: String = "",
 ) {
 
     private var serverSocket: ServerSocket? = null
@@ -187,7 +189,16 @@ internal class McpServer(
             return
         }
         if (request.method == "GET" && (path == "/health" || path == "/")) {
-            output.write(McpHttp.jsonResponse("""{"ok":true}"""))
+            // v0.3.30：带上版本号与已注册路由。
+            //
+            // 真机反馈里「/view 还 404」反复出现，而代码里确实有这条路由——
+            // 最常见的原因是**装的是旧包**。让 /health 直接吐版本，一眼就能确认，
+            // 不必再靠“应该已经修了吧”去猜。
+            output.write(
+                McpHttp.jsonResponse(
+                    """{"ok":true,"version":${JSONObject.quote(appVersion)},"routes":["/mcp","/files/*","/view","/history","/health"],"comfyConnected":${comfyBaseUrl().isNotBlank()}}""",
+                ),
+            )
             return
         }
         if (path != "/mcp") {

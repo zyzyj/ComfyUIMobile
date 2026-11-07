@@ -40,6 +40,8 @@ internal class McpServerManager(
     private val submittedJobsReader: (suspend () -> List<com.local.comfyuimobile.data.SubmittedJobRecord>)? = null,
     /** 把任务标为「已取图」（v0.3.7）。null = 不标记。 */
     private val submittedJobFetched: (suspend (String) -> Unit)? = null,
+    /** 本 App 版本名（v0.3.30）：/health 自报，用于排查「装了旧包」。 */
+    private val appVersion: String = "",
 ) {
 
     private var server: McpServer? = null
@@ -119,6 +121,7 @@ internal class McpServerManager(
             files = store,
             // v0.3.29：转发 ComfyUI 自己的 /view、/history，让客户端能直拉原图。
             comfyBaseUrl = { client.serverUrl() },
+            appVersion = appVersion,
         )
         created.start()
         server = created

@@ -594,19 +594,20 @@ internal class ComfyMcpHost(
         val limit = (maxBytes ?: FETCH_REMOTE_MAX_BYTES).coerceIn(1L, FETCH_REMOTE_MAX_BYTES)
 
         // 先查大小：不存在 / 是目录 / 太大，三种情况都在下载前区分。
-        // 用 `wc -c` 而不是 ls，避免解析 ls 的列格式（文件名含空格会错位）。
         //
-        // v0.3.29（真机反馈）：**必须跟随 symlink**。
-        // 用户报的路径 /home/aistudio/data/np/ComfyUI_v2/output 是指向
-        // /home/aistudio/data/np/output 的符号链接。旧实现用 `-f`（不跟 symlink 到
-        // 普通文件判定链）在某些情况下会判成不存在，且两个路径都报「不存在」，
-        // 提示「先用 ls 确认路径」反而把人带偏。
-        // 现在用 `-e`（存在，跟随链接）+ `readlink -f` 把真实路径一并报出来。
+        // v0.3.30（真机反馈，真因）：旧命令用了**嵌套双引号**：
+        //   echo "SIZE=$(wc -c < "$target" ...)"
+        // shell 解析时会在这里断开引号，整条命令变成乱码——实测直接报
+        //   /bin/sh: can't open "...": no such file
+        // 于是**任何路径都报 MISSING**（与 symlink 无关；`-f` 本来就跟随 symlink）。
+        // 上一版改 -e 是误判。现在改用单引号包路径（路径里不会有单引号），
+        // 并避免任何嵌套引号。
+        val q = "'" + target.replace("'", "'\\''") + "'"
         val probe = runCatching {
             terminalHost.exec(
-                "if [ -d \"$target\" ]; then echo DIR; " +
-                    "elif [ -e \"$target\" ]; then echo \"SIZE=$(wc -c < \"$target\" 2>/dev/null || echo 0)\"; " +
-                    "echo \"REAL=$(readlink -f \"$target\" 2>/dev/null)\"; " +
+                "if [ -d $q ]; then echo DIR; " +
+                    "elif [ -e $q ]; then echo SIZE=$(wc -c < $q 2>/dev/null || echo 0); " +
+                    "echo REAL=$(readlink -f $q 2>/dev/null); " +
                     "else echo MISSING; fi",
                 terminal = null,
                 timeoutSeconds = 15,
@@ -668,7 +669,7 @@ internal class ComfyMcpHost(
         }
         val b64 = runCatching {
             terminalHost.exec(
-                "base64 -w0 \"$target\"",
+                "base64 -w0 $q",
                 terminal = null,
                 timeoutSeconds = 60,
             )
@@ -749,9 +750,12 @@ internal class ComfyMcpHost(
         val url = ctx.baseUrl.trimEnd('/') + "/api_serving/$port/$fileName"
 
         // 起服务：绑定 0.0.0.0 才能被反代转发；--directory 限定目录，不暴露其他路径。
+        // v0.3.30：路径与文件名都用单引号包，避免空格/特殊字符把命令拆坏。
+        val dirQ = "'" + dir.replace("'", "'\\''") + "'"
+        val nameQ = "'" + fileName.replace("'", "'\\''") + "'"
         val startCmd = "pkill -f 'http.server $port' 2>/dev/null; " +
-            "(cd \"$dir\" && nohup python3 -m http.server $port --bind 0.0.0.0 >/tmp/mcp_dl_$port.log 2>&1 &); " +
-            "sleep 2; curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:$port/$fileName"
+            "(cd $dirQ && nohup python3 -m http.server $port --bind 0.0.0.0 >/tmp/mcp_dl_$port.log 2>&1 &); " +
+            "sleep 2; curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:$port/$nameQ"
         val started = runCatching {
             terminalHost.exec(startCmd, terminal = null, timeoutSeconds = 25)
         }.getOrNull()
