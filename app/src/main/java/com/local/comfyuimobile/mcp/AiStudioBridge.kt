@@ -131,15 +131,46 @@ internal class AiStudioBridge(
             ?: stored.aiStudioActiveId.ifBlank { null })
             ?: accounts.first().id
         return buildString {
-            appendLine("App 里已登录 ${accounts.size} 个 AI Studio 账号：")
+            appendLine("App 里已登录 ${accounts.size} 个 AI Studio 账号（**认 uid，不要认昵称**）：")
             accounts.forEach { account ->
                 val mark = if (account.id == effectiveId) " ← MCP 当前用这个" else ""
-                appendLine("- id=${account.id}  ${account.displayName()}$mark")
+                appendLine("- ${account.identity()}$mark")
             }
+            // v0.3.31：真机反馈里两个账号的昵称极易搞混（zayanj 实际属于 uid=20222217，
+            // 而 uid=20104163 的昵称是 ZAYANJ）。项目归属同样容易看错，
+            // 所以直接把“有哪些运行中项目”一并列出来，让对应关系显式化。
+            runningProjectsHint()?.let { appendLine().appendLine(it) }
             if (overrideAccountId != null) {
                 appendLine("（MCP 会话内已切到 id=$overrideAccountId；App 界面显示的仍是它自己的当前账号。）")
             }
             append("用 switch_account 的 account_id 参数切换；额度按账号与档位分开算，换账号能绕开「这个号没额度了」。")
+        }
+    }
+
+    /**
+     * 列出各账号当前**运行中的项目**，附 uid（v0.3.31）。
+     *
+     * 多账号场景下 AI 最容易错的事就是“拿 A 账号的 projectId 去 B 账号下操作”。
+     * 把「账号 → 运行中项目」直接列出来，让它不必自己联想。
+     * 读不到就返回 null（锦上添花，不阻断）。
+     */
+    private suspend fun runningProjectsHint(): String? {
+        val stored = runCatching { preferences.settings.first() }.getOrNull() ?: return null
+        val lines = mutableListOf<String>()
+        for (account in stored.aiStudioAccounts) {
+            val page = runCatching { client.listProjects(account, page = 1, pageSize = 30) }
+                .getOrNull() ?: continue
+            val running = page.projects.filter { it.running }
+            if (running.isNotEmpty()) {
+                lines += running.map {
+                    "- uid=${account.uid.ifBlank { "?" }}（${account.displayName()}） 项目 ${it.projectId}（${it.displayName()}）"
+                }
+            }
+        }
+        if (lines.isEmpty()) return null
+        return buildString {
+            appendLine("当前运行中的项目（**projectId 属于对应 uid，不要跨账号用**）：")
+            lines.forEach { appendLine(it) }
         }
     }
 
@@ -157,18 +188,26 @@ internal class AiStudioBridge(
         if (wanted.isBlank()) throw IllegalArgumentException("缺少 accountId。先调 list_accounts 查。")
         val stored = runCatching { preferences.settings.first() }.getOrNull()
             ?: throw IllegalStateException("读取账号失败（偏好不可用）。")
+        // v0.3.31：真机反馈里 AI 会拿**昵称/英文名**来切账号，而两个账号昵称极易搞混
+        // （zayanj 属于 uid=20222217，而 uid=20104163 的昵称是 ZAYANJ）。
+        // 所以除 id 外，也接受**裸 uid**（不带 `uid:` 前缀）——uid 才是唯一可靠的。
+        // 昵称**不参与匹配**：那正是搞混的来源。
         val account = stored.aiStudioAccounts.firstOrNull { it.id == wanted }
+            ?: stored.aiStudioAccounts.firstOrNull { it.uid.isNotBlank() && it.uid == wanted }
             ?: throw IllegalArgumentException(
-                "找不到 id=$wanted 的账号。现有账号：「" +
-                    stored.aiStudioAccounts.joinToString("、") { "${it.id}（${it.displayName()}）" } +
-                    "」。先用 list_accounts 确认。",
+                "找不到账号「$wanted」。现有账号（请用 uid）：\n" +
+                    stored.aiStudioAccounts.joinToString("\n") { "- ${it.identity()}" } +
+                    "\n先用 list_accounts 确认。**不要用昵称切账号**——多账号下昵称会搞混" +
+                    "（真机就踩过：zayanj 实际属于 uid=20222217，不是 uid=20104163）。",
             )
         val previous = overrideAccountId
         overrideAccountId = account.id
         closeTerminalsForAccountSwitch()
         return buildString {
-            append("MCP 会话内已切到「${account.displayName()}」（id=${account.id}）。")
+            append("MCP 会话内已切到 ${account.identity()}。")
             append("后续工具调用都用这个账号；**App 界面显示的仍是它自己的当前账号**（未改全局设置）。")
+            // v0.3.31：切账号后旧 projectId 全部失效，必须说清楚。
+            append("\n注意：projectId 属于原账号，已不适用于新账号——请重新 list_projects。")
             if (previous == null) {
                 append("终端会话已全部关闭（终端不绑账号，避免静默连到旧项目）——下次调用会自动重连。")
             } else {
@@ -255,18 +294,23 @@ internal class AiStudioBridge(
     suspend fun listProjects(): String {
         val account = requireAccount()
         val page = client.listProjects(account, page = 1, pageSize = 30)
-        if (page.projects.isEmpty()) return "当前账号下没有项目。"
+        if (page.projects.isEmpty()) return "账号 ${account.identity()} 下没有项目。"
         return buildString {
-            appendLine("账号「${account.displayName()}」下的项目（共 ${page.projects.size} 个）：")
+            // v0.3.31：标题带 uid。真机反馈里两个账号昵称极易搞混，
+            // 只说“账号 ZAYANJ”无法确定是 20104163 还是 20222217。
+            appendLine("账号 ${account.identity()} 下的项目（共 ${page.projects.size} 个）：")
             page.projects.forEach { project ->
                 val state = if (project.running) {
                     "运行中" + project.runningGpuLabel.takeIf { it.isNotBlank() }?.let { "（$it）" }.orEmpty()
                 } else {
                     "已停止"
                 }
-                appendLine("- projectId=${project.projectId}  ${project.displayName()}  [$state]")
+                appendLine("- projectId=${project.projectId}  ${project.displayName()}  [$state]  owner_uid=${account.uid.ifBlank { "?" }}")
             }
             append("用 projectId 调 gpu_status / start_gpu / stop_gpu。")
+            if (page.projects.isEmpty()) return@buildString
+            // 明确警告：projectId 只在所属账号下有效。
+            append("\n注意：这些 projectId 只在 uid=${account.uid.ifBlank { "?" }} 下有效；换账号后要重新 list_projects。")
         }
     }
 
@@ -317,7 +361,7 @@ internal class AiStudioBridge(
         val pools = snapshot.weekQuota
         val balanceMinutes = snapshot.computeCardMinutes
         return buildString {
-            appendLine("项目 $pid（${project.displayName()}）：")
+            appendLine("项目 $pid（${project.displayName()}）—— 所属账号 ${account.identity()}：")
             appendLine("- 状态：${AiStudioSchedules.describeState(state)}")
             // v0.3.4（清单 §1.3）：给 AI 看账单它才有动力省。当前档位的剩余与消耗
             // 速率都在 schedules 里（平台原生数据），不额外算「已运行时长」——
@@ -464,7 +508,7 @@ internal class AiStudioBridge(
             chosenName = chosen.displayName(),
         )
         return buildString {
-            appendLine("已提交启动请求：项目 $pid，档位 ${chosen.displayName()}（schedule=${chosen.scheduleName}）。$note")
+            appendLine("已提交启动请求：项目 $pid（账号 ${account.identity()}），档位 ${chosen.displayName()}（schedule=${chosen.scheduleName}）。$note")
             // P1-3：真机实测 AI 启动 GPU 后直接调 wait_for_comfy，等了 300 秒超时——
             // 因为**GPU 就绪 ≠ ComfyUI 起来了**。这里必须把下一步说透，
             // 否则 AI 只能靠超时才能学到这件事。
@@ -498,7 +542,7 @@ internal class AiStudioBridge(
             val current = preferences.settings.first().gpuSessionStart
             if (current?.projectId == pid) preferences.clearGpuSessionStart()
         }.onFailure { AppLogger.warn("清除 GPU 会话记录失败", it) }
-        return "已提交停止请求：项目 $pid。$result"
+        return "已提交停止请求：项目 $pid（账号 ${account.identity()}）。$result"
     }
 
     // ===== 内部 =====

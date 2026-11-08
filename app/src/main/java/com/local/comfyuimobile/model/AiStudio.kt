@@ -38,6 +38,24 @@ data class AiStudioAccount(
     val lastSignInAt: Long = 0L,
 ) {
     fun displayName(): String = nickname.ifBlank { uid.ifBlank { "未命名账号" } }
+
+    /**
+     * 给 AI 看的完整标识（v0.3.31）。
+     *
+     * ## 为什么必须有这个
+     *
+     * 真机反馈：两个账号的昵称让人分不清谁是谁——
+     * `zayanj` 实际是 uid=20222217（昵称「眨眼睛eye」），
+     * 而 uid=20104163（昵称「ZAYANJ」）的英文名是另一个。
+     * 光看昵称（大小写/拼音相近）必然搞混项目属于哪个账号。
+     *
+     * uid 是平台侧唯一不变的数字标识，**必须总是跟着昵称一起展示**。
+     * 格式：`昵称（uid=20104163）`；uid 缺失时标识不可靠，显式提醒。
+     */
+    fun identity(): String = when {
+        uid.isNotBlank() -> "${displayName()}（uid=$uid）"
+        else -> "${displayName()}（uid 未知，请重新登录以补全）"
+    }
 }
 
 /** 我的项目列表里的一项。 */
